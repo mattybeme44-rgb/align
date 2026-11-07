@@ -59,6 +59,13 @@ Practical notes for iOS:
   in the status line, which is why the Input panel reports the device it really got.
 - Audio stops when you leave Safari or lock the screen, and resumes on Start.
 
+### If Start does nothing or the page disappears
+
+Browsers built into other apps (including a chat app's own browser) usually cannot open the
+microphone, and iOS can dismiss the web view as soon as something asks for audio. Open this address
+in **Safari** instead — tap the share icon, then **Open in Safari**. When audio fails the app now says
+so on screen and offers a Copy link button, instead of failing silently.
+
 ## Typical alignment workflow
 
 1. Play pink noise into the system at a moderate level.

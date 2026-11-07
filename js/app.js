@@ -40,7 +40,21 @@ const irChart = new ImpulseChart($('irChart'));
 function setStatus(text, kind) {
   const el = $('status');
   el.textContent = text;
+  el.title = text;
   el.className = 'status' + (kind ? ' ' + kind : '');
+}
+
+function showAudioHelp(message) {
+  const banner = $('audioHelp');
+  const text = $('audioHelpText');
+  if (!banner || !text) return;
+  text.textContent = message;
+  banner.hidden = false;
+}
+
+function hideAudioHelp() {
+  const banner = $('audioHelp');
+  if (banner) banner.hidden = true;
 }
 
 function averagingRate() {
@@ -214,8 +228,9 @@ async function startAll() {
   try {
     await engine.start(state.deviceId);
   } catch (err) {
-    const message = err && err.name === 'NotAllowedError' ? 'microphone permission denied' : 'audio failed: ' + (err && err.message ? err.message : err);
+    const message = err && err.message ? err.message : String(err);
     setStatus(message, 'err');
+    showAudioHelp('Audio could not start: ' + message);
     state.running = false;
     button.textContent = 'Start';
     button.classList.remove('on');
@@ -239,6 +254,7 @@ async function startAll() {
   button.classList.add('on');
   button.disabled = false;
 
+  hideAudioHelp();
   setStatus('running', 'ok');
   if (engine.exactDeviceRejected) {
     setStatus('iOS used "' + engine.deviceLabel + '" instead of the chosen device', 'err');
@@ -480,6 +496,21 @@ $('btnRestart').addEventListener('click', () => {
   startAll();
 });
 
+$('btnHideHelp').addEventListener('click', () => {
+  hideAudioHelp();
+  setStatus('idle');
+});
+
+$('btnCopyLink').addEventListener('click', async () => {
+  const link = window.location.href;
+  try {
+    await navigator.clipboard.writeText(link);
+    setStatus('link copied — paste it into Safari', 'ok');
+  } catch (err) {
+    window.prompt('Copy this link, then open it in Safari', link);
+  }
+});
+
 if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
   navigator.mediaDevices.addEventListener('devicechange', () => {
     listDevices();
@@ -509,7 +540,8 @@ window.addEventListener('resize', () => {
 
 draw();
 
-if (!navigator.mediaDevices || !window.AudioContext) {
+if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.AudioContext) {
   setStatus('this browser cannot capture audio', 'err');
+  showAudioHelp('This browser has no microphone access. Open the page in Safari to measure.');
   $('btnPower').disabled = true;
 }

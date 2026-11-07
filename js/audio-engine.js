@@ -1,71 +1,7 @@
 import { generateSignal } from './signals.js';
 
-const PLAYER_CODE = `
-class AlignPlayer extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.buffer = null;
-    this.pos = 0;
-    this.running = false;
-    this.port.onmessage = (event) => {
-      const msg = event.data;
-      if (msg.type === 'buffer') {
-        this.buffer = msg.buffer;
-        this.pos = 0;
-      } else if (msg.type === 'start') {
-        this.running = true;
-      } else if (msg.type === 'stop') {
-        this.running = false;
-      }
-    };
-  }
-  process(inputs, outputs) {
-    const out = outputs[0] && outputs[0][0];
-    if (!out) return true;
-    const buf = this.buffer;
-    if (!this.running || !buf || buf.length === 0) {
-      out.fill(0);
-      return true;
-    }
-    const len = buf.length;
-    let pos = this.pos;
-    for (let i = 0; i < out.length; i++) {
-      out[i] = buf[pos];
-      pos += 1;
-      if (pos >= len) pos -= len;
-    }
-    this.pos = pos;
-    this.blocks = (this.blocks || 0) + 1;
-    if (this.blocks % 8 === 0) {
-      this.port.postMessage({ type: 'pos', pos: pos });
-    }
-    return true;
-  }
-}
-registerProcessor('align-player', AlignPlayer);
-`;
-
-const CAPTURE_CODE = `
-class AlignCapture extends AudioWorkletProcessor {
-  process(inputs) {
-    const input = inputs[0];
-    if (!input || input.length === 0) return true;
-    const left = input[0];
-    if (!left) return true;
-    const right = input.length > 1 ? input[1] : null;
-    const copyLeft = new Float32Array(left.length);
-    copyLeft.set(left);
-    let copyRight = null;
-    if (right) {
-      copyRight = new Float32Array(right.length);
-      copyRight.set(right);
-    }
-    this.port.postMessage({ a: copyLeft, b: copyRight });
-    return true;
-  }
-}
-registerProcessor('align-capture', AlignCapture);
-`;
+// The worklet processors live in align-worklets.js and are loaded from a real
+// URL: iOS WebKit is unreliable with blob: URLs passed to addModule().
 
 class Ring {
   constructor(capacity) {
@@ -103,6 +39,17 @@ class Ring {
       target[i] = this.data[((index % cap) + cap) % cap];
     }
   }
+}
+
+function mediaError(err) {
+  const name = err && err.name ? err.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return new Error('microphone permission was denied');
+  }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    return new Error('no microphone was found');
+  }
+  return new Error('could not open the microphone: ' + (err && err.message ? err.message : err));
 }
 
 function rmsOf(channel) {
@@ -150,22 +97,27 @@ export class AudioEngine {
 
     let ctx;
     try {
-      ctx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
-    } catch (err) {
       ctx = new AudioContext({ latencyHint: 'interactive' });
+    } catch (err) {
+      throw new Error('audio is unavailable in this browser: ' + (err && err.message ? err.message : err));
     }
     this.ctx = ctx;
-    if (ctx.state === 'suspended') await ctx.resume();
-    if (!ctx.audioWorklet) throw new Error('AudioWorklet is not supported in this browser');
 
-    const playerUrl = URL.createObjectURL(new Blob([PLAYER_CODE], { type: 'application/javascript' }));
-    const captureUrl = URL.createObjectURL(new Blob([CAPTURE_CODE], { type: 'application/javascript' }));
+    if (!ctx.audioWorklet) throw new Error('this browser has no AudioWorklet support');
+
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch (err) {
+        throw new Error('could not start audio here: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    const workletUrl = new URL('align-worklets.js', document.baseURI).href;
     try {
-      await ctx.audioWorklet.addModule(playerUrl);
-      await ctx.audioWorklet.addModule(captureUrl);
-    } finally {
-      URL.revokeObjectURL(playerUrl);
-      URL.revokeObjectURL(captureUrl);
+      await ctx.audioWorklet.addModule(workletUrl);
+    } catch (err) {
+      throw new Error('could not load the audio engine: ' + (err && err.message ? err.message : err));
     }
 
     const audioConstraints = {
@@ -175,22 +127,30 @@ export class AudioEngine {
       channelCount: { ideal: 2, max: 2 },
     };
 
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('this browser cannot capture audio');
+    }
+
+    const openStream = (pinned) =>
+      navigator.mediaDevices.getUserMedia({
+        audio: pinned ? Object.assign({}, audioConstraints, { deviceId: { exact: pinned } }) : audioConstraints,
+        video: false,
+      });
+
     let stream;
     this.exactDeviceRejected = false;
-    if (deviceId) {
+    try {
+      stream = await openStream(deviceId || '');
+    } catch (err) {
+      if (!deviceId) throw mediaError(err);
+      // iOS often refuses a pinned device even when the interface is the
+      // current route, so fall back to whatever iOS offers.
+      this.exactDeviceRejected = true;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: Object.assign({}, audioConstraints, { deviceId: { exact: deviceId } }),
-          video: false,
-        });
-      } catch (err) {
-        // iOS often refuses a pinned device even when the interface is the
-        // current route, so fall back to whatever iOS offers.
-        this.exactDeviceRejected = true;
-        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+        stream = await openStream('');
+      } catch (fallbackError) {
+        throw mediaError(fallbackError);
       }
-    } else {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
     }
     this.stream = stream;
 

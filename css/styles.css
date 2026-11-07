@@ -431,3 +431,41 @@ input[type='checkbox'] {
   background: linear-gradient(90deg, #3fb98b 0%, #3fb98b 55%, #f0b429 78%, #f87171 100%);
   transition: width 80ms linear;
 }
+
+
+.status {
+  white-space: normal;
+  line-height: 1.25;
+  max-width: 52vw;
+  max-height: 2.6em;
+  overflow: hidden;
+}
+
+.help-banner {
+  border: 1px solid #5a3a3a;
+  background: #201418;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.help-banner p {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #f3c2c2;
+}
+
+.help-banner p.muted {
+  color: #b09a9a;
+  font-size: 11px;
+}
+
+.help-banner p.muted strong {
+  color: #e6edf3;
+}
+
+.help-banner .row.btns {
+  border-bottom: 0;
+  padding: 2px 0 0;
+}
