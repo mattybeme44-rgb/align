@@ -20,6 +20,41 @@
 </header>
 
 <main>
+  <section class="card interface">
+    <div class="card-head">
+      <h2>Input</h2>
+      <button id="btnRestart" class="btn" type="button">Restart</button>
+    </div>
+    <div class="device-line">
+      <span id="rdDevice">no input yet</span>
+      <span class="hint" id="rdChannels">—</span>
+    </div>
+    <div class="meters">
+      <div class="meter-row">
+        <span class="meter-label">1</span>
+        <div class="meter"><i id="meter1"></i></div>
+      </div>
+      <div class="meter-row">
+        <span class="meter-label">2</span>
+        <div class="meter"><i id="meter2"></i></div>
+      </div>
+    </div>
+    <div class="row">
+      <label for="selMicCh">Measurement input</label>
+      <select id="selMicCh">
+        <option value="0">Input 1</option>
+        <option value="1">Input 2</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="selRefCh">Reference input <span class="hint">loopback</span></label>
+      <select id="selRefCh">
+        <option value="0">Input 1</option>
+        <option value="1" selected>Input 2</option>
+      </select>
+    </div>
+  </section>
+
   <section class="card">
     <div class="card-head">
       <h2>Transfer function</h2>
@@ -154,6 +189,15 @@
       <p class="muted">
         Level is dBFS, not dB SPL: absolute SPL needs a calibrated microphone and an offset. Measurements
         are relative, which is what alignment work needs.
+      </p>
+      <p class="muted">
+        <strong>USB-C interface on iPhone</strong> — connect the interface, open this page in Safari and
+        press Start. iOS routes audio to the last connected interface, so the app records from it instead
+        of the phone microphone. Watch the two level meters above to see which input your mic is on, then
+        pick that one as the Measurement input. Feed the interface's second input with the reference
+        signal and select it as the Reference input for the dual-channel method. If the meters stay
+        still after plugging in, press Restart: iOS keeps the old audio route until the stream is
+        reopened. Set the interface to 48 kHz and enable phantom power for a condenser measurement mic.
       </p>
     </details>
   </section>

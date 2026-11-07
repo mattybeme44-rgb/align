@@ -373,3 +373,61 @@ input[type='checkbox'] {
   font-size: 11px;
   padding: 6px 0 12px;
 }
+
+
+.interface .card-head {
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.device-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #c3ced9;
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+
+.device-line .hint {
+  white-space: nowrap;
+}
+
+.meters {
+  margin-bottom: 8px;
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.meter-label {
+  width: 10px;
+  font-size: 10px;
+  color: var(--dim);
+  text-align: center;
+}
+
+.meter {
+  flex: 1;
+  height: 8px;
+  background: #1a2330;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid #223040;
+}
+
+.meter > i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3fb98b 0%, #3fb98b 55%, #f0b429 78%, #f87171 100%);
+  transition: width 80ms linear;
+}

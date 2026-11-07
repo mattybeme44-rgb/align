@@ -19,6 +19,8 @@ const state = {
   level: 0.35,
   sineHz: 1000,
   refMode: 'internal',
+  micChannel: 0,
+  refChannel: 1,
   fftSize: 16384,
   avgSpeed: 45,
   smoothing: 1 / 6,
@@ -85,11 +87,11 @@ function analyse() {
   const start = end - n;
   if (start < 0) return;
 
-  engine.readMic(micWin, start);
+  engine.readChannel(micWin, start, state.micChannel);
 
   const refStart = start - state.delayEstimate;
   if (state.refMode === 'loopback') {
-    engine.readRefCaptured(refWin, refStart);
+    engine.readChannel(refWin, refStart, state.refChannel);
   } else {
     engine.readGeneratedRef(refWin, refStart);
   }
@@ -105,6 +107,7 @@ function analyse() {
 
   state.results = res;
   updateReadouts(res);
+  updateInterfaceInfo();
 
   eqTick += 1;
   if (eqTick % 12 === 0) updateEq(res);
@@ -128,11 +131,13 @@ function updateReadouts(res) {
   coherenceEl.textContent = (coherence * 100).toFixed(0) + '%';
   coherenceEl.className = 'v ' + (coherence > 0.8 ? 'good' : coherence > 0.5 ? '' : 'bad');
 
-  if (state.refMode === 'loopback' && res.frames > 20 && coherence < 0.2) {
-    setStatus('input 2 is silent — check the loopback routing', 'err');
+  if (state.refMode === 'loopback' && state.micChannel === state.refChannel) {
+    setStatus('measurement and reference use the same input', 'err');
+  } else if (state.refMode === 'loopback' && res.frames > 20 && coherence < 0.2) {
+    setStatus('reference input is silent — check the loopback routing', 'err');
   }
 
-  const level = engine.micLevel;
+  const level = engine.channelLevel[state.micChannel] || 0;
   $('rdLevel').textContent = (level > 0 ? (20 * Math.log10(level)).toFixed(1) : '-inf') + ' dBFS';
 
   $('rdRate').textContent = (res.sampleRate / 1000).toFixed(1) + 'k · ' + res.df.toFixed(1) + ' Hz';
@@ -141,6 +146,33 @@ function updateReadouts(res) {
   deltaEl.textContent = state.snapshot ? (totalMs - state.snapshot.delayMs).toFixed(2) + ' ms' : '—';
 
   $('irReadout').textContent = 'delay ' + totalMs.toFixed(2) + ' ms';
+}
+
+function meterPercent(rms) {
+  if (!(rms > 0)) return 0;
+  const db = 20 * Math.log10(rms);
+  return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+}
+
+function updateInterfaceInfo() {
+  const deviceEl = $('rdDevice');
+  const channelsEl = $('rdChannels');
+  const meter1 = $('meter1');
+  const meter2 = $('meter2');
+
+  if (!engine.running) {
+    deviceEl.textContent = 'no input yet';
+    channelsEl.textContent = '—';
+    meter1.style.width = '0%';
+    meter2.style.width = '0%';
+    return;
+  }
+
+  deviceEl.textContent = engine.deviceLabel || 'audio input';
+  const count = engine.deviceChannels || 1;
+  channelsEl.textContent = count + ' ch · ' + Math.round(engine.sampleRate / 1000) + ' kHz';
+  meter1.style.width = meterPercent(engine.channelLevel[0]) + '%';
+  meter2.style.width = meterPercent(engine.channelLevel[1]) + '%';
 }
 
 function updateEq(res) {
@@ -184,7 +216,11 @@ async function startAll() {
   } catch (err) {
     const message = err && err.name === 'NotAllowedError' ? 'microphone permission denied' : 'audio failed: ' + (err && err.message ? err.message : err);
     setStatus(message, 'err');
+    state.running = false;
+    button.textContent = 'Start';
+    button.classList.remove('on');
     button.disabled = false;
+    updateInterfaceInfo();
     return;
   }
 
@@ -204,6 +240,10 @@ async function startAll() {
   button.disabled = false;
 
   setStatus('running', 'ok');
+  if (engine.exactDeviceRejected) {
+    setStatus('iOS used "' + engine.deviceLabel + '" instead of the chosen device', 'err');
+  }
+  updateInterfaceInfo();
   listDevices();
   lastAnalysis = 0;
 
@@ -229,6 +269,7 @@ function stopAll() {
   button.textContent = 'Start';
   button.classList.remove('on');
   setStatus('idle');
+  updateInterfaceInfo();
   draw();
 }
 
@@ -305,9 +346,9 @@ function findDelay() {
   const mic = new Float32Array(n);
   const ref = new Float32Array(n);
 
-  engine.readMic(mic, start);
+  engine.readChannel(mic, start, state.micChannel);
   if (state.refMode === 'loopback') {
-    engine.readRefCaptured(ref, start - offset);
+    engine.readChannel(ref, start - offset, state.refChannel);
   } else {
     engine.readGeneratedRef(ref, start - offset);
   }
@@ -422,8 +463,29 @@ $('btnClearA').addEventListener('click', () => {
 
 $('selInput').addEventListener('change', (event) => {
   state.deviceId = event.target.value;
-  if (state.running) setStatus('stop and start to change input', 'err');
+  if (state.running) setStatus('press Restart to use this input', '');
 });
+
+$('selMicCh').addEventListener('change', (event) => {
+  state.micChannel = Number(event.target.value);
+  if (analyser) analyser.reset();
+});
+
+$('selRefCh').addEventListener('change', (event) => {
+  state.refChannel = Number(event.target.value);
+  if (analyser) analyser.reset();
+});
+
+$('btnRestart').addEventListener('click', () => {
+  startAll();
+});
+
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    listDevices();
+    if (state.running) setStatus('audio device changed — press Restart', 'err');
+  });
+}
 
 $('tfChart').addEventListener('pointermove', (event) => {
   if (!state.results) return;

@@ -105,6 +105,12 @@ class Ring {
   }
 }
 
+function rmsOf(channel) {
+  let sum = 0;
+  for (let i = 0; i < channel.length; i++) sum += channel[i] * channel[i];
+  return Math.sqrt(sum / channel.length);
+}
+
 export class AudioEngine {
   constructor() {
     this.ctx = null;
@@ -113,7 +119,12 @@ export class AudioEngine {
     this.micRing = null;
     this.refRing = null;
     this.channels = 1;
+    this.deviceChannels = 1;
     this.micLevel = 0;
+    this.channelLevel = [0, 0];
+    this.deviceLabel = '';
+    this.deviceIdUsed = '';
+    this.exactDeviceRejected = false;
     this.generated = null;
     this.signal = 'pink';
     this.sineHz = 1000;
@@ -157,22 +168,38 @@ export class AudioEngine {
       URL.revokeObjectURL(captureUrl);
     }
 
-    const constraints = {
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: { ideal: 2 },
-      },
-      video: false,
+    const audioConstraints = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: { ideal: 2, max: 2 },
     };
-    if (deviceId) constraints.audio.deviceId = { exact: deviceId };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    let stream;
+    this.exactDeviceRejected = false;
+    if (deviceId) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: Object.assign({}, audioConstraints, { deviceId: { exact: deviceId } }),
+          video: false,
+        });
+      } catch (err) {
+        // iOS often refuses a pinned device even when the interface is the
+        // current route, so fall back to whatever iOS offers.
+        this.exactDeviceRejected = true;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      }
+    } else {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+    }
     this.stream = stream;
 
     const track = stream.getAudioTracks()[0];
     const settings = track && track.getSettings ? track.getSettings() : {};
     this.channels = settings.channelCount || 1;
+    this.deviceChannels = this.channels;
+    this.deviceIdUsed = settings.deviceId || '';
+    this.deviceLabel = (track && track.label) || 'audio input';
 
     const capacity = Math.round(ctx.sampleRate * 4);
     this.micRing = new Ring(capacity);
@@ -191,16 +218,21 @@ export class AudioEngine {
 
     this.captureNode.port.onmessage = (event) => {
       const message = event.data;
-      const a = message.a;
-      const b = message.b;
-      if (!a) return;
-      this.micRing.push(a);
-      this.refRing.push(b || new Float32Array(a.length));
+      const left = message.a;
+      const right = message.b;
+      if (!left) return;
+      this.micRing.push(left);
+      this.refRing.push(right || new Float32Array(left.length));
 
-      let sum = 0;
-      for (let i = 0; i < a.length; i++) sum += a[i] * a[i];
-      const rms = Math.sqrt(sum / a.length);
-      this.micLevel = this.micLevel * 0.9 + rms * 0.1;
+      const leftRms = rmsOf(left);
+      const rightRms = right ? rmsOf(right) : 0;
+      this.channelLevel[0] = this.channelLevel[0] * 0.85 + leftRms * 0.15;
+      this.channelLevel[1] = this.channelLevel[1] * 0.85 + rightRms * 0.15;
+      this.micLevel = this.channelLevel[0];
+
+      // A mono device is up-mixed to two channels with silence in the second,
+      // so energy there means the interface really is stereo.
+      if (rightRms > 1e-5 && this.deviceChannels < 2) this.deviceChannels = 2;
     };
 
     // A muted sink keeps the capture node pulled by the graph.
@@ -317,20 +349,22 @@ export class AudioEngine {
     this.playerNode.port.postMessage({ type: 'start' });
   }
 
-  readMic(target, startIndex) {
-    if (!this.micRing) {
+  /** Copy a window of one captured channel (0 = input 1, 1 = input 2). */
+  readChannel(target, startIndex, channel) {
+    const ring = channel === 1 ? this.refRing : this.micRing;
+    if (!ring) {
       target.fill(0);
       return;
     }
-    this.micRing.read(target, startIndex);
+    ring.read(target, startIndex);
+  }
+
+  readMic(target, startIndex) {
+    this.readChannel(target, startIndex, 0);
   }
 
   readRefCaptured(target, startIndex) {
-    if (!this.refRing) {
-      target.fill(0);
-      return;
-    }
-    this.refRing.read(target, startIndex);
+    this.readChannel(target, startIndex, 1);
   }
 
   readGeneratedRef(target, startIndex) {

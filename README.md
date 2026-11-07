@@ -30,6 +30,35 @@ dual-channel method (Smaart's normal configuration). It needs a two-input interf
 stimulus also routed to input 2. The delay reading here is the real acoustic path difference, which
 is what you want for aligning subwoofers to mains or comparing box positions.
 
+## Using a USB-C audio interface on iPhone
+
+iOS treats a connected USB audio interface as the system audio device: Safari's microphone and its
+output both move to the interface, so the app records from the interface instead of the phone mic.
+No driver or native app is needed, but iOS only re-picks the route when the audio stream is opened.
+
+1. Connect the interface to the iPhone's USB-C port. Most bus-powered interfaces run fine; a
+   multi-input interface with phantom power may need a powered USB-C hub.
+2. Open this page in Safari (it must be HTTPS — the preview link is), press **Start**, and allow
+   microphone access.
+3. The **Input** panel now shows the device name, its channel count and the running sample rate, plus
+   live meters for input 1 and input 2. If both meters sit at zero, the phone mic is still in use:
+   tap **Restart**, which closes and reopens the stream so iOS follows the new route.
+4. Watch which meter moves and set **Measurement input** to that channel.
+5. For the true dual-channel method, feed the interface's second input with the reference signal
+   (loopback, or the processor output), set **Reference** to *Input 2 (loopback)* and pick the input
+   the reference arrives on.
+6. Set the interface to 48 kHz, turn off any onboard EQ, dynamics or reverb, and enable phantom power
+   for a condenser measurement mic.
+
+Practical notes for iOS:
+
+- Safari exposes at most the first two inputs of a multichannel interface.
+- The app runs at whatever sample rate the audio context gets; the actual rate is shown in the Input
+  panel. Everything is analysed against that rate, so a 44.1 kHz interface works fine.
+- iOS ignores a pinned `deviceId` in many cases; the app falls back to the current route and says so
+  in the status line, which is why the Input panel reports the device it really got.
+- Audio stops when you leave Safari or lock the screen, and resumes on Start.
+
 ## Typical alignment workflow
 
 1. Play pink noise into the system at a moderate level.
