@@ -225,8 +225,9 @@ async function startAll() {
   button.disabled = true;
   setStatus('starting…');
 
+  let channels = 1;
   try {
-    await engine.start(state.deviceId);
+    channels = await engine.start(state.deviceId);
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     setStatus(message, 'err');
@@ -244,6 +245,19 @@ async function startAll() {
   engine.setSineHz(state.sineHz);
   engine.setLevel(state.level);
 
+  // The iPhone microphone is a single input: it can only work with the
+  // generated reference, and only channel 1 exists.
+  if (channels < 2) {
+    if (state.refMode === 'loopback') {
+      state.refMode = 'internal';
+      $('selRef').value = 'internal';
+    }
+    if (state.micChannel !== 0) {
+      state.micChannel = 0;
+      $('selMicCh').value = '0';
+    }
+  }
+
   state.running = true;
   state.delayEstimate = 0;
   $('numDelay').value = '0.00';
@@ -258,6 +272,8 @@ async function startAll() {
   setStatus('running', 'ok');
   if (engine.exactDeviceRejected) {
     setStatus('iOS used "' + engine.deviceLabel + '" instead of the chosen device', 'err');
+  } else if (engine.deviceChannels < 2) {
+    setStatus('phone microphone · generated reference', 'ok');
   }
   updateInterfaceInfo();
   listDevices();
@@ -483,7 +499,14 @@ $('selInput').addEventListener('change', (event) => {
 });
 
 $('selMicCh').addEventListener('change', (event) => {
-  state.micChannel = Number(event.target.value);
+  const channel = Number(event.target.value);
+  if (channel === 1 && engine.deviceChannels < 2) {
+    event.target.value = '0';
+    state.micChannel = 0;
+    setStatus('this input has only one channel', 'err');
+    return;
+  }
+  state.micChannel = channel;
   if (analyser) analyser.reset();
 });
 

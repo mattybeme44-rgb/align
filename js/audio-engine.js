@@ -72,6 +72,7 @@ export class AudioEngine {
     this.deviceLabel = '';
     this.deviceIdUsed = '';
     this.exactDeviceRejected = false;
+    this.usedFallbackConstraints = false;
     this.generated = null;
     this.signal = 'pink';
     this.sineHz = 1000;
@@ -131,27 +132,33 @@ export class AudioEngine {
       throw new Error('this browser cannot capture audio');
     }
 
-    const openStream = (pinned) =>
-      navigator.mediaDevices.getUserMedia({
-        audio: pinned ? Object.assign({}, audioConstraints, { deviceId: { exact: pinned } }) : audioConstraints,
-        video: false,
-      });
+    // Try progressively simpler requests. iOS rejects some constraint sets
+    // outright (especially channelCount on the built-in microphone), and a
+    // mono phone mic is fine for the generated-reference mode.
+    const attempts = [];
+    if (deviceId) attempts.push(Object.assign({}, audioConstraints, { deviceId: { exact: deviceId } }));
+    attempts.push(audioConstraints);
+    attempts.push({ echoCancellation: false, noiseSuppression: false, autoGainControl: false });
+    attempts.push(true);
 
-    let stream;
-    this.exactDeviceRejected = false;
-    try {
-      stream = await openStream(deviceId || '');
-    } catch (err) {
-      if (!deviceId) throw mediaError(err);
-      // iOS often refuses a pinned device even when the interface is the
-      // current route, so fall back to whatever iOS offers.
-      this.exactDeviceRejected = true;
+    let stream = null;
+    let lastError = null;
+    this.usedFallbackConstraints = false;
+
+    for (let i = 0; i < attempts.length; i++) {
       try {
-        stream = await openStream('');
-      } catch (fallbackError) {
-        throw mediaError(fallbackError);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: attempts[i], video: false });
+        this.exactDeviceRejected = i > 0 && Boolean(deviceId);
+        this.usedFallbackConstraints = i > 0;
+        break;
+      } catch (err) {
+        lastError = err;
+        // A refused permission will not get better with looser constraints.
+        if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) break;
       }
     }
+
+    if (!stream) throw mediaError(lastError || new Error('no microphone available'));
     this.stream = stream;
 
     const track = stream.getAudioTracks()[0];

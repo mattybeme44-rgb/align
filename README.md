@@ -30,6 +30,25 @@ dual-channel method (Smaart's normal configuration). It needs a two-input interf
 stimulus also routed to input 2. The delay reading here is the real acoustic path difference, which
 is what you want for aligning subwoofers to mains or comparing box positions.
 
+## Using the iPhone's built-in microphone
+
+No interface is needed to try the app. The phone microphone is a single input, and in
+*Generated* mode the app plays the reference itself, so one mic is enough.
+
+1. Open the page in Safari (not an in-app browser) and press **Start**, allowing microphone access.
+2. Leave **Reference** on *Generated (single input)* and **Measurement input** on *Input 1*. The
+   status line confirms "phone microphone · generated reference".
+3. The phone's speaker and microphone are the same device, so keep the level low and put the phone on
+   a stand away from the speaker, or use headphones, to avoid howl (acoustic feedback).
+4. Read the trace as relative: the delay includes the phone's input/output latency, so compare the
+   Δ between captures rather than trusting the absolute value.
+
+If the input meters move but you hear nothing, press the iPhone's volume buttons — iOS keeps a
+separate volume for web audio, and the silent switch does not always affect it.
+
+A built-in mic is omnidirectional and uncalibrated, so the magnitude curve is the room and the mic's
+own response together. Treat it as a functional check until the interface is connected.
+
 ## Using a USB-C audio interface on iPhone
 
 iOS treats a connected USB audio interface as the system audio device: Safari's microphone and its
