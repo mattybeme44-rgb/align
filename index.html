@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0f14" />
+<title>Align — loudspeaker measurement</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>Align</h1>
+    <p class="sub">transfer function · delay finder · coherence</p>
+  </div>
+  <div class="top-right">
+    <span class="status" id="status">idle</span>
+    <button id="btnPower" class="btn btn-power" type="button">Start</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <div class="card-head">
+      <h2>Transfer function</h2>
+      <span class="readout" id="readout">tap the plot</span>
+    </div>
+    <div class="chart-wrap tf">
+      <canvas id="tfChart"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Impulse response</h2>
+      <span class="readout" id="irReadout">—</span>
+    </div>
+    <div class="chart-wrap ir">
+      <canvas id="irChart"></canvas>
+    </div>
+  </section>
+
+  <section class="metrics">
+    <div class="metric"><span class="k">Delay</span><span class="v" id="rdDelay">—</span></div>
+    <div class="metric"><span class="k">Polarity</span><span class="v" id="rdPolarity">—</span></div>
+    <div class="metric"><span class="k">Coherence</span><span class="v" id="rdCoh">—</span></div>
+    <div class="metric"><span class="k">Input</span><span class="v" id="rdLevel">—</span></div>
+    <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
+    <div class="metric"><span class="k">Δ vs A</span><span class="v" id="rdDelta">—</span></div>
+  </section>
+
+  <section class="card controls">
+    <h2>Source</h2>
+    <div class="row">
+      <label for="selSignal">Signal</label>
+      <select id="selSignal">
+        <option value="pink">Pink noise</option>
+        <option value="white">White noise</option>
+        <option value="sine">Sine</option>
+        <option value="sweep">Sine sweep</option>
+        <option value="silent">Silent</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="rngLevel">Level <span class="hint" id="lblLevel">35%</span></label>
+      <input type="range" id="rngLevel" min="0" max="100" value="35" />
+    </div>
+    <div class="row" id="rowSine" hidden>
+      <label for="numSine">Sine frequency</label>
+      <input type="number" id="numSine" min="20" max="20000" step="10" value="1000" />
+    </div>
+    <div class="row">
+      <label for="selRef">Reference</label>
+      <select id="selRef">
+        <option value="internal">Generated (single input)</option>
+        <option value="loopback">Input 2 (loopback)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="selInput">Input device</label>
+      <select id="selInput">
+        <option value="">Default input</option>
+      </select>
+    </div>
+
+    <h2>Analysis</h2>
+    <div class="row">
+      <label for="selFft">FFT size</label>
+      <select id="selFft">
+        <option value="8192">8192</option>
+        <option value="16384" selected>16384</option>
+        <option value="32768">32768</option>
+        <option value="65536">65536</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="rngAvg">Averaging</label>
+      <input id="rngAvg" type="range" min="0" max="100" value="45" />
+    </div>
+    <div class="row">
+      <label for="selSmooth">Smoothing</label>
+      <select id="selSmooth">
+        <option value="0">None</option>
+        <option value="24">1/24 oct</option>
+        <option value="12">1/12 oct</option>
+        <option value="6" selected>1/6 oct</option>
+        <option value="3">1/3 oct</option>
+      </select>
+    </div>
+    <div class="row checks">
+      <label class="chk"><input type="checkbox" id="chkNormalize" checked /> Normalize</label>
+      <label class="chk"><input type="checkbox" id="chkPhase" checked /> Phase</label>
+      <label class="chk"><input type="checkbox" id="chkCoh" checked /> Coherence</label>
+    </div>
+
+    <h2>Delay</h2>
+    <div class="row">
+      <label for="numDelay">Offset <span class="hint">ms</span></label>
+      <input type="number" id="numDelay" value="0" step="0.01" />
+    </div>
+    <div class="row btn-row">
+      <button id="btnFindDelay" class="btn" type="button">Find delay</button>
+      <label class="chk"><input type="checkbox" id="chkCompensate" checked /> Compensate</label>
+    </div>
+
+    <h2>Traces</h2>
+    <div class="row btns">
+      <button id="btnCapture" class="btn" type="button">Capture A</button>
+      <button id="btnClearA" class="btn" type="button">Clear A</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>EQ suggestions</h2>
+    <ul class="eq-list" id="eqList">
+      <li class="muted">Start the measurement to get suggestions.</li>
+    </ul>
+  </section>
+
+  <section class="card help">
+    <details>
+      <summary>How this measures</summary>
+      <p>
+        Two signals are compared sample by sample: a reference and a measurement. In
+        <strong>Generated</strong> mode the reference is the exact noise or sweep this app plays, so a
+        single microphone is enough. In <strong>Loopback</strong> mode the reference is whatever arrives on
+        input 2, which is the true dual-channel method and needs a two-input interface.
+      </p>
+      <p>
+        The averaged cross spectrum gives the transfer function — magnitude, phase and coherence — and its
+        inverse transform is the impulse response, whose peak is the delay. Delay compensation removes
+        that delay from the phase so two systems can be compared for alignment.
+      </p>
+      <p class="muted">
+        Level is dBFS, not dB SPL: absolute SPL needs a calibrated microphone and an offset. Measurements
+        are relative, which is what alignment work needs.
+      </p>
+    </details>
+  </section>
+</main>
+
+<footer class="foot">Align · runs locally in the browser · no audio leaves the device</footer>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
