@@ -12,6 +12,7 @@ let refWin = new Float32Array(0);
 let rafId = 0;
 let lastAnalysis = 0;
 let eqTick = 0;
+let starting = false;
 
 const state = {
   running: false,
@@ -31,7 +32,7 @@ const state = {
   snapshot: null,
   results: null,
   cursorFreq: null,
-  deviceId: '',
+  inputSource: 'auto',
 };
 
 const tfChart = new TransferChart($('tfChart'));
@@ -59,6 +60,38 @@ function hideAudioHelp() {
 
 function averagingRate() {
   return 0.02 + 0.45 * (state.avgSpeed / 100);
+}
+
+/** What to ask the engine for, from the Input source choice. */
+function sourceOptions() {
+  const value = state.inputSource || 'auto';
+  if (value.indexOf('device:') === 0) {
+    return { mode: 'auto', deviceId: value.slice('device:'.length) };
+  }
+  return { mode: value, deviceId: '' };
+}
+
+function sourceName() {
+  if (state.inputSource === 'phone') return 'the iPhone microphone';
+  if (state.inputSource === 'interface') return 'a USB interface';
+  return '';
+}
+
+/** Say which input the engine actually got, not which one was asked for. */
+function reportInput() {
+  if (!engine.modeSatisfied) {
+    setStatus('could not use ' + sourceName() + ' — using "' + engine.deviceLabel + '"', 'err');
+    return;
+  }
+  if (engine.exactDeviceRejected) {
+    setStatus('iOS used "' + engine.deviceLabel + '" instead of the chosen input', 'err');
+    return;
+  }
+  if (engine.deviceChannels < 2) {
+    setStatus('phone microphone · generated reference', 'ok');
+    return;
+  }
+  setStatus(engine.deviceLabel + ' · ' + engine.deviceChannels + ' inputs', 'ok');
 }
 
 function buildAnalyser() {
@@ -221,21 +254,28 @@ function updateEq(res) {
 }
 
 async function startAll() {
+  if (starting) return;
+  starting = true;
+
   const button = $('btnPower');
   button.disabled = true;
   setStatus('starting…');
 
   let channels = 1;
   try {
-    channels = await engine.start(state.deviceId);
+    channels = await engine.start(
+      Object.assign(sourceOptions(), { onProgress: (text) => setStatus(text) }),
+    );
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     setStatus(message, 'err');
     showAudioHelp('Audio could not start: ' + message);
+    engine.stop();
     state.running = false;
     button.textContent = 'Start';
     button.classList.remove('on');
     button.disabled = false;
+    starting = false;
     updateInterfaceInfo();
     return;
   }
@@ -245,18 +285,19 @@ async function startAll() {
   engine.setSineHz(state.sineHz);
   engine.setLevel(state.level);
 
-  // The iPhone microphone is a single input: it can only work with the
-  // generated reference, and only channel 1 exists.
-  if (channels < 2) {
-    if (state.refMode === 'loopback') {
-      state.refMode = 'internal';
-      $('selRef').value = 'internal';
-    }
-    if (state.micChannel !== 0) {
-      state.micChannel = 0;
-      $('selMicCh').value = '0';
-    }
+  // A single-input source (the iPhone microphone) can only work with the
+  // generated reference, and it only offers input 1.
+  const mono = channels < 2;
+  if (mono && state.refMode === 'loopback') {
+    state.refMode = 'internal';
+    $('selRef').value = 'internal';
   }
+  if (mono && state.micChannel !== 0) state.micChannel = 0;
+
+  $('selMicCh').value = String(state.micChannel);
+  $('selMicCh').options[1].disabled = mono;
+  $('selRef').options[1].disabled = mono;
+  $('selRefCh').disabled = mono;
 
   state.running = true;
   state.delayEstimate = 0;
@@ -269,15 +310,11 @@ async function startAll() {
   button.disabled = false;
 
   hideAudioHelp();
-  setStatus('running', 'ok');
-  if (engine.exactDeviceRejected) {
-    setStatus('iOS used "' + engine.deviceLabel + '" instead of the chosen device', 'err');
-  } else if (engine.deviceChannels < 2) {
-    setStatus('phone microphone · generated reference', 'ok');
-  }
+  reportInput();
   updateInterfaceInfo();
   listDevices();
   lastAnalysis = 0;
+  starting = false;
 
   if (!rafId) rafId = requestAnimationFrame(loop);
 }
@@ -307,29 +344,41 @@ function stopAll() {
 
 
 async function listDevices() {
-  const select = $('selInput');
+  const select = $('selSource');
+  if (!select) return;
+
+  let inputs = [];
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const inputs = devices.filter((device) => device.kind === 'audioinput');
-    const current = state.deviceId;
-
-    select.textContent = '';
-    const fallback = document.createElement('option');
-    fallback.value = '';
-    fallback.textContent = 'Default input';
-    select.appendChild(fallback);
-
-    inputs.forEach((device, index) => {
-      const option = document.createElement('option');
-      option.value = device.deviceId;
-      option.textContent = device.label || 'Input ' + (index + 1);
-      select.appendChild(option);
-    });
-
-    select.value = current;
+    inputs = devices.filter((device) => device.kind === 'audioinput' && device.deviceId);
   } catch (err) {
-    /* enumeration is best effort */
+    inputs = [];
   }
+
+  const make = (value, text) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = text;
+    return option;
+  };
+
+  select.textContent = '';
+  select.appendChild(make('auto', 'Automatic (system route)'));
+  select.appendChild(make('phone', 'iPhone microphone'));
+  select.appendChild(make('interface', 'USB audio interface'));
+
+  if (inputs.length > 0) {
+    const group = document.createElement('optgroup');
+    group.label = 'Detected inputs';
+    inputs.forEach((device, index) => {
+      group.appendChild(make('device:' + device.deviceId, device.label || 'Input ' + (index + 1)));
+    });
+    select.appendChild(group);
+  }
+
+  const values = Array.prototype.map.call(select.options, (option) => option.value);
+  if (values.indexOf(state.inputSource) < 0) state.inputSource = 'auto';
+  select.value = state.inputSource;
 }
 
 function updateCursorReadout() {
@@ -493,9 +542,12 @@ $('btnClearA').addEventListener('click', () => {
   draw();
 });
 
-$('selInput').addEventListener('change', (event) => {
-  state.deviceId = event.target.value;
-  if (state.running) setStatus('press Restart to use this input', '');
+$('selSource').addEventListener('change', (event) => {
+  state.inputSource = event.target.value;
+  if (state.running) {
+    setStatus('switching input…');
+    startAll();
+  }
 });
 
 $('selMicCh').addEventListener('change', (event) => {

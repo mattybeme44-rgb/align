@@ -36,11 +36,14 @@ No interface is needed to try the app. The phone microphone is a single input, a
 *Generated* mode the app plays the reference itself, so one mic is enough.
 
 1. Open the page in Safari (not an in-app browser) and press **Start**, allowing microphone access.
-2. Leave **Reference** on *Generated (single input)* and **Measurement input** on *Input 1*. The
-   status line confirms "phone microphone · generated reference".
-3. The phone's speaker and microphone are the same device, so keep the level low and put the phone on
+2. Set **Input** to *iPhone microphone*. *Automatic* takes whatever iOS routes to, which is also
+   fine; the status line names the device the app actually got.
+3. Leave **Reference** on *Generated (single input)* and **Measurement input** on *Input 1*. The
+   app forces both when the input turns out to be mono, and the status line confirms
+   "phone microphone · generated reference".
+4. The phone's speaker and microphone are the same device, so keep the level low and put the phone on
    a stand away from the speaker, or use headphones, to avoid howl (acoustic feedback).
-4. Read the trace as relative: the delay includes the phone's input/output latency, so compare the
+5. Read the trace as relative: the delay includes the phone's input/output latency, so compare the
    Δ between captures rather than trusting the absolute value.
 
 If the input meters move but you hear nothing, press the iPhone's volume buttons — iOS keeps a
@@ -59,14 +62,17 @@ No driver or native app is needed, but iOS only re-picks the route when the audi
    multi-input interface with phantom power may need a powered USB-C hub.
 2. Open this page in Safari (it must be HTTPS — the preview link is), press **Start**, and allow
    microphone access.
-3. The **Input** panel now shows the device name, its channel count and the running sample rate, plus
+3. Set **Input** to *USB audio interface* (or pick it by name under *Detected inputs*). iOS keeps
+   the previous route until the stream is reopened, so press **Restart** if you chose it before
+   plugging the interface in.
+4. The **Input** panel now shows the device name, its channel count and the running sample rate, plus
    live meters for input 1 and input 2. If both meters sit at zero, the phone mic is still in use:
    tap **Restart**, which closes and reopens the stream so iOS follows the new route.
-4. Watch which meter moves and set **Measurement input** to that channel.
-5. For the true dual-channel method, feed the interface's second input with the reference signal
+5. Watch which meter moves and set **Measurement input** to that channel.
+6. For the true dual-channel method, feed the interface's second input with the reference signal
    (loopback, or the processor output), set **Reference** to *Input 2 (loopback)* and pick the input
    the reference arrives on.
-6. Set the interface to 48 kHz, turn off any onboard EQ, dynamics or reverb, and enable phantom power
+7. Set the interface to 48 kHz, turn off any onboard EQ, dynamics or reverb, and enable phantom power
    for a condenser measurement mic.
 
 Practical notes for iOS:
@@ -100,6 +106,8 @@ the crossover period), and use the phase trace to confirm they track through the
 
 ## Controls
 
+- **Input** — *iPhone microphone*, *USB audio interface*, or a specific device under *Detected
+  inputs*. Changing it while running reopens the stream, which is when iOS picks the new route.
 - **Signal** — pink noise (the usual choice), white noise, a sine, or a 20 Hz–20 kHz log sweep.
 - **Level** — output level of the stimulus.
 - **FFT size** — 8192 to 65536. Bigger windows give finer frequency resolution (1.5 Hz at 32768 /
@@ -137,7 +145,7 @@ than by boosting.
 
 - `js/fft.js` — radix-2 FFT, Hann window
 - `js/signals.js` — deterministic looping noise, sine and sweep generation
-- `js/audio-engine.js` — AudioWorklet player and capture, ring buffers
+- `js/audio-engine.js` — capture (ScriptProcessor) and looping stimulus, ring buffers
 - `js/analyser.js` — averaging, transfer function, coherence, impulse response, EQ suggestions
 - `js/charts.js` — canvas plots
 - `js/app.js` — UI wiring

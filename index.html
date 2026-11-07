@@ -40,6 +40,19 @@
       </div>
     </div>
     <div class="row">
+      <label for="selSource">Input <span class="hint">source</span></label>
+      <select id="selSource">
+        <option value="auto">Automatic (system route)</option>
+        <option value="phone">iPhone microphone</option>
+        <option value="interface">USB audio interface</option>
+      </select>
+    </div>
+    <p class="source-hint">
+      The iPhone microphone needs no interface: pick it and the app uses the generated reference on
+      input 1. Plug in a USB-C interface to record from it instead. Changing this while running
+      reopens the stream, which is when iOS switches route.
+    </p>
+    <div class="row">
       <label for="selMicCh">Measurement input</label>
       <select id="selMicCh">
         <option value="0">Input 1</option>
@@ -56,9 +69,9 @@
     <div id="audioHelp" class="help-banner" hidden>
       <p id="audioHelpText">Audio could not start in this browser.</p>
       <p class="muted">
-        Browsers inside other apps usually block microphone access. Open this page in
+        Browsers inside other apps usually cannot open the microphone. Open this page in
         <strong>Safari</strong> — tap the share icon and choose <strong>Open in Safari</strong> — then press
-        Start again.
+        Start again. The message above names the step that failed.
       </p>
       <div class="row btns">
         <button id="btnCopyLink" class="btn" type="button">Copy link</button>
@@ -121,12 +134,6 @@
       <select id="selRef">
         <option value="internal">Generated (single input)</option>
         <option value="loopback">Input 2 (loopback)</option>
-      </select>
-    </div>
-    <div class="row">
-      <label for="selInput">Input device</label>
-      <select id="selInput">
-        <option value="">Default input</option>
       </select>
     </div>
 
@@ -203,18 +210,19 @@
         are relative, which is what alignment work needs.
       </p>
       <p class="muted">
-        <strong>Phone microphone</strong> — no interface needed: leave Reference on Generated and
-        Measurement input on Input 1. The speaker and mic are one device, so keep the level low or use
-        headphones to avoid howl.
+        <strong>Phone microphone</strong> — no interface needed: set <strong>Input</strong> to
+        <em>iPhone microphone</em> and leave Reference on Generated and Measurement input on Input 1.
+        The speaker and mic are one device, so keep the level low or use headphones to avoid howl.
       </p>
       <p class="muted">
-        <strong>USB-C interface on iPhone</strong> — connect the interface, open this page in Safari and
-        press Start. iOS routes audio to the last connected interface, so the app records from it instead
-        of the phone microphone. Watch the two level meters above to see which input your mic is on, then
-        pick that one as the Measurement input. Feed the interface's second input with the reference
-        signal and select it as the Reference input for the dual-channel method. If the meters stay
-        still after plugging in, press Restart: iOS keeps the old audio route until the stream is
-        reopened. Set the interface to 48 kHz and enable phantom power for a condenser measurement mic.
+        <strong>USB-C interface on iPhone</strong> — connect the interface, set <strong>Input</strong> to
+        <em>USB audio interface</em> (or pick it under Detected inputs) and press Start in Safari. iOS
+        routes audio to the last connected interface, so the app records from it instead of the phone
+        microphone. Watch the two level meters above to see which input your mic is on, then pick that
+        one as the Measurement input. Feed the interface's second input with the reference signal and
+        select it as the Reference input for the dual-channel method. If the meters stay still after
+        plugging in, press Restart: iOS keeps the old audio route until the stream is reopened. Set the
+        interface to 48 kHz and enable phantom power for a condenser measurement mic.
       </p>
     </details>
   </section>
