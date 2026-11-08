@@ -1,6 +1,7 @@
 import { AudioEngine } from './audio-engine.js';
 import { Analyser, suggestEq } from './analyser.js';
 import { TransferChart, ImpulseChart } from './charts.js';
+import { FFT } from './fft.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -13,9 +14,11 @@ let rafId = 0;
 let lastAnalysis = 0;
 let eqTick = 0;
 let starting = false;
+let allowStartHere = false;
 
 const state = {
   running: false,
+  demo: false,
   signal: 'pink',
   level: 0.35,
   sineHz: 1000,
@@ -58,6 +61,293 @@ function hideAudioHelp() {
   if (banner) banner.hidden = true;
 }
 
+function showSafariBanner() {
+  const banner = $('safariBanner');
+  if (!banner) return;
+  const field = $('safariUrl');
+  if (field) field.value = window.location.href;
+  banner.hidden = false;
+}
+
+function hideSafariBanner() {
+  const banner = $('safariBanner');
+  if (banner) banner.hidden = true;
+}
+
+const INSTALL_HINT_KEY = 'align.install-hint-dismissed';
+
+function isIOS() {
+  const ua = navigator.userAgent || '';
+  return (
+    /\b(iPhone|iPad|iPod)\b/.test(ua) ||
+    (/\bMacintosh\b/.test(ua) && (navigator.maxTouchPoints || 0) > 1)
+  );
+}
+
+/** Launched from a Home Screen icon rather than opened as a browser tab. */
+function isStandalone() {
+  if (navigator.standalone === true) return true;
+  return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+}
+
+/**
+ * True for a browser another app hosts on iOS (a chat app's own browser, say).
+ * Those cannot open the microphone: iOS dismisses the whole web view instead,
+ * which looks like the app quitting. Safari can, so the page has to move there.
+ * An installed Home Screen app is not one of these.
+ */
+function isLikelyInAppBrowser() {
+  if (!isIOS() || isStandalone()) return false;
+  const ua = navigator.userAgent || '';
+  if (/Safari\//.test(ua) || /CriOS|FxiOS|EdgiOS|OPiOS/.test(ua)) return false;
+  return true;
+}
+
+function showPreviewNote() {
+  const note = $('previewNote');
+  const host = $('previewHost');
+  if (host) host.textContent = window.location.hostname;
+  if (note) note.hidden = false;
+}
+
+/** A --preview address only opens inside FreeMilk; Safari sees it as private. */
+function isPrivatePreview() {
+  return /--preview\./.test(window.location.hostname);
+}
+
+async function copyLink() {
+  const link = window.location.href;
+  const privatePreview = isPrivatePreview();
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard');
+    await navigator.clipboard.writeText(link);
+    if (privatePreview) {
+      setStatus('copied — but a preview link is private: publish the app first', 'err');
+      return;
+    }
+    setStatus('link copied — paste it into Safari', 'ok');
+  } catch (err) {
+    const field = $('safariUrl');
+    if (field) {
+      field.value = link;
+      field.select();
+      field.setSelectionRange(0, link.length);
+    }
+    setStatus(
+      privatePreview
+        ? 'preview link is private — publish the app, then copy that address'
+        : 'link ready below — copy it into Safari',
+      'err',
+    );
+  }
+}
+
+/** Offer Add to Home Screen once, in Safari, until it is dismissed. */
+function showInstallHint() {
+  const card = $('installCard');
+  if (!card) return;
+
+  let dismissed = false;
+  try {
+    dismissed = window.localStorage.getItem(INSTALL_HINT_KEY) === '1';
+  } catch (err) {
+    /* private browsing: show it, it just will not stay dismissed */
+    dismissed = false;
+  }
+  if (!dismissed) card.hidden = false;
+}
+
+/*
+ * Demo measurement: the same analysis path the microphone feeds, driven by a
+ * synthetic speaker — a little room gain low down, a dip near 260 Hz, presence
+ * around 2.4 kHz, a soft top-octave roll-off and 3.7 ms of propagation delay.
+ * Nothing is captured and no permission is asked for, so this works in any
+ * browser, including ones that cannot open the microphone.
+ */
+const DEMO_RATE = 48000;
+const DEMO_DELAY_MS = 3.7;
+
+let demoRaf = 0;
+let demoLast = 0;
+let demoSeed = 12345;
+let demoFft = null;
+let demoHre = null;
+let demoHim = null;
+let demoRef = null;
+let demoMic = null;
+let demoXr = null;
+let demoXi = null;
+let demoMr = null;
+let demoMi = null;
+let demoLevel = 0.05;
+
+function nextNoise() {
+  demoSeed = (demoSeed * 1664525 + 1013904223) >>> 0;
+  return demoSeed / 2147483648 - 1;
+}
+
+function demoTransfer(n) {
+  const re = new Float64Array(n);
+  const im = new Float64Array(n);
+  const df = DEMO_RATE / n;
+  const delay = Math.round((DEMO_DELAY_MS / 1000) * DEMO_RATE);
+
+  for (let k = 0; k <= n / 2; k++) {
+    const f = Math.max(k * df, 1);
+    let db = 0;
+    db += 3 * Math.exp(-Math.pow(Math.log2(f / 55) / 1.2, 2));
+    db -= 4 * Math.exp(-Math.pow(Math.log2(f / 260) / 0.5, 2));
+    db += 2.5 * Math.exp(-Math.pow(Math.log2(f / 2400) / 0.7, 2));
+    if (f > 14000) db -= ((f - 14000) / 6000) * 12;
+
+    const mag = Math.pow(10, db / 20);
+    const phi = (-2 * Math.PI * k * delay) / n;
+    re[k] = mag * Math.cos(phi);
+    im[k] = mag * Math.sin(phi);
+
+    if (k > 0 && k < n / 2) {
+      re[n - k] = re[k];
+      im[n - k] = -im[k];
+    }
+  }
+  return { re, im };
+}
+
+function demoFrame() {
+  const n = state.fftSize;
+
+  if (!demoFft || demoFft.size !== n) {
+    demoFft = new FFT(n);
+    const transfer = demoTransfer(n);
+    demoHre = transfer.re;
+    demoHim = transfer.im;
+    demoRef = new Float32Array(n);
+    demoMic = new Float32Array(n);
+    demoXr = new Float64Array(n);
+    demoXi = new Float64Array(n);
+    demoMr = new Float64Array(n);
+    demoMi = new Float64Array(n);
+  }
+
+  if (!analyser || analyser.fftSize !== n || analyser.sampleRate !== DEMO_RATE) {
+    analyser = new Analyser(n, DEMO_RATE);
+    analyser.updateRate = averagingRate();
+    state.results = null;
+  }
+
+  const ref = demoRef;
+  const mic = demoMic;
+  const xr = demoXr;
+  const xi = demoXi;
+  const mr = demoMr;
+  const mi = demoMi;
+
+  for (let i = 0; i < n; i++) {
+    xr[i] = nextNoise();
+    xi[i] = 0;
+    ref[i] = xr[i];
+  }
+  demoFft.forward(xr, xi);
+
+  for (let k = 0; k < n; k++) {
+    mr[k] = xr[k] * demoHre[k] - xi[k] * demoHim[k];
+    mi[k] = xr[k] * demoHim[k] + xi[k] * demoHre[k];
+  }
+  demoFft.inverse(mr, mi);
+
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = mr[i] * 0.25 + nextNoise() * 0.006;
+    mic[i] = v;
+    sum += v * v;
+  }
+  demoLevel = Math.sqrt(sum / n);
+
+  analyser.updateRate = averagingRate();
+  analyser.accumulate(mic, ref);
+
+  const res = analyser.results({
+    compensate: state.compensate,
+    smoothing: state.smoothing,
+    normalize: state.normalize,
+  });
+
+  state.results = res;
+  updateReadouts(res);
+  updateInterfaceInfo();
+
+  eqTick += 1;
+  if (eqTick % 3 === 0) updateEq(res);
+
+  draw();
+}
+
+function demoLoop(now) {
+  if (!state.demo) {
+    demoRaf = 0;
+    return;
+  }
+  demoRaf = requestAnimationFrame(demoLoop);
+  // Bigger windows cost more to transform, so average them a little slower.
+  const interval = state.fftSize >= 32768 ? 320 : 160;
+  if (now - demoLast < interval) return;
+  demoLast = now;
+  demoFrame();
+}
+
+function startDemo() {
+  if (starting) return;
+  if (state.running) stopAll();
+
+  state.demo = true;
+  state.running = true;
+  state.delayEstimate = 0;
+  state.totalDelayMs = 0;
+  state.snapshot = null;
+  $('numDelay').value = '0.00';
+  $('rdDelta').textContent = '—';
+
+  analyser = new Analyser(state.fftSize, DEMO_RATE);
+  analyser.updateRate = averagingRate();
+  demoFft = null;
+  demoLast = 0;
+
+  hideSafariBanner();
+  hideAudioHelp();
+  setStatus('demo measurement — no microphone involved', 'ok');
+
+  const button = $('btnDemo');
+  if (button) button.textContent = 'Stop demo';
+
+  updateInterfaceInfo();
+  if (!demoRaf) demoRaf = requestAnimationFrame(demoLoop);
+}
+
+function stopDemo() {
+  if (!state.demo) return;
+
+  state.demo = false;
+  state.running = false;
+  if (demoRaf) {
+    cancelAnimationFrame(demoRaf);
+    demoRaf = 0;
+  }
+
+  const button = $('btnDemo');
+  if (button) button.textContent = 'Demo measurement';
+
+  state.results = null;
+  state.totalDelayMs = 0;
+  $('rdDelay').textContent = '—';
+  $('rdCoh').textContent = '—';
+  $('rdLevel').textContent = '—';
+  $('rdRate').textContent = '—';
+  $('irReadout').textContent = '—';
+  setStatus('idle');
+  updateInterfaceInfo();
+  draw();
+}
+
 function averagingRate() {
   return 0.02 + 0.45 * (state.avgSpeed / 100);
 }
@@ -95,7 +385,8 @@ function reportInput() {
 }
 
 function buildAnalyser() {
-  analyser = new Analyser(state.fftSize, engine.sampleRate);
+  const rate = state.demo ? DEMO_RATE : engine.sampleRate;
+  analyser = new Analyser(state.fftSize, rate);
   analyser.updateRate = averagingRate();
   micWin = new Float32Array(state.fftSize);
   refWin = new Float32Array(state.fftSize);
@@ -178,13 +469,13 @@ function updateReadouts(res) {
   coherenceEl.textContent = (coherence * 100).toFixed(0) + '%';
   coherenceEl.className = 'v ' + (coherence > 0.8 ? 'good' : coherence > 0.5 ? '' : 'bad');
 
-  if (state.refMode === 'loopback' && state.micChannel === state.refChannel) {
+  if (!state.demo && state.refMode === 'loopback' && state.micChannel === state.refChannel) {
     setStatus('measurement and reference use the same input', 'err');
-  } else if (state.refMode === 'loopback' && res.frames > 20 && coherence < 0.2) {
+  } else if (!state.demo && state.refMode === 'loopback' && res.frames > 20 && coherence < 0.2) {
     setStatus('reference input is silent — check the loopback routing', 'err');
   }
 
-  const level = engine.channelLevel[state.micChannel] || 0;
+  const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
   $('rdLevel').textContent = (level > 0 ? (20 * Math.log10(level)).toFixed(1) : '-inf') + ' dBFS';
 
   $('rdRate').textContent = (res.sampleRate / 1000).toFixed(1) + 'k · ' + res.df.toFixed(1) + ' Hz';
@@ -206,6 +497,14 @@ function updateInterfaceInfo() {
   const channelsEl = $('rdChannels');
   const meter1 = $('meter1');
   const meter2 = $('meter2');
+
+  if (state.demo) {
+    deviceEl.textContent = 'demo measurement (no microphone)';
+    channelsEl.textContent = '1 ch · ' + Math.round(DEMO_RATE / 1000) + ' kHz';
+    meter1.style.width = meterPercent(demoLevel) + '%';
+    meter2.style.width = '0%';
+    return;
+  }
 
   if (!engine.running) {
     deviceEl.textContent = 'no input yet';
@@ -255,6 +554,19 @@ function updateEq(res) {
 
 async function startAll() {
   if (starting) return;
+
+  if (state.demo) stopDemo();
+
+  // Asking an in-app browser for the microphone is what makes iOS close it,
+  // so point at Safari first instead of losing the page.
+  if (inAppBrowser && !allowStartHere) {
+    showSafariBanner();
+    setStatus('copy this link into Safari first', 'err');
+    const banner = $('safariBanner');
+    if (banner && banner.scrollIntoView) banner.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return;
+  }
+
   starting = true;
 
   const button = $('btnPower');
@@ -328,6 +640,7 @@ function loop(now) {
 }
 
 function stopAll() {
+  if (state.demo) stopDemo();
   state.running = false;
   engine.stop();
   state.results = null;
@@ -449,8 +762,11 @@ function findDelay() {
 }
 
 $('btnPower').addEventListener('click', () => {
-  if (state.running) stopAll();
-  else startAll();
+  if (state.running && !state.demo) {
+    stopAll();
+    return;
+  }
+  startAll();
 });
 
 $('selSignal').addEventListener('change', (event) => {
@@ -516,7 +832,8 @@ $('btnFindDelay').addEventListener('click', findDelay);
 $('numDelay').addEventListener('change', () => {
   const ms = parseFloat($('numDelay').value);
   if (!Number.isFinite(ms)) return;
-  state.delayEstimate = Math.round((ms / 1000) * engine.sampleRate);
+  const rate = state.demo ? DEMO_RATE : engine.sampleRate;
+  state.delayEstimate = Math.round((ms / 1000) * rate);
   if (analyser) analyser.reset();
 });
 
@@ -576,13 +893,37 @@ $('btnHideHelp').addEventListener('click', () => {
   setStatus('idle');
 });
 
-$('btnCopyLink').addEventListener('click', async () => {
-  const link = window.location.href;
+$('btnCopyLink').addEventListener('click', () => {
+  copyLink();
+});
+
+$('btnCopySafari').addEventListener('click', () => {
+  copyLink();
+});
+
+$('btnTryHere').addEventListener('click', () => {
+  allowStartHere = true;
+  hideSafariBanner();
+  setStatus('trying audio in this browser…');
+  startAll();
+});
+
+$('btnDemo').addEventListener('click', () => {
+  if (state.demo) stopDemo();
+  else startDemo();
+});
+
+$('btnDemoHere').addEventListener('click', () => {
+  startDemo();
+});
+
+$('btnHideInstall').addEventListener('click', () => {
+  const card = $('installCard');
+  if (card) card.hidden = true;
   try {
-    await navigator.clipboard.writeText(link);
-    setStatus('link copied — paste it into Safari', 'ok');
+    window.localStorage.setItem(INSTALL_HINT_KEY, '1');
   } catch (err) {
-    window.prompt('Copy this link, then open it in Safari', link);
+    /* private browsing: the card comes back next launch */
   }
 });
 
@@ -615,8 +956,39 @@ window.addEventListener('resize', () => {
 
 draw();
 
-if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.AudioContext) {
+const inAppBrowser = isLikelyInAppBrowser();
+const standalone = isStandalone();
+const canCapture = !!(
+  navigator.mediaDevices &&
+  navigator.mediaDevices.getUserMedia &&
+  window.AudioContext
+);
+
+$('safariUrl').value = window.location.href;
+
+if (inAppBrowser) {
+  // Say it before Start is pressed: pressing it here closes the page.
+  showSafariBanner();
+  if (isPrivatePreview()) {
+    showPreviewNote();
+    setStatus('preview link is private — publish the app first', 'err');
+  } else {
+    setStatus('open this page in Safari to measure', 'err');
+  }
+} else if (!canCapture) {
   setStatus('this browser cannot capture audio', 'err');
   showAudioHelp('This browser has no microphone access. Open the page in Safari to measure.');
   $('btnPower').disabled = true;
+} else if (isIOS() && !standalone) {
+  showInstallHint();
+}
+
+// Keep a copy of the app for launching with no signal. Optional throughout:
+// a browser without service workers, or a refusal, changes nothing here.
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  const registerWorker = () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  };
+  if (document.readyState === 'complete') registerWorker();
+  else window.addEventListener('load', registerWorker);
 }

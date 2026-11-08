@@ -6,6 +6,46 @@ device — all audio is captured and analysed locally.
 
 Open `index.html` (or tap Run) and press **Start**.
 
+To see it working without any hardware or microphone permission, press **Demo measurement** in the
+Input card (or **Show a demo** on the banner). The whole analysis path runs on a synthetic speaker —
+3.7 ms of propagation delay, room gain low down, a dip near 260 Hz, presence at 2.4 kHz and a soft
+top-octave roll-off, with a little noise so coherence is not a flat 100%. Nothing is captured, so it
+also works in browsers that cannot open the microphone at all, which makes it the way to check the
+app renders and the maths runs before a real measurement.
+
+## Launching it from the phone's Home Screen
+
+Align installs as a home-screen web app: no App Store, no signing, and it opens full screen from its
+own icon.
+
+1. Open **https://mattybeme44-rgb.github.io/align/** in Safari — not in an app's browser. That is the
+   app's public address, published straight from this repository by GitHub Pages.
+2. Press **Start** once there and allow the microphone, so iOS has the permission on record.
+3. Tap the **Share** icon, choose **Add to Home Screen**, and confirm.
+4. Launch it from the Align icon from then on. There is no address bar, and it keeps its own storage
+   and its own place in the app switcher.
+
+The page shows these steps once itself, when it is opened in Safari on an iPhone; **Dismiss** hides
+the card for good.
+
+What makes it an app rather than a tab:
+
+- `manifest.webmanifest` — name, icon, colours and `display: standalone`, so the launch is full
+  screen.
+- `apple-mobile-web-app-*` meta tags in `index.html` — iOS's own version of the same, plus the
+  status bar style and the name under the icon.
+- `sw.js` — an offline shell, registered from `js/app.js`. It is **network first**: a reload always
+  takes the newest published files, and the cached copy is used only when the network fails, so the
+  app still starts in a room with no signal and can never be stuck on an old version.
+
+iOS draws a home-screen icon from a 180×180 PNG (`apple-touch-icon.png` at the repository root). This
+project ships an SVG icon (`icons/icon.svg`) only, so until a PNG is added iOS uses a screenshot of
+the page. Drop a PNG of that name at the root and it is picked up automatically.
+
+In a home-screen app the microphone may still be refused on some iOS versions — a WebKit limitation
+rather than an app bug. If **Start** fails there, open the same link in Safari; the app says so on
+screen when that happens.
+
 ## What it measures
 
 Two signals are compared sample by sample over overlapping windows:
@@ -60,7 +100,7 @@ No driver or native app is needed, but iOS only re-picks the route when the audi
 
 1. Connect the interface to the iPhone's USB-C port. Most bus-powered interfaces run fine; a
    multi-input interface with phantom power may need a powered USB-C hub.
-2. Open this page in Safari (it must be HTTPS — the preview link is), press **Start**, and allow
+2. Open this page in Safari (it must be HTTPS — the published link is), press **Start**, and allow
    microphone access.
 3. Set **Input** to *USB audio interface* (or pick it by name under *Detected inputs*). iOS keeps
    the previous route until the stream is reopened, so press **Restart** if you chose it before
@@ -84,12 +124,28 @@ Practical notes for iOS:
   in the status line, which is why the Input panel reports the device it really got.
 - Audio stops when you leave Safari or lock the screen, and resumes on Start.
 
+### If Safari says the page is private
+
+That is the **preview** address (`something--preview.freemilk.app`), which FreeMilk opens for you and
+only FreeMilk can open — a normal browser has no session for it. The app says so on its banner when
+it notices it is running on a preview host.
+
+Use the published address instead: **https://mattybeme44-rgb.github.io/align/**. It is HTTPS, so the
+microphone works there, and it is the address to add to the Home Screen.
+
 ### If Start does nothing or the page disappears
 
-Browsers built into other apps (including a chat app's own browser) usually cannot open the
-microphone, and iOS can dismiss the web view as soon as something asks for audio. Open this address
-in **Safari** instead — tap the share icon, then **Open in Safari**. When audio fails the app now says
-so on screen and offers a Copy link button, instead of failing silently.
+Browsers built into other apps (a chat app's own browser included) usually cannot open the
+microphone, and iOS closes the whole web view the moment one asks for it — the screen jumps back to
+the Home Screen.
+
+The page knows when it is running inside such a browser, so it says so on load and gives **Copy
+link** at the top. Press that, open **Safari**, paste the address into the address bar, and press
+**Start** there, allowing the microphone. **Try here anyway** skips the warning if you want to test
+the browser you are in.
+
+When audio fails inside the page — for instance on a browser with no microphone API — the app also
+says which step failed instead of failing silently.
 
 ## Typical alignment workflow
 
@@ -137,7 +193,7 @@ than by boosting.
 - No RTA, spectrogram, or multi-time-window view yet.
 - Browser audio is resampled to the context rate; very fine low-frequency work benefits from a
   proper two-channel interface in loopback mode.
-- On iOS the microphone needs HTTPS (the preview link is).
+- On iOS the microphone needs HTTPS (the published link is).
 - Reflections dominate small rooms. Gating the impulse response is the next thing this would need
   for meaningful in-room magnitude curves.
 
@@ -149,3 +205,8 @@ than by boosting.
 - `js/analyser.js` — averaging, transfer function, coherence, impulse response, EQ suggestions
 - `js/charts.js` — canvas plots
 - `js/app.js` — UI wiring
+- `manifest.webmanifest` — home-screen name, icon and full-screen launch
+- `sw.js` — offline shell (network first)
+- `icons/icon.svg` — app icon
+- `.github/workflows/pages.yml` — publishes the repository root to GitHub Pages on every push to
+  `main`

@@ -4,6 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0b0f14" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Align" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
 <title>Align — loudspeaker measurement</title>
 <link rel="stylesheet" href="css/styles.css" />
 </head>
@@ -20,6 +26,43 @@
 </header>
 
 <main>
+  <section id="safariBanner" class="card help-banner" hidden>
+    <p>
+      <strong>Open this page in Safari to measure.</strong>
+      This browser is hosted inside another app, and iOS closes it as soon as a page asks for the
+      microphone — which is why the screen jumps back to your Home Screen when you press Start.
+    </p>
+    <p class="muted" id="previewNote" hidden>
+      <strong>This is the private preview address</strong> (<span id="previewHost"></span>), which only
+      opens inside FreeMilk. Safari will answer "private" for it. Publish the app first — Project
+      Details, then <strong>Go Live</strong> — and open the public address it gives you,
+      <strong>name.freemilk.app</strong>, in Safari instead. Everything here works the same there.
+    </p>
+    <p class="muted">
+      Once you are on the address Safari can open, tap <strong>Copy link</strong>, open
+      <strong>Safari</strong>, tap the address bar, paste, then press <strong>Start</strong> there and
+      allow the microphone. If the button does nothing, select the address below and copy it by hand.
+    </p>
+    <input id="safariUrl" class="url-field" type="text" readonly />
+    <div class="row btns">
+      <button id="btnCopySafari" class="btn" type="button">Copy link</button>
+      <button id="btnDemoHere" class="btn" type="button">Show a demo</button>
+      <button id="btnTryHere" class="btn" type="button">Try here anyway</button>
+    </div>
+  </section>
+
+  <section id="installCard" class="card install-card" hidden>
+    <div class="card-head">
+      <h2>Open from the Home Screen</h2>
+      <button id="btnHideInstall" class="btn" type="button">Dismiss</button>
+    </div>
+    <p>
+      Tap the <strong>Share</strong> button in Safari, then <strong>Add to Home Screen</strong>.
+      Align then opens from its own icon, full screen, with no address bar — and keeps a copy of
+      itself so it starts in a room with no signal.
+    </p>
+  </section>
+
   <section class="card interface">
     <div class="card-head">
       <h2>Input</h2>
@@ -52,6 +95,9 @@
       input 1. Plug in a USB-C interface to record from it instead. Changing this while running
       reopens the stream, which is when iOS switches route.
     </p>
+    <div class="row btns">
+      <button id="btnDemo" class="btn" type="button">Demo measurement</button>
+    </div>
     <div class="row">
       <label for="selMicCh">Measurement input</label>
       <select id="selMicCh">

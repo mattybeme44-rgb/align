@@ -476,3 +476,33 @@ input[type='checkbox'] {
   border-bottom: 0;
   padding: 2px 0 0;
 }
+
+.url-field {
+  width: 100%;
+  margin: 2px 0 10px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: #0e1319;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.install-card {
+  border-color: #3b4a5c;
+  background: #131a22;
+}
+
+.install-card p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.install-card p strong {
+  color: var(--text);
+}
