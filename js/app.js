@@ -64,8 +64,11 @@ function hideAudioHelp() {
 function showSafariBanner() {
   const banner = $('safariBanner');
   if (!banner) return;
+  const address = publicAddress();
   const field = $('safariUrl');
-  if (field) field.value = window.location.href;
+  if (field) field.value = address;
+  const link = $('openInSafari');
+  if (link) link.href = address;
   banner.hidden = false;
 }
 
@@ -115,16 +118,21 @@ function isPrivatePreview() {
   return /--preview\./.test(window.location.hostname);
 }
 
+/**
+ * Where people should actually measure from. Never hand out a private preview
+ * address: Safari answers "this preview is private" and the app looks broken.
+ */
+const PUBLIC_URL = 'https://mattybeme44-rgb.github.io/align/';
+
+function publicAddress() {
+  return isPrivatePreview() ? PUBLIC_URL : window.location.href;
+}
+
 async function copyLink() {
-  const link = window.location.href;
-  const privatePreview = isPrivatePreview();
+  const link = publicAddress();
   try {
     if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard');
     await navigator.clipboard.writeText(link);
-    if (privatePreview) {
-      setStatus('copied — but a preview link is private: publish the app first', 'err');
-      return;
-    }
     setStatus('link copied — paste it into Safari', 'ok');
   } catch (err) {
     const field = $('safariUrl');
@@ -133,12 +141,7 @@ async function copyLink() {
       field.select();
       field.setSelectionRange(0, link.length);
     }
-    setStatus(
-      privatePreview
-        ? 'preview link is private — publish the app, then copy that address'
-        : 'link ready below — copy it into Safari',
-      'err',
-    );
+    setStatus('link ready below — copy it into Safari', 'err');
   }
 }
 
@@ -964,7 +967,10 @@ const canCapture = !!(
   window.AudioContext
 );
 
-$('safariUrl').value = window.location.href;
+const address = publicAddress();
+$('safariUrl').value = address;
+const openInSafari = $('openInSafari');
+if (openInSafari) openInSafari.href = address;
 
 if (inAppBrowser) {
   // Say it before Start is pressed: pressing it here closes the page.

@@ -506,3 +506,19 @@ input[type='checkbox'] {
 .install-card p strong {
   color: var(--text);
 }
+
+
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  -webkit-appearance: none;
+}
+
+a.btn:visited {
+  color: inherit;
+}
+
+a.btn.btn-power:visited {
+  color: #17130a;
+}
