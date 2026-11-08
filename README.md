@@ -46,6 +46,18 @@ In a home-screen app the microphone may still be refused on some iOS versions �
 rather than an app bug. If **Start** fails there, open the same link in Safari; the app says so on
 screen when that happens.
 
+### Enabling Pages (one setting)
+
+The deploy job needs the repository's Pages site to exist, and a workflow token is not allowed to
+create it. If the address says "There isn't a GitHub Pages site here", open the repository's
+**Settings → Pages**, set **Build and deployment → Source** to **GitHub Actions**, and save. The next
+push deploys, or press **Re-run jobs** on the **Actions** tab.
+
+As a stop-gap that needs no Pages, the same files can be served from a CDN straight out of the
+public repository:
+<https://raw.githack.com/mattybeme44-rgb/align/main/index.html> (tap **Open the page** on its first
+screen). That address is somebody else's service, so treat it as temporary.
+
 ## What it measures
 
 Two signals are compared sample by sample over overlapping windows:
