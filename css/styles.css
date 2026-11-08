@@ -522,3 +522,45 @@ a.btn:visited {
 a.btn.btn-power:visited {
   color: #17130a;
 }
+
+
+/* In a browser that cannot open the microphone, the hand-off to Safari takes
+   the whole screen: a banner further down the page was too easy to miss. */
+#safariBanner.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow-y: auto;
+  padding: calc(26px + env(safe-area-inset-top)) 18px calc(26px + env(safe-area-inset-bottom));
+  background: var(--bg);
+}
+
+.sheet-title {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+#safariBanner .url-field {
+  width: 100%;
+  margin: 10px 0 4px;
+}
+
+#safariBanner .row.btns {
+  border-bottom: 0;
+  padding: 6px 0 0;
+}
+
+.sheet-steps {
+  margin: 6px 0 2px;
+}
+
+body.sheet-open {
+  overflow: hidden;
+}

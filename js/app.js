@@ -69,12 +69,18 @@ function showSafariBanner() {
   if (field) field.value = address;
   const link = $('openInSafari');
   if (link) link.href = address;
+  banner.classList.add('overlay');
   banner.hidden = false;
+  document.body.classList.add('sheet-open');
 }
 
 function hideSafariBanner() {
   const banner = $('safariBanner');
-  if (banner) banner.hidden = true;
+  if (banner) {
+    banner.hidden = true;
+    banner.classList.remove('overlay');
+  }
+  document.body.classList.remove('sheet-open');
 }
 
 const INSTALL_HINT_KEY = 'align.install-hint-dismissed';

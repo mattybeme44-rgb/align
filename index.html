@@ -27,25 +27,26 @@
 
 <main>
   <section id="safariBanner" class="card help-banner" hidden>
+    <h2 class="sheet-title">This browser can't use the microphone</h2>
     <p>
-      <strong>Open this page in Safari to measure.</strong>
-      This browser is hosted inside another app, and iOS closes it as soon as a page asks for the
-      microphone — which is why the screen jumps back to your Home Screen when you press Start.
+      It is hosted inside another app, and iOS closes it the moment a page asks for audio — which is why
+      the screen jumps back to the Home Screen. Safari can, so open the address there.
     </p>
     <p class="muted" id="previewNote" hidden>
       <strong>This is the private preview address</strong> (<span id="previewHost"></span>), which only
       opens inside FreeMilk. Use the public address instead:
       <strong>mattybeme44-rgb.github.io/align</strong>.
     </p>
-    <p class="muted">
-      Tap <strong>Open in Safari</strong>, or copy the address below into Safari's address bar, then press
-      <strong>Start</strong> there and allow the microphone.
-    </p>
     <input id="safariUrl" class="url-field" type="text" readonly />
     <div class="row btns">
       <a id="openInSafari" class="btn btn-power" href="#" target="_blank" rel="noopener">Open in Safari</a>
-      <button id="btnCopySafari" class="btn" type="button">Copy link</button>
-      <button id="btnDemoHere" class="btn" type="button">Show a demo</button>
+      <button id="btnCopySafari" class="btn" type="button">Copy address</button>
+    </div>
+    <p class="muted sheet-steps">
+      Open Safari, type the address above, then press <strong>Start</strong> and allow the microphone.
+    </p>
+    <div class="row btns">
+      <button id="btnDemoHere" class="btn" type="button">See the demo here</button>
       <button id="btnTryHere" class="btn" type="button">Try here anyway</button>
     </div>
   </section>
