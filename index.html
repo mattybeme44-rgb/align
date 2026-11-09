@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#0b0f14" />
+<meta name="theme-color" content="#0b0f0c" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -95,6 +95,11 @@
       input 1. Plug in a USB-C interface to record from it instead. Changing this while running
       reopens the stream, which is when iOS switches route.
     </p>
+    <p class="source-hint">
+      Output over Bluetooth adds 100–300 ms of latency and moves it about as it goes. The app locks the
+      coarse delay itself, but if the delay reading keeps wandering and coherence stays low, that is the
+      link, not the room — use a cable or a USB interface to measure.
+    </p>
     <div class="row btns">
       <button id="btnDemo" class="btn" type="button">Demo measurement</button>
     </div>
@@ -168,8 +173,8 @@
       </select>
     </div>
     <div class="row">
-      <label for="rngLevel">Level <span class="hint" id="lblLevel">35%</span></label>
-      <input type="range" id="rngLevel" min="0" max="100" value="35" />
+      <label for="rngLevel">Level <span class="hint" id="lblLevel">20%</span></label>
+      <input type="range" id="rngLevel" min="0" max="100" value="20" />
     </div>
     <div class="row" id="rowSine" hidden>
       <label for="numSine">Sine frequency</label>

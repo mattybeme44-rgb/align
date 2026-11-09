@@ -15,12 +15,13 @@ let lastAnalysis = 0;
 let eqTick = 0;
 let starting = false;
 let allowStartHere = false;
+let jitterWarned = false;
 
 const state = {
   running: false,
   demo: false,
   signal: 'pink',
-  level: 0.35,
+  level: 0.2,
   sineHz: 1000,
   refMode: 'internal',
   micChannel: 0,
@@ -31,6 +32,9 @@ const state = {
   normalize: true,
   compensate: true,
   delayEstimate: 0,
+  delayLockedAt: 0,
+  delayProbedAt: 0,
+  delayAuto: true,
   totalDelayMs: 0,
   snapshot: null,
   results: null,
@@ -311,10 +315,14 @@ function startDemo() {
   state.demo = true;
   state.running = true;
   state.delayEstimate = 0;
+  state.delayLockedAt = 0;
+  state.delayProbedAt = 0;
+  state.delayAuto = true;
   state.totalDelayMs = 0;
   state.snapshot = null;
   $('numDelay').value = '0.00';
   $('rdDelta').textContent = '—';
+  jitterWarned = false;
 
   analyser = new Analyser(state.fftSize, DEMO_RATE);
   analyser.updateRate = averagingRate();
@@ -347,6 +355,9 @@ function stopDemo() {
 
   state.results = null;
   state.totalDelayMs = 0;
+  state.delayLockedAt = 0;
+  state.delayProbedAt = 0;
+  jitterWarned = false;
   $('rdDelay').textContent = '—';
   $('rdCoh').textContent = '—';
   $('rdLevel').textContent = '—';
@@ -359,6 +370,19 @@ function stopDemo() {
 
 function averagingRate() {
   return 0.02 + 0.45 * (state.avgSpeed / 100);
+}
+
+/**
+ * How far from zero the fine delay search looks once the coarse offset is known.
+ *
+ * The short window then only has to follow the delay around the offset already
+ * locked in, so it never has to decide between two branches of the circular
+ * correlation — which is what made the reading jump while the phone microphone
+ * and the phone speaker were both in use. Until there is an offset to follow,
+ * the whole window is searched, exactly as before.
+ */
+function fineSearchRadius(fftSize) {
+  return Math.max(1, Math.round(fftSize / 8));
 }
 
 /** What to ask the engine for, from the Input source choice. */
@@ -437,6 +461,20 @@ function analyse() {
   engine.readChannel(micWin, start, state.micChannel);
 
   const refStart = start - state.delayEstimate;
+  if (refStart < 0) {
+    // The offset has outgrown the capture buffer — a path whose latency keeps
+    // drifting in one direction. Start the coarse search again rather than
+    // freezing on the last frame.
+    if (state.delayAuto && state.delayEstimate > 0) {
+      state.delayEstimate = 0;
+      state.delayLockedAt = 0;
+      state.delayProbedAt = 0;
+      analyser.reset();
+      $('numDelay').value = '0.00';
+    }
+    return;
+  }
+
   if (state.refMode === 'loopback') {
     engine.readChannel(refWin, refStart, state.refChannel);
   } else {
@@ -444,6 +482,10 @@ function analyse() {
   }
 
   analyser.updateRate = averagingRate();
+  // Once the coarse offset is locked in, the short window only follows it; a
+  // hand-typed offset is the operator's own number, so it keeps the full window.
+  const tracking = state.delayAuto && state.delayLockedAt > 0;
+  analyser.searchRadius = tracking ? fineSearchRadius(n) : 0;
   analyser.accumulate(micWin, refWin);
 
   const res = analyser.results({
@@ -453,6 +495,9 @@ function analyse() {
   });
 
   state.results = res;
+  // A lock re-aligns the reference, so this frame's numbers describe the old
+  // alignment: skip the readout until the next one.
+  if (maybeLockDelay(res)) return;
   updateReadouts(res);
   updateInterfaceInfo();
 
@@ -470,8 +515,14 @@ function updateReadouts(res) {
   $('rdDelay').textContent = totalMs.toFixed(2) + ' ms';
 
   const polarity = $('rdPolarity');
-  polarity.textContent = res.polarity > 0 ? 'normal' : 'inverted';
-  polarity.className = 'v ' + (res.polarity > 0 ? 'good' : 'bad');
+  if (res.polarityKnown) {
+    polarity.textContent = res.polarity > 0 ? 'normal' : 'inverted';
+    polarity.className = 'v ' + (res.polarity > 0 ? 'good' : 'bad');
+  } else {
+    // Coherence is too low for the sign of the peak to mean anything.
+    polarity.textContent = '—';
+    polarity.className = 'v';
+  }
 
   const coherence = meanCoherence(res);
   const coherenceEl = $('rdCoh');
@@ -482,6 +533,26 @@ function updateReadouts(res) {
     setStatus('measurement and reference use the same input', 'err');
   } else if (!state.demo && state.refMode === 'loopback' && res.frames > 20 && coherence < 0.2) {
     setStatus('reference input is silent — check the loopback routing', 'err');
+  } else if (!state.demo) {
+    // A steady path holds the peak to within a sample or two. A wandering one
+    // is not noise in the analysis, it is the path itself moving — a Bluetooth
+    // link's buffer, or the phone's own speaker leaking into its microphone —
+    // and no amount of averaging makes that delay trustworthy.
+    const jitterMs = (res.delayJitterSamples / res.sampleRate) * 1000;
+    if (res.frames > 20 && jitterMs > 2) {
+      if (!jitterWarned) {
+        jitterWarned = true;
+        setStatus(
+          'delay keeps moving (' +
+            jitterMs.toFixed(1) +
+            ' ms) — the path is not steady; lower the level, keep the phone still, or use a cable or USB input',
+          'err',
+        );
+      }
+    } else if (jitterWarned) {
+      jitterWarned = false;
+      reportInput();
+    }
   }
 
   const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
@@ -604,7 +675,8 @@ async function startAll() {
   buildAnalyser();
   engine.setSignal(state.signal);
   engine.setSineHz(state.sineHz);
-  engine.setLevel(state.level);
+  // The level needs no setting here: the engine already holds it, and a target
+  // on the gain node now would cut the fade-in short.
 
   // A single-input source (the iPhone microphone) can only work with the
   // generated reference, and it only offers input 1.
@@ -622,9 +694,13 @@ async function startAll() {
 
   state.running = true;
   state.delayEstimate = 0;
-  $('numDelay').value = '0.00';
+  state.delayLockedAt = 0;
+  state.delayProbedAt = 0;
+  state.delayAuto = true;
   state.snapshot = null;
   state.results = null;
+  jitterWarned = false;
+  $('numDelay').value = '0.00';
 
   button.textContent = 'Stop';
   button.classList.add('on');
@@ -655,6 +731,9 @@ function stopAll() {
   state.results = null;
   state.snapshot = null;
   state.delayEstimate = 0;
+  state.delayLockedAt = 0;
+  state.delayProbedAt = 0;
+  jitterWarned = false;
 
   const button = $('btnPower');
   button.textContent = 'Start';
@@ -726,28 +805,30 @@ function updateCursorReadout() {
     '%';
 }
 
-function findDelay() {
-  if (!engine.running) {
-    setStatus('start the audio first', 'err');
-    return;
-  }
+const PROBE_SIZE = 131072;
 
-  if (state.refMode === 'internal' && !engine.refAligned) {
-    setStatus('collecting — try again in a moment');
-    return;
-  }
+/**
+ * Read one long window pair and find the delay it holds.
+ * Returns { samples, confidence, ambiguous } in samples, or null before there
+ * is enough audio captured to fill the window.
+ *
+ * This is the measurement that decides which branch of the circular
+ * correlation the short window then tracks. It has to look at the whole window,
+ * so it is also the one that has to be big enough: 131072 samples is 2.7 s at
+ * 48 kHz, which covers the round trip through the phone speaker and back into
+ * the phone microphone with room to spare.
+ */
+function probeDelay() {
+  if (!engine.running) return null;
+  if (state.refMode === 'internal' && !engine.refAligned) return null;
 
-  const n = 65536;
   const offset = state.delayEstimate;
   const written = engine.micWritten;
-  const start = written - 512 - n;
-  if (start - offset < 0) {
-    setStatus('collecting — try again in a moment');
-    return;
-  }
+  const start = written - 512 - PROBE_SIZE;
+  if (start < 0 || start - offset < 0) return null;
 
-  const mic = new Float32Array(n);
-  const ref = new Float32Array(n);
+  const mic = new Float32Array(PROBE_SIZE);
+  const ref = new Float32Array(PROBE_SIZE);
 
   engine.readChannel(mic, start, state.micChannel);
   if (state.refMode === 'loopback') {
@@ -756,17 +837,109 @@ function findDelay() {
     engine.readGeneratedRef(ref, start - offset);
   }
 
-  const probe = new Analyser(n, engine.sampleRate);
+  const probe = new Analyser(PROBE_SIZE, engine.sampleRate);
   probe.updateRate = 1;
+  probe.searchRadius = 0;
   probe.accumulate(mic, ref);
-  probe.results({ compensate: false, smoothing: 0, normalize: false });
+  const res = probe.results({ compensate: false, smoothing: 0, normalize: false });
 
-  const total = offset + probe.peakIndex;
-  state.delayEstimate = Math.round(total);
+  // A peak right at the edge of the probe may really belong outside it, which
+  // would put the lock a whole window out. Say so instead of locking onto it.
+  const ambiguous = Math.abs(probe.peakIndex) > PROBE_SIZE / 2 - 1024;
+  return { samples: offset + probe.peakIndex, confidence: meanCoherence(res), ambiguous };
+}
+
+/** Store a coarse offset and let the analyser start over from it. */
+function applyDelayLock(probe) {
+  const total = Math.round(probe.samples);
+  // A negative offset would have the reference read ahead of the capture,
+  // which is silence: leave the display alone instead of breaking it. The
+  // generated reference is a periodic buffer, though, so a negative offset is
+  // just an earlier point in the same loop and reads back fine.
+  if (total < 0 && state.refMode !== 'internal') return null;
+
+  state.delayEstimate = total;
+  state.delayLockedAt = engine.micWritten;
   if (analyser) analyser.reset();
 
-  const ms = (state.delayEstimate / engine.sampleRate) * 1000;
+  const ms = (total / engine.sampleRate) * 1000;
   $('numDelay').value = ms.toFixed(2);
+  return ms;
+}
+
+/**
+ * Lock the coarse delay by itself, and keep it locked.
+ *
+ * Once an offset is locked in, the short window only follows the delay within a
+ * fraction of itself; a true offset outside that neighbourhood then reads as a
+ * residual sitting on the edge of it. That edge is the signal to measure the
+ * whole thing again with the long probe. Doing it this way means the delay is
+ * found once and then only nudged, instead of the short window trying to choose
+ * between two branches of the circular correlation and hopping between them —
+ * the number "going all over the place" that used to happen with a Bluetooth
+ * output, and with the phone's own speaker and microphone.
+ */
+function maybeLockDelay(res) {
+  if (state.demo || !engine.running || !state.delayAuto) return false;
+  if (state.refMode === 'internal' && !engine.refAligned) return false;
+  // A sine correlates with every period of itself, so there is no one delay to
+  // lock on: leave that to the operator.
+  if (state.signal === 'sine') return false;
+
+  const now = engine.micWritten;
+  const wait = engine.sampleRate * 2;
+  if (now - state.delayLockedAt < wait) return false;
+  if (now - state.delayProbedAt < wait) return false;
+
+  // A residual past an eighth of a window is where the peak starts being
+  // clipped by the fine search, or where the full window's peak flips between
+  // two branches: either way the true delay is not being read. The median of
+  // the last few frames is used rather than the smoothed value, which
+  // approaches that point without ever quite reaching it.
+  const residual = Number.isFinite(res.delayMedianSamples)
+    ? Math.abs(res.delayMedianSamples)
+    : Infinity;
+  if (residual < res.fftSize / 8 - 2) return false;
+
+  const probe = probeDelay();
+  // Not enough audio yet. Leave delayProbedAt alone so the next frame tries
+  // again rather than waiting another two seconds.
+  if (!probe) return false;
+  state.delayProbedAt = now;
+
+  if (probe.ambiguous || probe.confidence < 0.35) return false;
+  if (probe.samples < 0 && state.refMode !== 'internal') return false;
+
+  const ms = applyDelayLock(probe);
+  if (ms === null) return false;
+  setStatus('delay locked at ' + ms.toFixed(2) + ' ms', 'ok');
+  return true;
+}
+
+function findDelay() {
+  if (!engine.running) {
+    setStatus('start the audio first', 'err');
+    return;
+  }
+
+  const probe = probeDelay();
+  if (!probe) {
+    setStatus('collecting — try again in a moment');
+    return;
+  }
+
+  if (probe.ambiguous) {
+    setStatus('the delay is outside the ' + PROBE_SIZE + '-sample window — check the routing', 'err');
+    return;
+  }
+
+  const ms = applyDelayLock(probe);
+  if (ms === null) {
+    setStatus('the reference would be read ahead of the capture — check the routing', 'err');
+    return;
+  }
+
+  state.delayAuto = false;
   setStatus('delay locked at ' + ms.toFixed(2) + ' ms', 'ok');
 }
 
@@ -803,6 +976,9 @@ $('numSine').addEventListener('change', (event) => {
 $('selRef').addEventListener('change', (event) => {
   state.refMode = event.target.value;
   state.delayEstimate = 0;
+  state.delayLockedAt = 0;
+  state.delayProbedAt = 0;
+  state.delayAuto = true;
   $('numDelay').value = '0.00';
   if (analyser) analyser.reset();
   if (state.refMode === 'loopback') setStatus('reference is input 2', 'ok');
@@ -843,6 +1019,9 @@ $('numDelay').addEventListener('change', () => {
   if (!Number.isFinite(ms)) return;
   const rate = state.demo ? DEMO_RATE : engine.sampleRate;
   state.delayEstimate = Math.round((ms / 1000) * rate);
+  // A number typed in by hand is the answer from now on: stop re-locking.
+  state.delayAuto = false;
+  state.delayLockedAt = engine.micWritten;
   if (analyser) analyser.reset();
 });
 

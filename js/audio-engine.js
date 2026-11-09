@@ -95,7 +95,7 @@ export class AudioEngine {
     this.generated = null;
     this.signal = 'pink';
     this.sineHz = 1000;
-    this.level = 0.35;
+    this.level = 0.2;
     this.playerNode = null;
     this.captureNode = null;
     this.sinkNode = null;
@@ -280,7 +280,7 @@ export class AudioEngine {
     }
 
     this.running = true;
-    this.buildSignal();
+    this.buildSignal(true);
     return this.channels;
   }
 
@@ -389,7 +389,8 @@ export class AudioEngine {
     }
   }
 
-  buildSignal() {
+  /** Rebuild the stimulus. `fade` eases the level in instead of jumping to it. */
+  buildSignal(fade) {
     if (!this.ctx || !this.gainNode) return;
 
     if (this.playerNode) {
@@ -420,6 +421,18 @@ export class AudioEngine {
     source.loop = true;
     source.connect(this.gainNode);
     source.start();
+
+    // Ease in: dropping a full-level noise loop straight onto a car stereo or
+    // a PA is a shock, and there is no time to reach for the volume in the tap
+    // that started it.
+    if (fade) {
+      const now = this.ctx.currentTime;
+      const gain = this.gainNode.gain;
+      const target = Math.max(this.level, 1e-4);
+      gain.cancelScheduledValues(now);
+      gain.setValueAtTime(1e-4, now);
+      gain.exponentialRampToValueAtTime(target, now + 1.2);
+    }
 
     this.generated = data;
     this.playerNode = source;

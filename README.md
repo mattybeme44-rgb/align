@@ -136,6 +136,48 @@ Practical notes for iOS:
   in the status line, which is why the Input panel reports the device it really got.
 - Audio stops when you leave Safari or lock the screen, and resumes on Start.
 
+### Measuring through a Bluetooth output
+
+Bluetooth adds its own latency — usually 100–300 ms — and keeps adjusting it as
+its buffer drains and refills. That latency sits inside the measurement and it
+moves while you watch, which is why a delay reading over Bluetooth can look as
+if it is inverting and jumping at once. Align does three things about it:
+
+- it finds and locks the coarse delay itself with a 131072-sample probe (2.7 s at
+  48 kHz), so the number no longer hops by a whole FFT window (341 ms at
+  16384 / 48 kHz);
+- after that the short window only looks for the peak within a fraction of a
+  window either side of zero, so it cannot pick the branch a whole window away in
+  the first place, and one bad frame can no longer throw the number across the
+  screen;
+- polarity is shown only when coherence is high enough for the sign of the peak
+  to mean anything, and it changes only after three frames agree, so the
+  normal/inverted readout stops flickering. It shows `—` when it cannot tell.
+
+If the status line says **delay keeps moving**, the loss is the link rather than
+the room. Use a cable, or the loopback input of a USB-C interface, for anything
+that has to be trusted. While you are in the car, also switch off the stereo's
+own loudness, EQ and speed-dependent volume where it allows it: they are a second
+curve between the phone and the microphone, and a second volume control in front
+of the app's **Level**.
+
+### Measuring with the phone's own speaker
+
+The phone microphone and the phone's own speaker are the same device, and the
+round trip through iOS — capture buffer, speaker, microphone and the resampling
+between them — is often close to half of the default 16384-sample window. That is
+exactly where a circular correlation is ambiguous: the peak lands on either side
+of the boundary from one frame to the next, and the reading flips between +170 ms
+and −170 ms while you watch.
+
+The two-stage delay measurement above is what keeps that steady: the long probe
+puts the offset where it belongs, and from then on the short window can no longer
+reach the branch a window away. Give it about three seconds after **Start** —
+that is how long the probe needs to fill — and the reading settles. If it still
+moves after that, the path really is moving (see **delay keeps moving**) and the
+delay is only relative. Keep the level low and the phone still, and use a USB-C
+interface in loopback mode for anything that has to be trusted.
+
 ### If Safari says the page is private
 
 That is the **preview** address (`something--preview.freemilk.app`), which FreeMilk opens for you and
@@ -177,7 +219,9 @@ the crossover period), and use the phase trace to confirm they track through the
 - **Input** — *iPhone microphone*, *USB audio interface*, or a specific device under *Detected
   inputs*. Changing it while running reopens the stream, which is when iOS picks the new route.
 - **Signal** — pink noise (the usual choice), white noise, a sine, or a 20 Hz–20 kHz log sweep.
-- **Level** — output level of the stimulus.
+- **Level** — output level of the stimulus. It starts at 20% and fades in over
+  about a second, so a car stereo or a PA already turned up does not get the
+  full noise burst the instant Start is pressed.
 - **FFT size** — 8192 to 65536. Bigger windows give finer frequency resolution (1.5 Hz at 32768 /
   48 kHz) and a longer delay range, but average more slowly.
 - **Averaging** — how quickly the exponential average forgets old frames. Slow for a stable read,
@@ -185,10 +229,17 @@ the crossover period), and use the phase trace to confirm they track through the
 - **Smoothing** — fractional-octave smoothing for a readable magnitude trace.
 - **Normalize** — references the magnitude to the 300 Hz–3 kHz band average so repeated
   measurements line up.
+- **Phase / Coherence** — show or hide the phase pane and the coherence band under the magnitude
+  curve. All three share the same log-frequency axis, so a feature can be read straight down the
+  chart: the magnitude curve with its 3 dB grid, the phase against ±180°, and coherence against 1.
+  The legend at the top says which trace is which, and **Capture A** adds the snapshot to it.
 - **Compensate** — removes the measured delay from the phase. Turn it off to see the raw phase
   including delay.
 - **Offset (ms) / Find delay** — locks the compensation offset. Find delay runs a long FFT over the
-  last 65536 samples and stores the total there; the reading stays the same before and after.
+  last 131072 samples and stores the total there; the reading stays the same before and after. The app
+  also does this by itself while the measured delay is past what the fine search can hold — a
+  Bluetooth output's latency, or the phone's own speaker and microphone, usually is — and stops once an
+  offset is typed in or Find delay pressed.
 - **Capture A / Clear A** — snapshot for A/B comparison.
 
 ## EQ suggestions
@@ -208,14 +259,19 @@ than by boosting.
 - On iOS the microphone needs HTTPS (the published link is).
 - Reflections dominate small rooms. Gating the impulse response is the next thing this would need
   for meaningful in-room magnitude curves.
+- A Bluetooth output's latency is neither small nor steady, and it is part of every reading. The app
+  locks and smooths what it can; below roughly 1.3 s the delay is usable as a relative number, and
+  beyond that the display says it could not settle it.
 
 ## Files
 
 - `js/fft.js` — radix-2 FFT, Hann window
 - `js/signals.js` — deterministic looping noise, sine and sweep generation
 - `js/audio-engine.js` — capture (ScriptProcessor) and looping stimulus, ring buffers
-- `js/analyser.js` — averaging, transfer function, coherence, impulse response, EQ suggestions
-- `js/charts.js` — canvas plots
+- `js/analyser.js` — averaging, transfer function, coherence, impulse response,
+  delay tracking, EQ suggestions
+- `js/charts.js` — canvas plots: magnitude, phase and coherence on one frequency axis, and the
+  impulse response
 - `js/app.js` — UI wiring
 - `manifest.webmanifest` — home-screen name, icon and full-screen launch
 - `sw.js` — offline shell (network first)

@@ -92,6 +92,9 @@ export class Analyser {
     this.sampleRate = sampleRate;
     this.fftSize = 0;
     this.setFftSize(fftSize);
+    // 0 = search the whole window. A short window that tracks an offset it
+    // already knows should set this to a fraction of the window instead.
+    this.searchRadius = 0;
   }
 
   setFftSize(size) {
@@ -114,8 +117,14 @@ export class Analyser {
     this.updateRate = 0.1;
     this.frames = 0;
     this.peakIndex = 0;
+    this.peakRe = 1;
     this.delayAvg = null;
+    this.delayRaw = 0;
+    this.delayMedian = 0;
+    this.delayHistory = [];
+    this.delayJitter = 0;
     this.polarity = 1;
+    this.polarityVotes = 0;
   }
 
   reset() {
@@ -126,8 +135,14 @@ export class Analyser {
     this.ir.fill(0);
     this.frames = 0;
     this.peakIndex = 0;
+    this.peakRe = 1;
     this.delayAvg = null;
+    this.delayRaw = 0;
+    this.delayMedian = 0;
+    this.delayHistory = [];
+    this.delayJitter = 0;
     this.polarity = 1;
+    this.polarityVotes = 0;
   }
 
   /** Accumulate one window pair. mic = measured, ref = reference. */
@@ -176,7 +191,8 @@ export class Analyser {
   /**
    * Inverse-transform the cross spectrum into a cross-correlation.
    * `shift` (samples) rotates the phase to remove a known delay.
-   * `detect` reads the peak, giving the remaining delay and the polarity.
+   * `detect` reads the peak, giving the remaining delay and the sign of the
+   * correlation there (which is the polarity the caller turns into a reading).
    */
   computeIR(shift, detect) {
     const n = this.fftSize;
@@ -212,11 +228,21 @@ export class Analyser {
     this.fft.inverse(re, im);
 
     const ir = this.ir;
+    // The peak is only looked for in a neighbourhood of zero unless the caller
+    // asks for the whole window. A high-latency input puts the true delay near
+    // half a window, where the circular correlation is ambiguous: the peak
+    // then lands on either side of the boundary from one frame to the next and
+    // the reading hops by a whole window (341 ms at 16384 / 48 kHz). Tracking
+    // near zero makes that impossible; the coarse offset that puts the delay
+    // near zero in the first place is measured separately, over a long window.
+    const radius = this.searchRadius > 0 ? Math.min(this.searchRadius, half) : half;
     let peak = 0;
     let peakValue = -Infinity;
     for (let i = 0; i < n; i++) {
       const magnitude = Math.hypot(re[i], im[i]);
       ir[i] = magnitude;
+      const distance = i <= half ? i : i - n;
+      if (distance < -radius || distance > radius) continue;
       if (magnitude > peakValue) {
         peakValue = magnitude;
         peak = i;
@@ -234,10 +260,83 @@ export class Analyser {
       let signed = peak + frac;
       if (signed > n / 2) signed -= n;
       this.peakIndex = signed;
-      this.polarity = re[peak] >= 0 ? 1 : -1;
+      this.peakRe = re[peak];
     }
 
     return peak;
+  }
+
+  /**
+   * Follow the delay frame by frame.
+   *
+   * The cross-correlation is circular, so a delay that drifts past half a
+   * window comes back on the other side, a whole window away — 341 ms at
+   * 16384 / 48 kHz. The fine search is normally restricted to a fraction of the
+   * window, which already rules that out; the fold here is the safety net for
+   * callers that search the whole window. The median of the last few frames
+   * sets the reading, so one bad frame can no longer throw the number across the
+   * screen. `delayJitter` is how far those frames spread, which is what tells
+   * the UI the delay is moving rather than just noisy.
+   */
+  trackDelay(delay) {
+    const n = this.fftSize;
+    let candidate = delay;
+
+    if (this.delayAvg !== null && Number.isFinite(this.delayAvg)) {
+      while (candidate - this.delayAvg > n / 2) candidate -= n;
+      while (candidate - this.delayAvg < -n / 2) candidate += n;
+    }
+
+    this.delayRaw = delay;
+
+    const history = this.delayHistory;
+    history.push(candidate);
+    if (history.length > 9) history.shift();
+
+    const sorted = history.slice().sort((a, b) => a - b);
+    const median = sorted[(sorted.length - 1) >> 1];
+    this.delayMedian = median;
+    this.delayJitter = sorted[sorted.length - 1] - sorted[0];
+
+    if (this.delayAvg === null || !Number.isFinite(this.delayAvg)) {
+      this.delayAvg = median;
+    } else {
+      this.delayAvg += (median - this.delayAvg) * 0.35;
+    }
+
+    return candidate;
+  }
+
+  /**
+   * Polarity only changes when several frames agree. With noise, or across a
+   * link whose latency wanders, a single frame flips sign on its own, and the
+   * readout used to flicker normal / inverted because of it.
+   */
+  votePolarity(sign) {
+    if (sign === this.polarity) {
+      this.polarityVotes = 0;
+      return;
+    }
+    this.polarityVotes += 1;
+    if (this.polarityVotes >= 3) {
+      this.polarity = sign;
+      this.polarityVotes = 0;
+    }
+  }
+
+  /** Mean coherence over the band the readout shows, 200 Hz – 10 kHz. */
+  meanCoherence() {
+    const k0 = Math.max(1, Math.round(200 / this.df));
+    const k1 = Math.min(this.bins - 1, Math.round(10000 / this.df));
+    let sum = 0;
+    let count = 0;
+    for (let k = k0; k <= k1; k++) {
+      const denom = this.sxx[k] * this.syy[k];
+      const cxy = this.sxyRe[k] * this.sxyRe[k] + this.sxyIm[k] * this.sxyIm[k];
+      sum += denom > 0 ? Math.min(1, cxy / denom) : 0;
+      count += 1;
+    }
+    return count > 0 ? sum / count : 0;
   }
 
   /**
@@ -253,15 +352,15 @@ export class Analyser {
     const bins = this.bins;
 
     this.computeIR(0, true);
-    const delay = this.peakIndex;
+    this.trackDelay(this.peakIndex);
 
-    if (this.delayAvg === null || !Number.isFinite(this.delayAvg)) {
-      this.delayAvg = delay;
-    } else {
-      const difference = delay - this.delayAvg;
-      const alpha = Math.abs(difference) > 8 ? 0.5 : 0.15;
-      this.delayAvg += difference * alpha;
-    }
+    // The sign at the peak is only read when the two signals are actually
+    // related. Across a link whose latency wanders — Bluetooth, typically —
+    // coherence collapses and the sign is just noise, so the readout says
+    // nothing instead of flickering between normal and inverted.
+    const coherence = this.meanCoherence();
+    const polarityKnown = this.frames >= 3 && coherence > 0.45;
+    if (polarityKnown) this.votePolarity(this.peakRe >= 0 ? 1 : -1);
 
     if (compensate) this.computeIR(this.delayAvg, false);
 
@@ -360,7 +459,11 @@ export class Analyser {
       irDb: irDb,
       delaySamples: this.delayAvg,
       delayMs: (this.delayAvg / this.sampleRate) * 1000,
+      delayMedianSamples: this.delayMedian,
+      delayRawSamples: this.delayRaw,
+      delayJitterSamples: this.delayJitter,
       polarity: this.polarity,
+      polarityKnown: polarityKnown,
       frames: this.frames,
     };
   }
