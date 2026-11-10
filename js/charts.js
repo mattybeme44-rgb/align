@@ -710,9 +710,9 @@ export class TransferChart {
         const target = relative[k];
         const current = this.phaseValues[k];
         if (!Number.isFinite(target) || !Number.isFinite(current)) continue;
-        // A very slow follow: the curve takes four or five seconds to settle,
+        // A very slow follow: the curve takes ten seconds or more to settle,
         // so it reads as a shape rather than as movement.
-        this.phaseValues[k] = current + (target - current) * 0.02;
+        this.phaseValues[k] = current + (target - current) * 0.01;
       }
     }
     this.phaseStamp = res.frames;
@@ -750,11 +750,11 @@ export class TransferChart {
 
       continuous[i] = sum / n;
       // Below this the phase is noise dressed as a curve.
-      readable[i] = coherence / n >= 0.2 ? 1 : 0;
+      readable[i] = coherence / n >= 0.35 ? 1 : 0;
     }
 
-    // Two gentle passes, so column-to-column noise does not read as a saw.
-    const smoothed = smoothColumns(smoothColumns(continuous));
+    // Three gentle passes, so column-to-column noise does not read as a saw.
+    const smoothed = smoothColumns(smoothColumns(smoothColumns(continuous)));
 
     ctx.save();
     ctx.beginPath();
