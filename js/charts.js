@@ -14,6 +14,11 @@ const COL = {
   phase: '#77c8c1',
   coh: '#d9a26c',
   ghost: 'rgba(226,235,214,0.55)',
+  ghostB: 'rgba(143,199,250,0.65)',
+  peak: 'rgba(201,255,112,0.32)',
+  average: '#eeaac4',
+  overlay: '#b4a7f7',
+  target: 'rgba(214,222,206,0.45)',
   cursor: 'rgba(255,140,120,0.55)',
 };
 
@@ -27,6 +32,36 @@ const FREQ_LINES = [
 ];
 const FREQ_MAJOR = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 const FREQ_LABELS_NARROW = [20, 200, 2000, 20000];
+
+/** The magnitude targets, as the app's Analysis card offers them. */
+export const TARGET_CURVES = [
+  { id: 'flat', label: 'Flat' },
+  { id: 'tilt', label: '−1 dB/oct above 1 kHz' },
+  { id: 'room', label: 'Room curve (+6 dB low end)' },
+];
+
+/** The target in dB, 0 dB being the app's normalised reference level. */
+export function targetDb(id, frequency) {
+  const f = Math.max(frequency, 1);
+  if (id === 'tilt') {
+    if (f <= 1000) return 0;
+    return -Math.log2(f / 1000);
+  }
+  if (id === 'room') {
+    if (f >= 200) return 0;
+    const t = Math.log2(200 / f) / Math.log2(200 / 30);
+    return 6 * Math.min(1, Math.max(0, t));
+  }
+  return 0;
+}
+
+/** Wrap an angle into ±180°, the range the phase pane shows. */
+export function wrapDegrees(deg) {
+  let v = deg % 360;
+  if (v > 180) v -= 360;
+  if (v < -180) v += 360;
+  return v;
+}
 
 function formatHz(f) {
   if (f >= 1000) {
@@ -91,11 +126,14 @@ export class TransferChart {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
-    this.pad = { left: 46, right: 46, top: 30, bottom: 26 };
+    this.pad = { left: 46, right: 46, top: 40, bottom: 26 };
     this.dbMin = -60;
     this.dbMax = 10;
     this.w = 0;
     this.h = 0;
+    // The drawn phase, eased between frames so the trace settles.
+    this.phaseValues = null;
+    this.phaseStamp = -1;
     this.resize();
   }
 
@@ -178,18 +216,48 @@ export class TransferChart {
     return last.y + last.h;
   }
 
-  updateRange(res) {
-    const df = res.sampleRate / res.fftSize;
-    const k0 = Math.max(1, Math.floor(30 / df));
-    const k1 = Math.min(res.bins - 1, Math.ceil(18000 / df));
+  /** The vertical range, widened to take in every trace and the target. */
+  updateRange(res, options) {
+    const opts = options || {};
     let min = Infinity;
     let max = -Infinity;
-    for (let k = k0; k <= k1; k++) {
-      const v = res.magDb[k];
-      if (!Number.isFinite(v)) continue;
-      if (v < min) min = v;
-      if (v > max) max = v;
+
+    const include = (trace) => {
+      if (!trace || !trace.bins || !trace.sampleRate || !trace.fftSize) return;
+      const df = trace.sampleRate / trace.fftSize;
+      const k0 = Math.max(1, Math.floor(30 / df));
+      const k1 = Math.min(trace.bins - 1, Math.ceil(18000 / df));
+      for (let k = k0; k <= k1; k++) {
+        const v = trace.magDb[k];
+        if (!Number.isFinite(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    };
+
+    include(res);
+    include(opts.peakHold);
+    include(opts.average);
+    include(opts.secondSnapshot);
+    include(opts.snapshot);
+
+    if (opts.savedCurve && opts.savedCurve.length) {
+      for (let i = 0; i < opts.savedCurve.length; i++) {
+        const v = opts.savedCurve[i];
+        if (!Number.isFinite(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
     }
+
+    if (opts.target) {
+      for (let f = F_MIN; f <= F_MAX; f *= 1.25) {
+        const v = targetDb(opts.target, f);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+
     if (!Number.isFinite(min) || !Number.isFinite(max)) return;
 
     let targetMin = Math.floor((min - 6) / 10) * 10;
@@ -212,7 +280,8 @@ export class TransferChart {
     if (this.w < 60 || this.h < 60) return;
 
     paintPanel(ctx, this.w, this.h);
-    if (res) this.updateRange(res);
+    this.updateRange(res, options);
+    if (res) this.updatePhase(res);
 
     const panes = this.layout(options);
     const bottom = this.panesBottom(panes);
@@ -224,8 +293,14 @@ export class TransferChart {
     if (panes.coh) this.drawCohAxis(panes.coh);
     this.drawLegend(panes, options);
 
+    if (options.target) this.drawTarget(panes.mag, options.target);
+    if (options.savedCurve) this.drawSavedCurve(panes.mag, options.savedCurve);
+    if (options.peakHold) this.drawPeakHold(panes.mag, options.peakHold);
+    if (options.average) this.drawAverage(panes.mag, options.average);
+
     if (res) {
-      if (options.snapshot) this.drawMagnitude(panes.mag, options.snapshot, true);
+      if (options.secondSnapshot) this.drawGhost(panes.mag, options.secondSnapshot, COL.ghostB);
+      if (options.snapshot) this.drawGhost(panes.mag, options.snapshot, COL.ghost);
       this.drawMagnitude(panes.mag, res, false);
       if (panes.coh) this.drawCoherence(panes.coh, res);
       if (panes.phase) this.drawPhase(panes.phase, res);
@@ -353,14 +428,20 @@ export class TransferChart {
   drawLegend(panes, options) {
     const ctx = this.ctx;
     const p = this.plotRect();
-    const short = p.w < 360;
+    const short = p.w < 430;
     const items = [[short ? 'Mag' : 'Magnitude', COL.trace]];
     if (panes.phase) items.push(['Phase', COL.phase]);
     if (panes.coh) items.push([short ? 'Coh' : 'Coherence', COL.coh]);
+    if (options.target) items.push(['Target', COL.target]);
+    if (options.savedCurve) items.push(['Saved', COL.overlay]);
+    if (options.peakHold) items.push(['Peak', COL.peak]);
+    if (options.average) items.push(['Avg ' + (options.averageCount || 0), COL.average]);
     if (options.snapshot) items.push([short ? 'A' : 'Capture A', COL.ghost]);
+    if (options.secondSnapshot) items.push([short ? 'B' : 'Capture B', COL.ghostB]);
 
     let x = p.x;
-    const y = p.y - 14;
+    let y = p.y - 15;
+    let wrapped = false;
 
     ctx.save();
     ctx.font = FONT_LEGEND;
@@ -371,6 +452,15 @@ export class TransferChart {
     for (let i = 0; i < items.length; i++) {
       const label = items[i][0];
       const color = items[i][1];
+      const width = 16 + ctx.measureText(label).width;
+
+      // A second row, so a chart with every trace on it still names them all.
+      if (!wrapped && x > p.x + 1 && x + width > p.x + p.w + 2) {
+        wrapped = true;
+        x = p.x;
+        y = p.y - 29;
+      }
+
       ctx.strokeStyle = color;
       ctx.lineWidth = 2.4;
       ctx.beginPath();
@@ -379,7 +469,7 @@ export class TransferChart {
       ctx.stroke();
       ctx.fillStyle = COL.text;
       ctx.fillText(label, x + 16, y);
-      x += 16 + ctx.measureText(label).width + (short ? 11 : 16);
+      x += width + (short ? 11 : 16);
     }
     ctx.restore();
   }
@@ -459,51 +549,238 @@ export class TransferChart {
     ctx.restore();
   }
 
-  drawPhase(pane, res) {
+  /** A captured curve, dashed like the iOS capture ghosts. */
+  drawGhost(pane, trace, color) {
+    const values = this.magnitudeColumns(pane, trace);
+    if (values.length < 2) return;
     const ctx = this.ctx;
-    const df = res.sampleRate / res.fftSize;
-    const bins = res.bins;
-    const count = Math.max(2, Math.ceil(pane.w));
-    const values = new Float32Array(count);
-    const ok = new Uint8Array(count);
-
-    for (let i = 0; i < count; i++) {
-      const f1 = this.freqAtX(pane.x + i);
-      const f2 = this.freqAtX(pane.x + i + 1);
-      const k0 = Math.max(0, Math.floor(f1 / df));
-      const k1 = Math.min(bins - 1, Math.max(k0, Math.ceil(f2 / df)));
-
-      let sum = 0;
-      let n = 0;
-      for (let k = k0; k <= k1; k++) {
-        const v = res.phaseDeg[k];
-        if (!Number.isFinite(v)) continue;
-        sum += v;
-        n += 1;
-      }
-      if (n > 0) {
-        values[i] = sum / n;
-        ok[i] = 1;
-      }
-    }
+    const x0 = pane.x + 0.5;
 
     ctx.save();
     ctx.beginPath();
+    ctx.moveTo(x0, this.dbToY(values[0], pane));
+    for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  drawPeakHold(pane, trace) {
+    const values = this.magnitudeColumns(pane, trace);
+    if (values.length < 2) return;
+    const ctx = this.ctx;
+    const x0 = pane.x + 0.5;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(x0, this.dbToY(values[0], pane));
+    for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
+    ctx.strokeStyle = COL.peak;
+    ctx.lineWidth = 1;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawAverage(pane, trace) {
+    const values = this.magnitudeColumns(pane, trace);
+    if (values.length < 2) return;
+    const ctx = this.ctx;
+    const x0 = pane.x + 0.5;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(x0, this.dbToY(values[0], pane));
+    for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
+    ctx.strokeStyle = COL.average;
+    ctx.lineWidth = 1.4;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.setLineDash([5, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /** A saved measurement's curve, log-spaced from 20 Hz to 20 kHz. */
+  drawSavedCurve(pane, curve) {
+    if (!curve || curve.length < 2) return;
+    const ctx = this.ctx;
+    const count = Math.max(2, Math.ceil(pane.w));
+    ctx.save();
+    ctx.beginPath();
     let started = false;
+
     for (let i = 0; i < count; i++) {
-      if (!ok[i]) {
+      const t = i / (count - 1);
+      const position = t * (curve.length - 1);
+      const lower = Math.min(curve.length - 1, Math.max(0, Math.floor(position)));
+      const upper = Math.min(curve.length - 1, lower + 1);
+      const fraction = position - lower;
+      const db = curve[lower] * (1 - fraction) + curve[upper] * fraction;
+      if (!Number.isFinite(db)) {
         started = false;
         continue;
       }
       const x = pane.x + i + 0.5;
-      const y = this.phaseToY(values[i], pane);
-      if (!started) {
+      const y = this.dbToY(db, pane);
+      if (started) ctx.lineTo(x, y);
+      else {
         ctx.moveTo(x, y);
         started = true;
-      } else {
-        ctx.lineTo(x, y);
       }
     }
+
+    ctx.strokeStyle = COL.overlay;
+    ctx.lineWidth = 1.4;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.setLineDash([5, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /** The target, faint and dashed, behind every trace. */
+  drawTarget(pane, id) {
+    const ctx = this.ctx;
+    const count = Math.max(2, Math.ceil(pane.w));
+
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < count; i++) {
+      const f = this.freqAtX(pane.x + i);
+      const y = this.dbToY(targetDb(id, f), pane);
+      if (i === 0) ctx.moveTo(pane.x + i + 0.5, y);
+      else ctx.lineTo(pane.x + i + 0.5, y);
+    }
+    ctx.strokeStyle = COL.target;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /**
+   * The phase read against 1 kHz — the middle of the band the measurement is
+   * normalised to — so a noisy lowest bin cannot carry the whole curve off by a
+   * whole turn from one frame to the next.
+   */
+  relativePhase(res) {
+    const df = res.sampleRate / res.fftSize;
+    const out = new Float32Array(res.bins);
+    if (!(res.bins > 2) || !(df > 0)) return out;
+
+    const anchorBin = Math.min(Math.max(1, Math.round(1000 / df)), res.bins - 1);
+    let sum = 0;
+    let n = 0;
+    for (let i = Math.max(0, anchorBin - 4); i <= Math.min(res.bins - 1, anchorBin + 4); i++) {
+      const v = res.phaseDeg[i];
+      if (!Number.isFinite(v)) continue;
+      sum += v;
+      n += 1;
+    }
+    const anchor = n > 0 ? sum / n : 0;
+
+    for (let k = 0; k < res.bins; k++) out[k] = res.phaseDeg[k] - anchor;
+    return out;
+  }
+
+  /** Refresh the drawn phase once per analysis frame, easing toward the new one. */
+  updatePhase(res) {
+    if (!res) {
+      this.phaseValues = null;
+      this.phaseStamp = -1;
+      return;
+    }
+    if (this.phaseStamp === res.frames) return;
+
+    const relative = this.relativePhase(res);
+    if (!this.phaseValues || this.phaseValues.length !== relative.length) {
+      this.phaseValues = relative;
+    } else {
+      for (let k = 0; k < relative.length; k++) {
+        const target = relative[k];
+        const current = this.phaseValues[k];
+        if (!Number.isFinite(target) || !Number.isFinite(current)) continue;
+        // A very slow follow: the curve takes four or five seconds to settle,
+        // so it reads as a shape rather than as movement.
+        this.phaseValues[k] = current + (target - current) * 0.02;
+      }
+    }
+    this.phaseStamp = res.frames;
+  }
+
+  drawPhase(pane, res) {
+    const ctx = this.ctx;
+    const df = res.sampleRate / res.fftSize;
+    if (!(df > 0) || res.bins < 3) return;
+
+    const bins = res.bins;
+    const values =
+      this.phaseValues && this.phaseValues.length === bins ? this.phaseValues : this.relativePhase(res);
+    const count = Math.max(2, Math.ceil(pane.w));
+    const continuous = new Float64Array(count);
+    const readable = new Uint8Array(count);
+
+    for (let i = 0; i < count; i++) {
+      const f1 = this.freqAtX(pane.x + i);
+      const f2 = this.freqAtX(pane.x + i + 1);
+      const k0 = Math.max(1, Math.floor(f1 / df));
+      const k1 = Math.min(bins - 1, Math.max(k0, Math.ceil(f2 / df)));
+
+      let sum = 0;
+      let coherence = 0;
+      let n = 0;
+      for (let k = k0; k <= k1; k++) {
+        const v = values[k];
+        if (!Number.isFinite(v)) continue;
+        sum += v;
+        coherence += res.coh[k];
+        n += 1;
+      }
+      if (n === 0) continue;
+
+      continuous[i] = sum / n;
+      // Below this the phase is noise dressed as a curve.
+      readable[i] = coherence / n >= 0.2 ? 1 : 0;
+    }
+
+    // Two gentle passes, so column-to-column noise does not read as a saw.
+    const smoothed = smoothColumns(smoothColumns(continuous));
+
+    ctx.save();
+    ctx.beginPath();
+    let started = false;
+    let previous = null;
+
+    for (let i = 0; i < count; i++) {
+      if (!readable[i]) {
+        started = false;
+        previous = null;
+        continue;
+      }
+
+      const value = wrapDegrees(smoothed[i]);
+      if (previous !== null && Math.abs(value - previous) > 180) started = false;
+
+      const x = pane.x + i + 0.5;
+      const y = this.phaseToY(value, pane);
+      if (started) ctx.lineTo(x, y);
+      else {
+        ctx.moveTo(x, y);
+        started = true;
+      }
+      previous = value;
+    }
+
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.strokeStyle = 'rgba(119,200,193,0.18)';
@@ -623,6 +900,7 @@ export class ImpulseChart {
     this.pad = { left: 42, right: 24, top: 22, bottom: 26 };
     this.w = 0;
     this.h = 0;
+    this.layout = null;
     this.resize();
   }
 
@@ -646,7 +924,37 @@ export class ImpulseChart {
     };
   }
 
-  draw(res) {
+  /** Milliseconds to an x on the plot, from the layout of the last draw. */
+  xForMs(ms) {
+    const l = this.layout;
+    if (!l) return 0;
+    return l.p.x + ((ms - l.xMin) / (l.xMax - l.xMin)) * l.p.w;
+  }
+
+  /** Which part of the gate a tap landed on: 'start', 'end' or 'move'. */
+  gateModeAt(x, gate) {
+    if (!this.layout || !gate) return 'move';
+    const startX = this.xForMs(this.layout.peakMs + gate.startMs);
+    const endX = this.xForMs(this.layout.peakMs + gate.startMs + gate.widthMs);
+    if (Math.abs(x - startX) <= 16) return 'start';
+    if (Math.abs(x - endX) <= 16) return 'end';
+    return 'move';
+  }
+
+  /** How many milliseconds one pixel of a drag is worth. */
+  msPerPixel() {
+    const l = this.layout;
+    if (!l) return 0;
+    return (l.xMax - l.xMin) / l.p.w;
+  }
+
+  gateLabel(gate) {
+    return 'gate ' + gate.startMs.toFixed(1) + '–' + (gate.startMs + gate.widthMs).toFixed(1) + ' ms';
+  }
+
+  draw(res, opts) {
+    const options = opts || {};
+    const gate = options.gate || null;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
     if (this.w < 60 || this.h < 50) return;
@@ -675,6 +983,8 @@ export class ImpulseChart {
     const xOf = (ms) => p.x + ((ms - xMin) / span) * p.w;
     const yOf = (db) => p.y + (Math.min(0, Math.max(-80, db)) / -80) * p.h;
     const bottom = p.y + p.h;
+
+    this.layout = { p, xMin, xMax, peakMs };
 
     ctx.save();
     ctx.font = FONT_AXIS;
@@ -705,6 +1015,39 @@ export class ImpulseChart {
     ctx.textAlign = 'left';
     ctx.fillText('ms', p.x + p.w + 7, bottom + 6);
     ctx.restore();
+
+    if (gate && gate.enabled) {
+      const startX = Math.min(p.x + p.w, Math.max(p.x, xOf(peakMs + gate.startMs)));
+      const endX = Math.min(p.x + p.w, Math.max(p.x, xOf(peakMs + gate.startMs + gate.widthMs)));
+
+      ctx.save();
+      ctx.fillStyle = 'rgba(201,255,112,0.10)';
+      ctx.fillRect(Math.min(startX, endX), p.y, Math.max(1, Math.abs(endX - startX)), p.h);
+      ctx.strokeStyle = 'rgba(201,255,112,0.85)';
+      ctx.lineWidth = 1.5;
+
+      for (const x of [startX, endX]) {
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x) + 0.5, p.y);
+        ctx.lineTo(Math.round(x) + 0.5, bottom);
+        ctx.stroke();
+
+        ctx.fillStyle = COL.trace;
+        roundRect(ctx, x - 2.5, p.y, 5, 12, 2);
+        ctx.fill();
+        roundRect(ctx, x - 2.5, bottom - 12, 5, 12, 2);
+        ctx.fill();
+      }
+
+      const label = this.gateLabel(gate);
+      ctx.font = FONT_UNIT;
+      ctx.fillStyle = COL.trace;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const labelX = Math.min(p.x + p.w - 44, Math.max(p.x + 44, (startX + endX) / 2));
+      ctx.fillText(label, labelX, p.y + 8);
+      ctx.restore();
+    }
 
     if (!res) return;
 

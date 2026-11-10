@@ -8,8 +8,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Align" />
+<meta name="format-detection" content="telephone=no" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
 <title>Align — loudspeaker measurement</title>
 <link rel="stylesheet" href="css/styles.css" />
 </head>
@@ -17,12 +20,19 @@
 <header class="topbar">
   <div class="brand">
     <h1>Align</h1>
-    <p class="sub">transfer function · delay finder · coherence</p>
+    <p class="sub">transfer function · delay finder</p>
   </div>
   <div class="top-right">
-    <span class="status" id="status">idle</span>
+    <button id="btnShare" class="btn btn-icon" type="button" aria-label="Share Align" title="Share Align">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 3.2v11.4" />
+        <path d="M8.4 6.8 12 3.2l3.6 3.6" />
+        <path d="M6.2 10.6H4.9A1.9 1.9 0 0 0 3 12.5v6.6A1.9 1.9 0 0 0 4.9 21h14.2a1.9 1.9 0 0 0 1.9-1.9v-6.6a1.9 1.9 0 0 0-1.9-1.9h-1.3" />
+      </svg>
+    </button>
     <button id="btnPower" class="btn btn-power" type="button">Start</button>
   </div>
+  <span class="status" id="status">idle</span>
 </header>
 
 <main>
@@ -60,6 +70,10 @@
       Tap the <strong>Share</strong> button in Safari, then <strong>Add to Home Screen</strong>.
       Align then opens from its own icon, full screen, with no address bar — and keeps a copy of
       itself so it starts in a room with no signal.
+    </p>
+    <p>
+      To give Align to somebody else, use <strong>Share</strong> at the top of this page: it opens
+      the same sheet with the link ready to go into Messages, Mail or WhatsApp.
     </p>
   </section>
 
@@ -134,20 +148,16 @@
   <section class="card">
     <div class="card-head">
       <h2>Transfer function</h2>
-      <span class="readout" id="readout">tap the plot</span>
+      <span class="badge" id="gateBadge" hidden>GATED</span>
     </div>
+    <p class="cursor-readout" id="readout">tap the plot</p>
     <div class="chart-wrap tf">
       <canvas id="tfChart"></canvas>
     </div>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Impulse response</h2>
-      <span class="readout" id="irReadout">—</span>
-    </div>
-    <div class="chart-wrap ir">
-      <canvas id="irChart"></canvas>
+    <div class="row toggles">
+      <label class="chk"><input type="checkbox" id="chkPhase" checked /> Phase</label>
+      <label class="chk"><input type="checkbox" id="chkCoh" checked /> Coherence</label>
+      <span class="trace-note" id="traceSummary">no captures yet</span>
     </div>
   </section>
 
@@ -158,6 +168,109 @@
     <div class="metric"><span class="k">Input</span><span class="v" id="rdLevel">—</span></div>
     <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
     <div class="metric"><span class="k">Δ vs A</span><span class="v" id="rdDelta">—</span></div>
+    <div class="metric"><span class="k">Δ vs B</span><span class="v" id="rdDeltaB">—</span></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Impulse response</h2>
+      <span class="readout" id="irReadout">—</span>
+    </div>
+    <div class="chart-wrap ir">
+      <canvas id="irChart"></canvas>
+    </div>
+    <label class="chk gate-toggle">
+      <input type="checkbox" id="chkGate" /> Gate the impulse response
+    </label>
+    <div class="row gate-fields">
+      <label for="numGateStart">Start <span class="hint">ms</span></label>
+      <input type="number" id="numGateStart" step="0.1" value="-0.5" disabled />
+      <label for="numGateWidth">Width <span class="hint">ms</span></label>
+      <input type="number" id="numGateWidth" step="0.1" value="20" disabled />
+    </div>
+    <p class="source-hint">
+      The gate windows the impulse response before the transform, so the magnitude curve shows the
+      loudspeaker rather than the room. 0 ms is the impulse peak: drag the band on the plot to move it,
+      or grab its edges to change the width.
+    </p>
+    <div class="row btns">
+      <button id="btnWaterfall" class="btn" type="button">Waterfall view</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>EQ suggestions</h2>
+    <ul class="eq-list" id="eqList">
+      <li class="muted">Start the measurement to get suggestions.</li>
+    </ul>
+    <p class="source-hint">
+      A starting point for a parametric EQ, not a substitute for judgement: a dip is usually better
+      fixed by geometry or delay than by boosting.
+    </p>
+  </section>
+
+  <section class="card controls">
+    <h2>Analysis</h2>
+    <div class="row">
+      <label for="selFft">FFT size</label>
+      <select id="selFft">
+        <option value="8192">8192</option>
+        <option value="16384" selected>16384</option>
+        <option value="32768">32768</option>
+        <option value="65536">65536</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="rngAvg">Averaging <span class="hint" id="lblAvg">45%</span></label>
+      <input id="rngAvg" type="range" min="0" max="100" value="45" />
+    </div>
+    <div class="row">
+      <label for="selSmooth">Smoothing</label>
+      <select id="selSmooth">
+        <option value="0">None</option>
+        <option value="24">1/24 oct</option>
+        <option value="12">1/12 oct</option>
+        <option value="6" selected>1/6 oct</option>
+        <option value="3">1/3 oct</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="selTarget">Target curve</label>
+      <select id="selTarget">
+        <option value="" selected>Off</option>
+        <option value="flat">Flat</option>
+        <option value="tilt">−1 dB/oct above 1 kHz</option>
+        <option value="room">Room curve (+6 dB low end)</option>
+      </select>
+    </div>
+    <p class="source-hint" id="targetHint" hidden>
+      The target is drawn as the faint dashed line behind the live curve on the same dB scale, and the
+      cursor reads the difference to it in dB.
+    </p>
+    <div class="row checks">
+      <label class="chk"><input type="checkbox" id="chkNormalize" checked /> Normalize</label>
+      <label class="chk"><input type="checkbox" id="chkCompensate" checked /> Compensate delay</label>
+    </div>
+    <div class="row">
+      <label for="numCalibration">Level calibration <span class="hint">dB</span></label>
+      <input type="number" id="numCalibration" value="0" step="0.1" />
+    </div>
+    <label class="chk">
+      <input type="checkbox" id="chkSpl" /> Show input level as dB SPL
+    </label>
+    <p class="source-hint">
+      A calibrated measurement microphone comes with a sensitivity offset, so entering it here lets the
+      input read as sound pressure in the room instead of dBFS. With an uncalibrated mic leave it at 0.
+    </p>
+
+    <h2>Delay</h2>
+    <div class="row">
+      <label for="numDelay">Offset <span class="hint">ms</span></label>
+      <input type="number" id="numDelay" value="0" step="0.01" />
+    </div>
+    <div class="row btn-row">
+      <button id="btnFindDelay" class="btn" type="button">Find delay</button>
+    </div>
   </section>
 
   <section class="card controls">
@@ -187,59 +300,58 @@
         <option value="loopback">Input 2 (loopback)</option>
       </select>
     </div>
-
-    <h2>Analysis</h2>
-    <div class="row">
-      <label for="selFft">FFT size</label>
-      <select id="selFft">
-        <option value="8192">8192</option>
-        <option value="16384" selected>16384</option>
-        <option value="32768">32768</option>
-        <option value="65536">65536</option>
-      </select>
-    </div>
-    <div class="row">
-      <label for="rngAvg">Averaging</label>
-      <input id="rngAvg" type="range" min="0" max="100" value="45" />
-    </div>
-    <div class="row">
-      <label for="selSmooth">Smoothing</label>
-      <select id="selSmooth">
-        <option value="0">None</option>
-        <option value="24">1/24 oct</option>
-        <option value="12">1/12 oct</option>
-        <option value="6" selected>1/6 oct</option>
-        <option value="3">1/3 oct</option>
-      </select>
-    </div>
-    <div class="row checks">
-      <label class="chk"><input type="checkbox" id="chkNormalize" checked /> Normalize</label>
-      <label class="chk"><input type="checkbox" id="chkPhase" checked /> Phase</label>
-      <label class="chk"><input type="checkbox" id="chkCoh" checked /> Coherence</label>
-    </div>
-
-    <h2>Delay</h2>
-    <div class="row">
-      <label for="numDelay">Offset <span class="hint">ms</span></label>
-      <input type="number" id="numDelay" value="0" step="0.01" />
-    </div>
-    <div class="row btn-row">
-      <button id="btnFindDelay" class="btn" type="button">Find delay</button>
-      <label class="chk"><input type="checkbox" id="chkCompensate" checked /> Compensate</label>
-    </div>
-
-    <h2>Traces</h2>
-    <div class="row btns">
-      <button id="btnCapture" class="btn" type="button">Capture A</button>
-      <button id="btnClearA" class="btn" type="button">Clear A</button>
-    </div>
   </section>
 
   <section class="card">
-    <h2>EQ suggestions</h2>
-    <ul class="eq-list" id="eqList">
-      <li class="muted">Start the measurement to get suggestions.</li>
-    </ul>
+    <div class="card-head">
+      <h2>Traces</h2>
+      <span class="readout" id="captureSummary">no captures yet</span>
+    </div>
+    <div class="row btns">
+      <button id="btnCapture" class="btn" type="button">Capture A</button>
+      <button id="btnClearA" class="btn" type="button">Clear A</button>
+      <button id="btnCaptureB" class="btn" type="button">Capture B</button>
+      <button id="btnClearB" class="btn" type="button">Clear B</button>
+    </div>
+    <div class="row btns">
+      <button id="btnArmPeak" class="btn" type="button">Arm peak hold</button>
+      <button id="btnClearPeak" class="btn" type="button">Clear peak</button>
+    </div>
+    <div class="row btns">
+      <button id="btnArmAverage" class="btn" type="button">Arm average</button>
+      <button id="btnCaptureAverage" class="btn" type="button" disabled>Capture average</button>
+      <button id="btnClearAverage" class="btn" type="button">Clear average</button>
+    </div>
+    <div class="row btns">
+      <button id="btnSaved" class="btn" type="button">Saved measurements</button>
+    </div>
+    <p class="source-hint">
+      Capture A and Capture B each keep the current magnitude trace behind the live one, so two
+      positions or two settings can be compared with it at once — with the delay difference to each.
+      Peak hold pins the highest magnitude at each frequency since it was armed. The average is a power
+      average of the curves captured into it, drawn in pink and labelled with how many it holds.
+    </p>
+  </section>
+
+  <section class="card share-card">
+    <div class="card-head">
+      <h2>Share</h2>
+    </div>
+    <p class="share-text">
+      Send Align to another phone. The link opens in Safari there, and
+      <strong>Share → Add to Home Screen</strong> puts it on the Home Screen as an app. No account,
+      and nothing leaves the device.
+    </p>
+    <input id="shareField" class="url-field" type="text" readonly value="" />
+    <div class="row btns">
+      <button id="btnShareApp" class="btn btn-power" type="button">Share Align</button>
+      <button id="btnCopyApp" class="btn" type="button">Copy link</button>
+    </div>
+    <div class="row btns">
+      <button id="btnShareResult" class="btn" type="button">Share measurement</button>
+      <button id="btnCopyResult" class="btn" type="button">Copy result</button>
+      <button id="btnExportCsv" class="btn" type="button" disabled>Export CSV</button>
+    </div>
   </section>
 
   <section class="card help">
@@ -257,8 +369,11 @@
         that delay from the phase so two systems can be compared for alignment.
       </p>
       <p class="muted">
-        Level is dBFS, not dB SPL: absolute SPL needs a calibrated microphone and an offset. Measurements
-        are relative, which is what alignment work needs.
+        Levels read dBFS by default. A calibrated measurement microphone comes with a sensitivity figure,
+        and entering that offset in the Analysis card turns the input readout into dB SPL — the sound
+        pressure in the room rather than a fraction of full scale. Without a calibrated mic the offset
+        means nothing, so leave it at 0. Measurements stay relative either way, which is what alignment
+        work needs.
       </p>
       <p class="muted">
         <strong>Phone microphone</strong> — no interface needed: set <strong>Input</strong> to
@@ -280,6 +395,52 @@
 </main>
 
 <footer class="foot">Align · runs locally in the browser · no audio leaves the device</footer>
+
+<section id="savedSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <h2 class="sheet-title">Saved measurements</h2>
+    <button id="btnCloseSaved" class="btn" type="button">Done</button>
+  </div>
+  <p class="muted" id="savedSubtitle">Kept on this device</p>
+  <ul class="saved-list" id="savedList"></ul>
+  <div class="sheet-foot">
+    <button id="btnSaveCurrent" class="btn btn-power" type="button">Save current measurement</button>
+    <p class="muted" id="saveHint">A measurement is saved with the FFT size, smoothing and reference mode it was taken with.</p>
+  </div>
+</section>
+
+<section id="waterfallSheet" class="sheet waterfall-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Waterfall</h2>
+      <p class="sheet-sub" id="wfSubtitle">impulse decay · 0–20 ms</p>
+    </div>
+    <button id="btnCloseWaterfall" class="btn" type="button">Done</button>
+  </div>
+  <div class="chart-wrap wf">
+    <canvas id="wfChart"></canvas>
+  </div>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label for="wfRange">Time range</label>
+      <span class="value-box" id="wfRangeValue">20 ms</span>
+    </div>
+    <input type="range" id="wfRange" min="0" max="50" step="1" value="20" />
+    <div class="range-labels"><span>0 ms</span><span>50 ms</span></div>
+  </div>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label for="wfAmp">Amplitude</label>
+      <span class="value-box" id="wfAmpValue">100%</span>
+    </div>
+    <input type="range" id="wfAmp" min="0" max="200" step="5" value="100" />
+    <div class="range-labels"><span>0%</span><span>200%</span></div>
+  </div>
+  <p class="sheet-foot-note">
+    Each slice is one window further past the impulse peak. Ringing that lasts is what the gate is
+    there to remove.
+  </p>
+</section>
 
 <script type="module" src="js/app.js"></script>
 </body>

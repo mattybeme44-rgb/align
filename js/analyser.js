@@ -114,6 +114,10 @@ export class Analyser {
     this.fullRe = new Float64Array(size);
     this.fullIm = new Float64Array(size);
     this.ir = new Float64Array(size);
+    // The complex impulse response, kept so a time gate can window it and
+    // transform it back for a gated magnitude curve.
+    this.irRe = new Float64Array(size);
+    this.irIm = new Float64Array(size);
     this.updateRate = 0.1;
     this.frames = 0;
     this.peakIndex = 0;
@@ -226,6 +230,11 @@ export class Analyser {
     im[half] = 0;
 
     this.fft.inverse(re, im);
+
+    for (let i = 0; i < n; i++) {
+      this.irRe[i] = re[i];
+      this.irIm[i] = im[i];
+    }
 
     const ir = this.ir;
     // The peak is only looked for in a neighbourhood of zero unless the caller
@@ -340,14 +349,64 @@ export class Analyser {
   }
 
   /**
+   * The power spectrum of the impulse response windowed in time, measured from
+   * the impulse peak, with softly tapered edges so the gate itself does not add
+   * ripples to the curve.
+   * `gate`: { startMs, widthMs }
+   */
+  gatedPower(gate) {
+    const n = this.fftSize;
+    const bins = this.bins;
+    if (n < 8 || bins < 2) return null;
+
+    let peak = 0;
+    for (let i = 1; i < n; i++) {
+      if (this.ir[i] > this.ir[peak]) peak = i;
+    }
+
+    const start = peak + Math.round((gate.startMs / 1000) * this.sampleRate);
+    const width = Math.min(n, Math.max(16, Math.round((gate.widthMs / 1000) * this.sampleRate)));
+    const taper = Math.min(Math.max(8, Math.floor(width / 10)), Math.floor(width / 2));
+
+    const re = new Float64Array(n);
+    const im = new Float64Array(n);
+
+    for (let offset = 0; offset < width; offset++) {
+      let index = (start + offset) % n;
+      if (index < 0) index += n;
+
+      let weight = 1;
+      if (offset < taper) {
+        weight = 0.5 * (1 - Math.cos((Math.PI * offset) / taper));
+      } else if (offset >= width - taper) {
+        weight = 0.5 * (1 - Math.cos((Math.PI * (width - offset - 1)) / taper));
+      }
+
+      re[index] = this.irRe[index] * weight;
+      im[index] = this.irIm[index] * weight;
+    }
+
+    this.fft.forward(re, im);
+
+    const power = new Float64Array(bins);
+    for (let k = 0; k < bins; k++) {
+      power[k] = re[k] * re[k] + im[k] * im[k];
+    }
+    return power;
+  }
+
+  /**
    * Build the display-ready result set.
-   * opts: { compensate, smoothing (octave fraction, 0 = off), normalize }
+   * opts: { compensate, smoothing (octave fraction, 0 = off), normalize,
+   *         gate: { enabled, startMs, widthMs } }
    */
   results(opts) {
     const options = opts || {};
     const compensate = options.compensate !== false;
     const smoothing = options.smoothing || 0;
     const normalize = options.normalize !== false;
+    const gate = options.gate || null;
+    const gated = !!(gate && gate.enabled);
     const n = this.fftSize;
     const bins = this.bins;
 
@@ -396,7 +455,13 @@ export class Analyser {
       coh[k] = denom > 0 ? Math.min(1, cxy / denom) : 0;
     }
 
-    const smoothed = smoothing > 0 ? smoothPower(power, this.df, smoothing) : power;
+    let spectrumPower = power;
+    if (gated) {
+      const windowed = this.gatedPower(gate);
+      if (windowed) spectrumPower = windowed;
+    }
+
+    const smoothed = smoothing > 0 ? smoothPower(spectrumPower, this.df, smoothing) : spectrumPower;
 
     const db = new Float64Array(bins);
     for (let k = 0; k < bins; k++) {
@@ -465,6 +530,10 @@ export class Analyser {
       polarity: this.polarity,
       polarityKnown: polarityKnown,
       frames: this.frames,
+      gated: gated,
+      // The complex impulse response, for the waterfall's slices.
+      irRe: this.irRe,
+      irIm: this.irIm,
     };
   }
 }

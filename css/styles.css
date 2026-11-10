@@ -24,6 +24,15 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* An app rather than a document: a second tap on a control must not zoom the
+   view, which is what makes a Home Screen launch feel like a web page. */
+.btn,
+select,
+input,
+summary {
+  touch-action: manipulation;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -61,18 +70,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: calc(16px + env(safe-area-inset-top)) 2px 14px;
   position: sticky;
   top: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(11, 15, 12, 0.96) 0%,
-    rgba(11, 15, 12, 0.88) 62%,
-    rgba(11, 15, 12, 0) 100%
-  );
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
+  background: var(--bg);
   z-index: 5;
 }
 
@@ -84,13 +87,10 @@ body {
   position: relative;
   margin: 0;
   padding-left: 18px;
-  font-size: 23px;
-  letter-spacing: 0.01em;
-  font-weight: 680;
-  background: linear-gradient(120deg, #ffffff 8%, #d8ff9a 78%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-size: 27px;
+  letter-spacing: 0;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .brand h1::before {
@@ -108,10 +108,10 @@ body {
 
 .brand .sub {
   margin: 3px 0 0 18px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--dim);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -120,7 +120,7 @@ body {
 .top-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex: none;
 }
 
@@ -128,6 +128,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex: 1 1 100%;
   padding: 5px 10px 5px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -135,7 +136,6 @@ body {
   font-size: 11px;
   line-height: 1.35;
   color: var(--dim);
-  max-width: 46vw;
   max-height: 3.6em;
   overflow: hidden;
 }
@@ -170,77 +170,80 @@ body {
   -webkit-appearance: none;
   font: inherit;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text);
   padding: 9px 15px;
-  border-radius: 11px;
-  border: 1px solid var(--line-strong);
-  background: linear-gradient(180deg, #1c2418, #131a11);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.05) inset,
-    0 3px 10px -6px rgba(0, 0, 0, 0.9);
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.07);
   cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
   transition:
     transform 0.12s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    filter 0.2s ease;
+    background-color 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .btn:active {
-  transform: scale(0.975);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5) inset;
+  transform: scale(0.97);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
 }
 
 .btn-power {
-  border-color: rgba(201, 255, 112, 0.45);
-  background: rgba(201, 255, 112, 0.07);
-  color: #ddffa8;
+  border-color: transparent;
+  background: var(--accent);
+  color: #0c1008;
   font-weight: 600;
-  letter-spacing: 0.01em;
-  box-shadow:
-    0 1px 0 rgba(226, 255, 168, 0.1) inset,
-    0 4px 14px -8px rgba(201, 255, 112, 0.5);
 }
 
 .btn-power.on {
-  background: linear-gradient(180deg, #d9ff92, #a8e84f);
-  border-color: var(--accent);
-  color: #0c1008;
-  box-shadow:
-    0 0 0 1px rgba(201, 255, 112, 0.3),
-    0 8px 20px -8px rgba(201, 255, 112, 0.75);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* Icon-only control for the bar at the top: the share sheet. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 11px;
+  color: var(--text-soft);
+  -webkit-touch-callout: none;
+}
+
+.btn-icon svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.btn-icon:active {
+  transform: scale(0.94);
 }
 
 /* ---------- cards ---------- */
 
 .card {
   position: relative;
-  background: linear-gradient(180deg, rgba(23, 30, 22, 0.94), rgba(13, 18, 13, 0.94));
+  background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px 15px;
-  margin-bottom: 14px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.035) inset,
-    0 20px 38px -30px rgba(0, 0, 0, 0.95);
-}
-
-.card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 16px;
-  right: 16px;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0));
-  pointer-events: none;
+  border-radius: 20px;
+  padding: 14px;
+  margin-bottom: 12px;
 }
 
 .card h2 {
@@ -248,21 +251,15 @@ body {
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 11px;
-  font-weight: 620;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
 }
 
 .card h2::before {
-  content: "";
-  flex: none;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px rgba(201, 255, 112, 0.6);
+  display: none;
 }
 
 .card-head {
@@ -320,30 +317,29 @@ canvas {
 }
 
 .metric {
-  background: linear-gradient(180deg, rgba(23, 30, 22, 0.94), rgba(12, 17, 12, 0.94));
+  background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 13px;
-  padding: 9px 10px 10px;
+  border-radius: 14px;
+  padding: 10px 11px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
 }
 
 .metric .k {
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--dim);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .metric .v {
-  font-size: clamp(12px, 3.6vw, 15px);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 17px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text);
   white-space: nowrap;
@@ -747,6 +743,38 @@ input[type="checkbox"] {
   color: var(--text);
 }
 
+/* ---------- share ---------- */
+
+.share-card .share-text {
+  margin: 10px 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+
+.share-card .share-text strong {
+  color: var(--text);
+}
+
+.share-card .url-field {
+  margin: 0 0 8px;
+}
+
+.share-card .row.btns {
+  padding: 6px 0 0;
+  border-bottom: 0;
+}
+
+.share-card .row.btns .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  padding: 9px 12px;
+  font-size: 12px;
+  text-align: center;
+}
+
 a.btn {
   display: inline-flex;
   align-items: center;
@@ -763,7 +791,7 @@ a.btn.btn-power:visited {
 }
 
 a.btn.btn-power.on:visited {
-  color: #0c1008;
+  color: var(--text);
 }
 
 /* In a browser that cannot open the microphone, the hand-off to Safari takes
@@ -848,5 +876,334 @@ body.sheet-open {
 
   .btn:active {
     transform: none;
+  }
+}
+
+
+/* ---------- the iOS-parity controls ---------- */
+
+.badge {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid rgba(201, 255, 112, 0.4);
+  border-radius: 999px;
+  background: rgba(201, 255, 112, 0.12);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.cursor-readout {
+  margin: 0 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row.toggles {
+  gap: 14px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  border-bottom: 0;
+  padding: 10px 0 2px;
+}
+
+.trace-note {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gate-toggle {
+  display: flex;
+  padding: 8px 0 2px;
+}
+
+.row.gate-fields {
+  justify-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.row.gate-fields > label {
+  font-size: 12px;
+}
+
+.gate-fields input[type="number"] {
+  width: 86px;
+  min-width: 86px;
+  max-width: 86px;
+  padding: 6px 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.gate-fields input[type="number"]:disabled {
+  opacity: 0.45;
+}
+
+/* ---------- the waterfall sheet ---------- */
+
+.chart-wrap.wf {
+  height: 340px;
+  margin-bottom: 12px;
+}
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow-y: auto;
+  padding: calc(18px + env(safe-area-inset-top)) 16px calc(26px + env(safe-area-inset-bottom));
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(620px 380px at 8% 0%, rgba(201, 255, 112, 0.1), rgba(201, 255, 112, 0) 62%),
+    radial-gradient(560px 420px at 94% 4%, rgba(119, 200, 193, 0.08), rgba(119, 200, 193, 0) 60%);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sheet-head .sheet-title {
+  margin: 0;
+}
+
+.sheet-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.sheet + .sheet {
+  margin-top: 0;
+}
+
+.wf-card {
+  margin-bottom: 12px;
+}
+
+.row.wf-row {
+  border-bottom: 0;
+  padding: 0 0 6px;
+}
+
+.row.wf-row > label {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.value-box {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border: 1px solid rgba(201, 255, 112, 0.28);
+  border-radius: 9px;
+  background: rgba(201, 255, 112, 0.1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-bright);
+}
+
+.wf-card input[type="range"] {
+  width: 100%;
+}
+
+.range-labels {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 2px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.sheet-foot-note {
+  margin: 4px 0 0;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dim);
+  text-align: center;
+}
+
+/* ---------- saved measurements sheet ---------- */
+
+#savedSheet .muted,
+.sheet .muted {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.saved-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.saved-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(23, 30, 22, 0.94), rgba(12, 17, 12, 0.94));
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.saved-item.selected {
+  border-color: rgba(201, 255, 112, 0.55);
+}
+
+.saved-item .saved-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.saved-item .saved-delay {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 19px;
+  color: var(--accent);
+}
+
+.saved-item .saved-meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.saved-item .saved-name {
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-item .saved-date {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.saved-item .saved-thumb {
+  flex: none;
+  width: 74px;
+  height: 38px;
+}
+
+.saved-item .saved-check {
+  flex: none;
+  width: 18px;
+  font-size: 14px;
+  color: var(--dim);
+  text-align: right;
+}
+
+.saved-item.selected .saved-check {
+  color: var(--accent);
+}
+
+.saved-delete {
+  flex: none;
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 138, 122, 0.32);
+  border-radius: 9px;
+  background: rgba(42, 21, 18, 0.6);
+  color: var(--warn);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.saved-empty {
+  margin: 10px 0 16px;
+  padding: 18px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dim);
+  text-align: center;
+}
+
+.sheet-foot {
+  padding-top: 4px;
+}
+
+.sheet-foot .btn {
+  display: block;
+  width: 100%;
+  padding: 13px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sheet-foot .muted {
+  margin: 10px 0 0;
+  text-align: center;
+}
+
+
+.saved-list > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.saved-list > li > .saved-item {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.saved-list > li > .saved-delete {
+  align-self: stretch;
+}
+
+
+/* ---------- desktop ---------- */
+
+/*
+ * On a wide screen the app stays one column, like the phone version, but a
+ * narrower one: the header stops following the scroll (it used to sit over the
+ * transfer-function chart) and the text column keeps a comfortable measure.
+ */
+@media (min-width: 900px) {
+  body {
+    max-width: 760px;
+  }
+
+  .topbar {
+    position: static;
+    background: none;
+    padding-top: 26px;
   }
 }

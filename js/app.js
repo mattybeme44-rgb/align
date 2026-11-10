@@ -1,6 +1,7 @@
 import { AudioEngine } from './audio-engine.js';
 import { Analyser, suggestEq } from './analyser.js';
-import { TransferChart, ImpulseChart } from './charts.js';
+import { TransferChart, ImpulseChart, targetDb, wrapDegrees, TARGET_CURVES } from './charts.js';
+import { buildWaterfall, WaterfallChart } from './waterfall.js';
 import { FFT } from './fft.js';
 
 const $ = (id) => document.getElementById(id);
@@ -16,6 +17,16 @@ let eqTick = 0;
 let starting = false;
 let allowStartHere = false;
 let jitterWarned = false;
+let gateDrag = null;
+let lastWaterfallBuild = 0;
+let drawRaf = 0;
+
+const STORAGE = {
+  target: 'align.targetCurve',
+  calibration: 'align.levelCalibrationDb',
+  spl: 'align.showLevelAsSpl',
+  saved: 'align.savedMeasurements.v1',
+};
 
 const state = {
   running: false,
@@ -37,13 +48,89 @@ const state = {
   delayAuto: true,
   totalDelayMs: 0,
   snapshot: null,
+  snapshotB: null,
+  peakHold: null,
+  peakHoldArmed: false,
+  average: null,
+  averageArmed: false,
+  averagePower: null,
+  averageCaptures: 0,
+  saved: [],
+  overlaidSavedId: null,
+  target: null,
+  calibrationDb: 0,
+  showSpl: false,
+  gate: { enabled: false, startMs: -0.5, widthMs: 20 },
   results: null,
+  eq: [],
   cursorFreq: null,
   inputSource: 'auto',
+  waterfallOpen: false,
+  waterfallRangeMs: 20,
+  waterfallAmplitude: 100,
+  waterfall: null,
 };
+
+/* ---------- storage ---------- */
+
+function readString(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : raw;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function readNumber(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function write(key, value) {
+  try {
+    if (value === null || value === '') window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, String(value));
+  } catch (err) {
+    /* private browsing: the app still works, it just forgets */
+  }
+}
+
+function loadSaved() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE.saved);
+    if (!raw) return [];
+    const items = JSON.parse(raw);
+    return Array.isArray(items) ? items.slice(0, 20) : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function persistSaved() {
+  try {
+    window.localStorage.setItem(STORAGE.saved, JSON.stringify(state.saved.slice(0, 20)));
+  } catch (err) {
+    /* storage full or blocked: keep the session's list in memory */
+  }
+}
+
+state.saved = loadSaved();
+state.target = readString(STORAGE.target, '') || null;
+state.calibrationDb = readNumber(STORAGE.calibration, 0);
+state.showSpl = readString(STORAGE.spl, '0') === '1';
 
 const tfChart = new TransferChart($('tfChart'));
 const irChart = new ImpulseChart($('irChart'));
+const wfChart = new WaterfallChart($('wfChart'));
+
+/* ---------- status and sharing ---------- */
 
 function setStatus(text, kind) {
   const el = $('status');
@@ -65,6 +152,17 @@ function hideAudioHelp() {
   if (banner) banner.hidden = true;
 }
 
+function updateSheetLock() {
+  const open = !$('savedSheet').hidden || !$('waterfallSheet').hidden;
+  document.body.classList.toggle('sheet-open', open);
+}
+
+function closeSheet(id) {
+  const sheet = $(id);
+  if (sheet) sheet.hidden = true;
+  updateSheetLock();
+}
+
 function showSafariBanner() {
   const banner = $('safariBanner');
   if (!banner) return;
@@ -73,9 +171,12 @@ function showSafariBanner() {
   if (field) field.value = address;
   const link = $('openInSafari');
   if (link) link.href = address;
-  banner.classList.add('overlay');
+
+  // A card at the top of the page, not a wall over it: the app still works in
+  // this browser — the demo needs no microphone — and hiding everything behind
+  // a notice made the page feel broken.
+  banner.classList.remove('overlay');
   banner.hidden = false;
-  document.body.classList.add('sheet-open');
 }
 
 function hideSafariBanner() {
@@ -84,7 +185,7 @@ function hideSafariBanner() {
     banner.hidden = true;
     banner.classList.remove('overlay');
   }
-  document.body.classList.remove('sheet-open');
+  updateSheetLock();
 }
 
 const INSTALL_HINT_KEY = 'align.install-hint-dismissed';
@@ -103,12 +204,6 @@ function isStandalone() {
   return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
 }
 
-/**
- * True for a browser another app hosts on iOS (a chat app's own browser, say).
- * Those cannot open the microphone: iOS dismisses the whole web view instead,
- * which looks like the app quitting. Safari can, so the page has to move there.
- * An installed Home Screen app is not one of these.
- */
 function isLikelyInAppBrowser() {
   if (!isIOS() || isStandalone()) return false;
   const ua = navigator.userAgent || '';
@@ -123,39 +218,223 @@ function showPreviewNote() {
   if (note) note.hidden = false;
 }
 
-/** A --preview address only opens inside FreeMilk; Safari sees it as private. */
 function isPrivatePreview() {
   return /--preview\./.test(window.location.hostname);
 }
 
-/**
- * Where people should actually measure from. Never hand out a private preview
- * address: Safari answers "this preview is private" and the app looks broken.
- */
 const PUBLIC_URL = 'https://mattybeme44-rgb.github.io/align/';
 
 function publicAddress() {
   return isPrivatePreview() ? PUBLIC_URL : window.location.href;
 }
 
-async function copyLink() {
-  const link = publicAddress();
+async function copyText(text, fieldId) {
   try {
     if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard');
-    await navigator.clipboard.writeText(link);
-    setStatus('link copied — paste it into Safari', 'ok');
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch (err) {
-    const field = $('safariUrl');
+    const field = $(fieldId);
     if (field) {
-      field.value = link;
+      field.value = text;
       field.select();
-      field.setSelectionRange(0, link.length);
+      field.setSelectionRange(0, text.length);
     }
-    setStatus('link ready below — copy it into Safari', 'err');
+    return false;
   }
 }
 
-/** Offer Add to Home Screen once, in Safari, until it is dismissed. */
+async function copyLink() {
+  const copied = await copyText(publicAddress(), 'safariUrl');
+  setStatus(
+    copied ? 'link copied — paste it into Safari' : 'link ready below — copy it into Safari',
+    copied ? 'ok' : 'err',
+  );
+}
+
+const SHARE_TITLE = 'Align — loudspeaker measurement';
+const SHARE_INTRO =
+  'Align measures a loudspeaker from a phone: transfer function, delay finder, ' +
+  'coherence and EQ suggestions, all on the device.';
+
+async function shareOrCopy(payload, label) {
+  if (navigator.share && window.isSecureContext) {
+    try {
+      await navigator.share(payload);
+      setStatus(label + ' shared', 'ok');
+      return;
+    } catch (err) {
+      // Closing the sheet is a decision, not a failure: leave it there.
+      if (err && err.name === 'AbortError') return;
+    }
+  }
+
+  const copied = await copyText(payload.copy || payload.url || payload.text, 'shareField');
+  setStatus(
+    copied ? label + ' copied — paste it anywhere' : label + ' is in the Share card below',
+    copied ? 'ok' : 'err',
+  );
+}
+
+function shareApp() {
+  const url = publicAddress();
+  return shareOrCopy(
+    {
+      title: SHARE_TITLE,
+      text: SHARE_INTRO + ' Open the link in Safari, then Share → Add to Home Screen.',
+      url,
+      copy: url,
+    },
+    'link',
+  );
+}
+
+/** What is on screen, as a few lines somebody can read in a message. */
+function measurementText(res) {
+  const lines = ['Align measurement'];
+  lines.push('Delay ' + state.totalDelayMs.toFixed(2) + ' ms');
+  if (res.polarityKnown) {
+    lines.push('Polarity ' + (res.polarity > 0 ? 'normal' : 'inverted'));
+  }
+  lines.push('Coherence ' + (meanCoherence(res) * 100).toFixed(0) + '%');
+  lines.push(
+    (res.sampleRate / 1000).toFixed(1) +
+      ' kHz · FFT ' +
+      res.fftSize +
+      ' · ' +
+      res.df.toFixed(1) +
+      ' Hz bins',
+  );
+  if (res.gated) {
+    lines.push(
+      'Gated ' +
+        state.gate.startMs.toFixed(1) +
+        '–' +
+        (state.gate.startMs + state.gate.widthMs).toFixed(1) +
+        ' ms',
+    );
+  }
+  if (state.snapshot) {
+    lines.push('Δ vs A ' + (state.totalDelayMs - state.snapshot.delayMs).toFixed(2) + ' ms');
+  }
+  if (state.snapshotB) {
+    lines.push('Δ vs B ' + (state.totalDelayMs - state.snapshotB.delayMs).toFixed(2) + ' ms');
+  }
+  if (state.eq.length > 0) {
+    const bands = state.eq.map((item) => {
+      const freq =
+        item.freq >= 1000 ? (item.freq / 1000).toFixed(1) + ' kHz' : item.freq.toFixed(0) + ' Hz';
+      return freq + ' ' + (item.gain > 0 ? '+' : '') + item.gain.toFixed(1) + ' dB';
+    });
+    lines.push('EQ: ' + bands.join(', '));
+  }
+  return lines.join('\n');
+}
+
+function shareMeasurement() {
+  const res = state.results;
+  if (!res) {
+    setStatus('nothing to share yet — start a measurement first', 'err');
+    return;
+  }
+  const text = measurementText(res);
+  return shareOrCopy(
+    {
+      title: 'Align measurement · ' + state.totalDelayMs.toFixed(2) + ' ms',
+      text,
+      url: publicAddress(),
+      copy: text + '\n\n' + publicAddress(),
+    },
+    'measurement',
+  );
+}
+
+async function copyAppLink() {
+  const copied = await copyText(publicAddress(), 'shareField');
+  setStatus(
+    copied ? 'link copied — paste it anywhere' : 'link is in the Share card below',
+    copied ? 'ok' : 'err',
+  );
+}
+
+async function copyMeasurement() {
+  const res = state.results;
+  if (!res) {
+    setStatus('nothing to copy yet — start a measurement first', 'err');
+    return;
+  }
+  const copied = await copyText(measurementText(res) + '\n\n' + publicAddress(), 'shareField');
+  setStatus(
+    copied ? 'measurement copied — paste it anywhere' : 'measurement is in the Share card below',
+    copied ? 'ok' : 'err',
+  );
+}
+
+function smoothingLabel() {
+  const select = $('selSmooth');
+  return select && select.selectedOptions.length ? select.selectedOptions[0].textContent : '—';
+}
+
+function referenceLabel() {
+  if (state.demo) return 'Demo measurement';
+  const select = $('selRef');
+  return select && select.selectedOptions.length ? select.selectedOptions[0].textContent : 'generated';
+}
+
+/* ---------- CSV ---------- */
+
+function measurementCSV(res) {
+  const lines = [];
+  lines.push('# Align measurement');
+  lines.push('# Sample rate,' + res.sampleRate);
+  lines.push('# FFT size,' + res.fftSize);
+  lines.push('# Smoothing,' + smoothingLabel());
+  lines.push('# Delay ms,' + state.totalDelayMs.toFixed(3));
+  lines.push('# Polarity,' + (res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown'));
+  lines.push(
+    '# Gate,' +
+      (res.gated
+        ? state.gate.startMs.toFixed(1) + ' to ' + (state.gate.startMs + state.gate.widthMs).toFixed(1) + ' ms'
+        : 'off'),
+  );
+  lines.push('Frequency (Hz),Magnitude (dB),Phase (deg),Coherence,Impulse (dB)');
+
+  for (let k = 0; k < res.bins; k++) {
+    lines.push(
+      [
+        (k * res.df).toFixed(2),
+        res.magDb[k].toFixed(3),
+        res.phaseDeg[k].toFixed(2),
+        res.coh[k].toFixed(4),
+        res.irDb[Math.min(res.fftSize - 1, k)].toFixed(2),
+      ].join(','),
+    );
+  }
+  return lines.join('\n');
+}
+
+function exportCSV() {
+  const res = state.results;
+  if (!res) {
+    setStatus('nothing to export yet — start a measurement first', 'err');
+    return;
+  }
+
+  const blob = new Blob([measurementCSV(res)], { type: 'text/csv' });
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'align-' + stamp + '.csv';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  setStatus('CSV ready — check Files or your downloads', 'ok');
+}
+
+/* ---------- install hint ---------- */
+
 function showInstallHint() {
   const card = $('installCard');
   if (!card) return;
@@ -164,19 +443,13 @@ function showInstallHint() {
   try {
     dismissed = window.localStorage.getItem(INSTALL_HINT_KEY) === '1';
   } catch (err) {
-    /* private browsing: show it, it just will not stay dismissed */
     dismissed = false;
   }
   if (!dismissed) card.hidden = false;
 }
 
-/*
- * Demo measurement: the same analysis path the microphone feeds, driven by a
- * synthetic speaker — a little room gain low down, a dip near 260 Hz, presence
- * around 2.4 kHz, a soft top-octave roll-off and 3.7 ms of propagation delay.
- * Nothing is captured and no permission is asked for, so this works in any
- * browser, including ones that cannot open the microphone.
- */
+/* ---------- demo measurement ---------- */
+
 const DEMO_RATE = 48000;
 const DEMO_DELAY_MS = 3.7;
 
@@ -283,15 +556,18 @@ function demoFrame() {
     compensate: state.compensate,
     smoothing: state.smoothing,
     normalize: state.normalize,
+    gate: state.gate,
   });
 
   state.results = res;
+  if (state.peakHoldArmed) state.peakHold = mergePeakHold(state.peakHold, res);
   updateReadouts(res);
   updateInterfaceInfo();
 
   eqTick += 1;
   if (eqTick % 3 === 0) updateEq(res);
 
+  refreshWaterfall(false);
   draw();
 }
 
@@ -301,7 +577,7 @@ function demoLoop(now) {
     return;
   }
   demoRaf = requestAnimationFrame(demoLoop);
-  // Bigger windows cost more to transform, so average them a little slower.
+  if (document.hidden) return;
   const interval = state.fftSize >= 32768 ? 320 : 160;
   if (now - demoLast < interval) return;
   demoLast = now;
@@ -319,10 +595,9 @@ function startDemo() {
   state.delayProbedAt = 0;
   state.delayAuto = true;
   state.totalDelayMs = 0;
-  state.snapshot = null;
   $('numDelay').value = '0.00';
-  $('rdDelta').textContent = '—';
   jitterWarned = false;
+  resetTraces();
 
   analyser = new Analyser(state.fftSize, DEMO_RATE);
   analyser.updateRate = averagingRate();
@@ -357,12 +632,16 @@ function stopDemo() {
   state.totalDelayMs = 0;
   state.delayLockedAt = 0;
   state.delayProbedAt = 0;
+  state.waterfall = null;
   jitterWarned = false;
   $('rdDelay').textContent = '—';
   $('rdCoh').textContent = '—';
   $('rdLevel').textContent = '—';
   $('rdRate').textContent = '—';
   $('irReadout').textContent = '—';
+  $('btnWaterfall').disabled = false;
+  $('btnExportCsv').disabled = true;
+  $('btnSaveCurrent').disabled = true;
   setStatus('idle');
   updateInterfaceInfo();
   draw();
@@ -372,20 +651,10 @@ function averagingRate() {
   return 0.02 + 0.45 * (state.avgSpeed / 100);
 }
 
-/**
- * How far from zero the fine delay search looks once the coarse offset is known.
- *
- * The short window then only has to follow the delay around the offset already
- * locked in, so it never has to decide between two branches of the circular
- * correlation — which is what made the reading jump while the phone microphone
- * and the phone speaker were both in use. Until there is an offset to follow,
- * the whole window is searched, exactly as before.
- */
 function fineSearchRadius(fftSize) {
   return Math.max(1, Math.round(fftSize / 8));
 }
 
-/** What to ask the engine for, from the Input source choice. */
 function sourceOptions() {
   const value = state.inputSource || 'auto';
   if (value.indexOf('device:') === 0) {
@@ -400,7 +669,6 @@ function sourceName() {
   return '';
 }
 
-/** Say which input the engine actually got, not which one was asked for. */
 function reportInput() {
   if (!engine.modeSatisfied) {
     setStatus('could not use ' + sourceName() + ' — using "' + engine.deviceLabel + '"', 'err');
@@ -424,16 +692,553 @@ function buildAnalyser() {
   micWin = new Float32Array(state.fftSize);
   refWin = new Float32Array(state.fftSize);
   state.results = null;
+  state.eq = [];
 }
 
+/* ---------- traces ---------- */
+
+function captureTrace(res) {
+  return {
+    magDb: Float32Array.from(res.magDb),
+    phaseDeg: Float32Array.from(res.phaseDeg),
+    coh: Float32Array.from(res.coh),
+    bins: res.bins,
+    fftSize: res.fftSize,
+    sampleRate: res.sampleRate,
+  };
+}
+
+function overlaidCurve() {
+  const item = state.saved.find((entry) => entry.id === state.overlaidSavedId);
+  return item && Array.isArray(item.curve) ? item.curve : null;
+}
+
+function resetTraces() {
+  state.snapshot = null;
+  state.snapshotB = null;
+  state.peakHold = null;
+  state.peakHoldArmed = false;
+  state.average = null;
+  state.averageArmed = false;
+  state.averagePower = null;
+  state.averageCaptures = 0;
+  state.overlaidSavedId = null;
+  $('btnArmPeak').textContent = 'Arm peak hold';
+  $('btnArmAverage').textContent = 'Arm average';
+  $('btnCaptureAverage').disabled = true;
+  $('rdDelta').textContent = '—';
+  $('rdDeltaB').textContent = '—';
+  updateTraceSummary();
+}
+
+function updateTraceSummary() {
+  const parts = [];
+  if (state.snapshot) parts.push('A');
+  if (state.snapshotB) parts.push('B');
+  if (state.average) parts.push('avg ' + state.averageCaptures);
+  const text = parts.length ? parts.join(' + ') + ' captured' : 'no captures yet';
+  $('captureSummary').textContent = text;
+  $('traceSummary').textContent = text;
+}
+
+function updateGateBadge() {
+  const badge = $('gateBadge');
+  if (badge) badge.hidden = !state.gate.enabled;
+}
+
+function mergePeakHold(held, res) {
+  if (!held || held.bins !== res.bins || held.fftSize !== res.fftSize) return captureTrace(res);
+  for (let k = 0; k < held.bins; k++) {
+    const value = res.magDb[k];
+    if (!Number.isFinite(value)) continue;
+    if (!Number.isFinite(held.magDb[k]) || value > held.magDb[k]) held.magDb[k] = value;
+  }
+  return held;
+}
+
+function captureA() {
+  const res = state.results;
+  if (!res) return;
+  state.snapshot = Object.assign(captureTrace(res), { delayMs: state.totalDelayMs });
+  setStatus('captured A at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
+  updateTraceSummary();
+  draw();
+}
+
+function clearA() {
+  state.snapshot = null;
+  $('rdDelta').textContent = '—';
+  updateTraceSummary();
+  draw();
+}
+
+function captureB() {
+  const res = state.results;
+  if (!res) return;
+  state.snapshotB = Object.assign(captureTrace(res), { delayMs: state.totalDelayMs });
+  setStatus('captured B at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
+  updateTraceSummary();
+  draw();
+}
+
+function clearB() {
+  state.snapshotB = null;
+  $('rdDeltaB').textContent = '—';
+  updateTraceSummary();
+  draw();
+}
+
+function armPeakHold() {
+  state.peakHoldArmed = true;
+  state.peakHold = state.results ? captureTrace(state.results) : null;
+  $('btnArmPeak').textContent = 'Re-arm peak hold';
+  setStatus(
+    state.peakHold
+      ? 'peak hold armed — the pinned line only rises from here'
+      : 'peak hold armed — waiting for the first frame',
+    'ok',
+  );
+  draw();
+}
+
+function clearPeakHold() {
+  state.peakHoldArmed = false;
+  state.peakHold = null;
+  $('btnArmPeak').textContent = 'Arm peak hold';
+  setStatus('peak hold cleared', 'ok');
+  draw();
+}
+
+function armAverage() {
+  state.averageArmed = true;
+  state.average = null;
+  state.averagePower = null;
+  state.averageCaptures = 0;
+  $('btnArmAverage').textContent = 'Re-arm average';
+  $('btnCaptureAverage').disabled = false;
+  setStatus('average armed — Capture average adds the live curve', 'ok');
+  updateTraceSummary();
+  draw();
+}
+
+function captureAverage() {
+  const res = state.results;
+  if (!res) return;
+
+  state.averageArmed = true;
+  if (!state.averagePower || state.averagePower.length !== res.bins) {
+    state.averagePower = new Float64Array(res.bins);
+    state.averageCaptures = 0;
+  }
+
+  for (let k = 0; k < res.bins; k++) {
+    const db = res.magDb[k];
+    if (!Number.isFinite(db)) continue;
+    state.averagePower[k] += Math.pow(10, db / 10);
+  }
+  state.averageCaptures += 1;
+
+  const divisor = state.averageCaptures;
+  const trace = captureTrace(res);
+  for (let k = 0; k < res.bins; k++) {
+    const mean = state.averagePower[k] / divisor;
+    trace.magDb[k] = mean > 0 ? 10 * Math.log10(mean) : -140;
+  }
+  state.average = trace;
+
+  setStatus(
+    divisor === 1 ? 'average started with this curve' : 'averaging ' + divisor + ' captures',
+    'ok',
+  );
+  updateTraceSummary();
+  draw();
+}
+
+function clearAverage() {
+  state.averageArmed = false;
+  state.average = null;
+  state.averagePower = null;
+  state.averageCaptures = 0;
+  $('btnArmAverage').textContent = 'Arm average';
+  $('btnCaptureAverage').disabled = true;
+  setStatus('average cleared', 'ok');
+  updateTraceSummary();
+  draw();
+}
+
+/* ---------- saved measurements ---------- */
+
+/** Magnitude in dB, 400 points log-spaced from 20 Hz to 20 kHz. */
+function savedCurve(res) {
+  const points = 400;
+  const span = Math.log(20000 / 20);
+  const values = new Float32Array(points);
+
+  for (let i = 0; i < points; i++) {
+    const t0 = i / (points - 1);
+    const t1 = (i + 1) / (points - 1);
+    const f0 = 20 * Math.exp(t0 * span);
+    const f1 = Math.min(20000, 20 * Math.exp(t1 * span));
+    const k0 = Math.max(1, Math.floor(f0 / res.df));
+    const k1 = Math.min(res.bins - 1, Math.max(k0, Math.ceil(f1 / res.df)));
+
+    let sum = 0;
+    let n = 0;
+    for (let k = k0; k <= k1; k++) {
+      const v = res.magDb[k];
+      if (!Number.isFinite(v)) continue;
+      sum += Math.pow(10, v / 10);
+      n += 1;
+    }
+    values[i] = n > 0 ? 10 * Math.log10(sum / n) : -140;
+  }
+
+  const smoothed = new Float32Array(points);
+  for (let i = 0; i < points; i++) {
+    const a = values[Math.max(0, i - 1)];
+    const b = values[i];
+    const c = values[Math.min(points - 1, i + 1)];
+    smoothed[i] = (a + 2 * b + c) / 4;
+  }
+  return Array.from(smoothed);
+}
+
+function formatSavedDate(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === today.toDateString()) return 'Today, ' + time;
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday, ' + time;
+  return date.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ', ' + time;
+}
+
+function drawSavedThumb(canvas, curve) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!curve || curve.length < 2) return;
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < curve.length; i++) {
+    const v = curve[i];
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+
+  const span = Math.max(1, max - min);
+  const y = (db) => h - 3 - ((db - min) / span) * (h - 6);
+
+  ctx.beginPath();
+  for (let i = 0; i < curve.length; i++) {
+    const x = (i / (curve.length - 1)) * w;
+    if (i === 0) ctx.moveTo(x, y(curve[i]));
+    else ctx.lineTo(x, y(curve[i]));
+  }
+  ctx.strokeStyle = 'rgba(180,167,247,0.9)';
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
+
+function renderSaved() {
+  const list = $('savedList');
+  list.textContent = '';
+
+  $('savedSubtitle').textContent = state.saved.length
+    ? 'Kept on this device · ' + state.saved.length + (state.saved.length === 1 ? ' measurement' : ' measurements')
+    : 'Kept on this device';
+
+  $('btnSaveCurrent').disabled = !state.results;
+  $('saveHint').textContent = state.results
+    ? 'A measurement is saved with the FFT size, smoothing and reference mode it was taken with.'
+    : 'Take a measurement first — Start, or Demo measurement.';
+
+  if (!state.saved.length) {
+    const empty = document.createElement('li');
+    empty.className = 'saved-empty';
+    empty.textContent =
+      'No measurements saved yet. A measurement you save is kept with its delay, coherence and settings, and its curve can be laid behind the live trace to compare.';
+    list.appendChild(empty);
+    return;
+  }
+
+  state.saved.forEach((item) => {
+    const row = document.createElement('li');
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'saved-item' + (item.id === state.overlaidSavedId ? ' selected' : '');
+    button.addEventListener('click', () => {
+      state.overlaidSavedId = state.overlaidSavedId === item.id ? null : item.id;
+      renderSaved();
+      draw();
+      if (state.overlaidSavedId) closeSheet('savedSheet');
+    });
+
+    const main = document.createElement('div');
+    main.className = 'saved-main';
+
+    const delay = document.createElement('div');
+    delay.className = 'saved-delay';
+    delay.textContent = item.delayMs.toFixed(2) + ' ms';
+
+    const meta = document.createElement('div');
+    meta.className = 'saved-meta';
+    const parts = [];
+    if (item.polarity && item.polarity !== 'unknown') parts.push('Polarity ' + item.polarity);
+    parts.push('Coherence ' + Math.round(item.coherence * 100) + '%');
+    meta.textContent = parts.join(' · ');
+
+    const name = document.createElement('div');
+    name.className = 'saved-name';
+    name.textContent = item.name;
+
+    const date = document.createElement('div');
+    date.className = 'saved-date';
+    date.textContent = formatSavedDate(item.date);
+
+    main.append(delay, meta, name, date);
+
+    const thumb = document.createElement('canvas');
+    thumb.className = 'saved-thumb';
+    thumb.width = 148;
+    thumb.height = 76;
+    drawSavedThumb(thumb, item.curve);
+
+    const check = document.createElement('span');
+    check.className = 'saved-check';
+    check.textContent = item.id === state.overlaidSavedId ? '✓' : '›';
+
+    button.append(main, thumb, check);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'saved-delete';
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.saved = state.saved.filter((entry) => entry.id !== item.id);
+      if (state.overlaidSavedId === item.id) state.overlaidSavedId = null;
+      persistSaved();
+      renderSaved();
+      draw();
+    });
+
+    row.append(button, remove);
+    list.appendChild(row);
+  });
+}
+
+function saveCurrent() {
+  const res = state.results;
+  if (!res) {
+    setStatus('nothing to save yet — start a measurement first', 'err');
+    return;
+  }
+
+  const suggestion =
+    'Measurement ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const answer = window.prompt('Name this measurement', suggestion);
+  if (answer === null) return;
+  const name = answer.trim() || suggestion;
+
+  const item = {
+    id: 'm' + Date.now() + '-' + Math.random().toString(16).slice(2),
+    name,
+    date: new Date().toISOString(),
+    delayMs: state.totalDelayMs,
+    coherence: meanCoherence(res),
+    polarity: res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown',
+    fftSize: res.fftSize,
+    sampleRate: res.sampleRate,
+    smoothing: smoothingLabel(),
+    reference: referenceLabel(),
+    curve: savedCurve(res),
+  };
+
+  state.saved.unshift(item);
+  state.saved = state.saved.slice(0, 20);
+  persistSaved();
+  renderSaved();
+  setStatus('saved “' + item.name + '”', 'ok');
+}
+
+function openSaved() {
+  renderSaved();
+  $('savedSheet').hidden = false;
+  updateSheetLock();
+}
+
+/* ---------- waterfall ---------- */
+
+function waterfallOptions() {
+  return {
+    rangeMs: state.waterfallRangeMs,
+    amplitude: state.waterfallAmplitude,
+    gate: state.gate,
+  };
+}
+
+function refreshWaterfall(force) {
+  if (!state.waterfallOpen) {
+    state.waterfall = null;
+    return;
+  }
+  if (!state.results) {
+    state.waterfall = null;
+    return;
+  }
+
+  const now = performance.now();
+  if (!force && now - lastWaterfallBuild < 400) return;
+  lastWaterfallBuild = now;
+  state.waterfall = buildWaterfall(state.results, state.waterfallRangeMs);
+}
+
+function drawWaterfall() {
+  wfChart.draw(state.waterfall, waterfallOptions());
+}
+
+function updateWaterfallLabels() {
+  $('wfRangeValue').textContent = state.waterfallRangeMs.toFixed(0) + ' ms';
+  $('wfAmpValue').textContent = state.waterfallAmplitude.toFixed(0) + '%';
+  $('wfSubtitle').textContent = 'impulse decay · 0–' + state.waterfallRangeMs.toFixed(0) + ' ms';
+}
+
+function openWaterfall() {
+  state.waterfallOpen = true;
+  $('waterfallSheet').hidden = false;
+  updateSheetLock();
+  updateWaterfallLabels();
+  wfChart.resize();
+  refreshWaterfall(true);
+  drawWaterfall();
+  requestAnimationFrame(() => {
+    wfChart.resize();
+    drawWaterfall();
+  });
+}
+
+function closeWaterfall() {
+  state.waterfallOpen = false;
+  closeSheet('waterfallSheet');
+}
+
+/* ---------- gate ---------- */
+
+function setGate(start, width) {
+  const clampedWidth = Math.min(Math.max(width, 0.2), 60);
+  const clampedStart = Math.min(Math.max(start, -5), 55 - clampedWidth);
+  state.gate.startMs = Number.isFinite(clampedStart) ? clampedStart : -0.5;
+  state.gate.widthMs = Number.isFinite(clampedWidth) ? clampedWidth : 20;
+  $('numGateStart').value = state.gate.startMs.toFixed(1);
+  $('numGateWidth').value = state.gate.widthMs.toFixed(1);
+  draw();
+}
+
+function applyGateDrag(deltaMs) {
+  if (!gateDrag) return;
+
+  const clampStart = (start, width) => Math.min(Math.max(start, -5), 55 - width);
+  let start = state.gate.startMs;
+  let width = state.gate.widthMs;
+
+  if (gateDrag.mode === 'move') {
+    start = clampStart(gateDrag.startMs + deltaMs, width);
+  } else if (gateDrag.mode === 'start') {
+    const end = gateDrag.startMs + gateDrag.widthMs;
+    const newStart = Math.min(end - 0.2, gateDrag.startMs + deltaMs);
+    width = Math.max(0.2, end - newStart);
+    start = clampStart(newStart, width);
+  } else {
+    width = Math.min(60, Math.max(0.2, gateDrag.widthMs + deltaMs));
+    start = clampStart(gateDrag.startMs, width);
+  }
+
+  setGate(start, width);
+}
+
+function endGateDrag(event) {
+  if (!gateDrag || event.pointerId !== gateDrag.pointerId) return;
+  try {
+    irChart.canvas.releasePointerCapture(event.pointerId);
+  } catch (err) {
+    /* the capture may already be gone */
+  }
+  gateDrag = null;
+  draw();
+}
+
+$('irChart').addEventListener('pointerdown', (event) => {
+  if (!state.gate.enabled || !state.results) return;
+  const rect = irChart.canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  gateDrag = {
+    pointerId: event.pointerId,
+    x,
+    mode: irChart.gateModeAt(x, state.gate),
+    startMs: state.gate.startMs,
+    widthMs: state.gate.widthMs,
+  };
+  try {
+    irChart.canvas.setPointerCapture(event.pointerId);
+  } catch (err) {
+    /* not every browser needs it */
+  }
+  event.preventDefault();
+});
+
+$('irChart').addEventListener('pointermove', (event) => {
+  if (!gateDrag || event.pointerId !== gateDrag.pointerId) return;
+  const rect = irChart.canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  applyGateDrag((x - gateDrag.x) * irChart.msPerPixel());
+});
+
+$('irChart').addEventListener('pointerup', endGateDrag);
+$('irChart').addEventListener('pointercancel', endGateDrag);
+
+/* ---------- charts ---------- */
+
+/**
+ * Ask for a redraw. Several handlers can change the same frame in one gesture
+ * — moving the gate, dragging a slider, a fresh analysis frame — so they are
+ * coalesced into a single paint per animation frame instead of each redrawing
+ * both canvases.
+ */
 function draw() {
+  if (drawRaf) return;
+  drawRaf = requestAnimationFrame(() => {
+    drawRaf = 0;
+    drawNow();
+  });
+}
+
+function drawNow() {
   tfChart.draw(state.results, {
     showPhase: $('chkPhase').checked,
     showCoh: $('chkCoh').checked,
     snapshot: state.snapshot,
+    secondSnapshot: state.snapshotB,
+    peakHold: state.peakHoldArmed ? state.peakHold : null,
+    average: state.average,
+    averageCount: state.averageCaptures,
+    savedCurve: overlaidCurve(),
+    target: state.target,
     cursorFreq: state.cursorFreq,
   });
-  irChart.draw(state.results);
+  irChart.draw(state.results, { gate: state.gate });
+  updateGateBadge();
+  updateTraceSummary();
+
+  if (state.waterfallOpen) drawWaterfall();
 }
 
 function meanCoherence(res) {
@@ -462,9 +1267,6 @@ function analyse() {
 
   const refStart = start - state.delayEstimate;
   if (refStart < 0) {
-    // The offset has outgrown the capture buffer — a path whose latency keeps
-    // drifting in one direction. Start the coarse search again rather than
-    // freezing on the last frame.
     if (state.delayAuto && state.delayEstimate > 0) {
       state.delayEstimate = 0;
       state.delayLockedAt = 0;
@@ -482,8 +1284,6 @@ function analyse() {
   }
 
   analyser.updateRate = averagingRate();
-  // Once the coarse offset is locked in, the short window only follows it; a
-  // hand-typed offset is the operator's own number, so it keeps the full window.
   const tracking = state.delayAuto && state.delayLockedAt > 0;
   analyser.searchRadius = tracking ? fineSearchRadius(n) : 0;
   analyser.accumulate(micWin, refWin);
@@ -492,11 +1292,12 @@ function analyse() {
     compensate: state.compensate,
     smoothing: state.smoothing,
     normalize: state.normalize,
+    gate: state.gate,
   });
 
   state.results = res;
-  // A lock re-aligns the reference, so this frame's numbers describe the old
-  // alignment: skip the readout until the next one.
+  if (state.peakHoldArmed) state.peakHold = mergePeakHold(state.peakHold, res);
+
   if (maybeLockDelay(res)) return;
   updateReadouts(res);
   updateInterfaceInfo();
@@ -504,7 +1305,19 @@ function analyse() {
   eqTick += 1;
   if (eqTick % 12 === 0) updateEq(res);
 
+  refreshWaterfall(false);
   draw();
+}
+
+/* ---------- readouts ---------- */
+
+function levelReadout() {
+  const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
+  const dbfs = level > 0 ? 20 * Math.log10(level) : -Infinity;
+  const unit = state.showSpl ? 'dB SPL' : 'dBFS';
+  if (!Number.isFinite(dbfs)) return '-inf ' + unit;
+  const value = state.showSpl ? dbfs + state.calibrationDb : dbfs;
+  return value.toFixed(1) + ' ' + unit;
 }
 
 function updateReadouts(res) {
@@ -519,7 +1332,6 @@ function updateReadouts(res) {
     polarity.textContent = res.polarity > 0 ? 'normal' : 'inverted';
     polarity.className = 'v ' + (res.polarity > 0 ? 'good' : 'bad');
   } else {
-    // Coherence is too low for the sign of the peak to mean anything.
     polarity.textContent = '—';
     polarity.className = 'v';
   }
@@ -534,10 +1346,6 @@ function updateReadouts(res) {
   } else if (!state.demo && state.refMode === 'loopback' && res.frames > 20 && coherence < 0.2) {
     setStatus('reference input is silent — check the loopback routing', 'err');
   } else if (!state.demo) {
-    // A steady path holds the peak to within a sample or two. A wandering one
-    // is not noise in the analysis, it is the path itself moving — a Bluetooth
-    // link's buffer, or the phone's own speaker leaking into its microphone —
-    // and no amount of averaging makes that delay trustworthy.
     const jitterMs = (res.delayJitterSamples / res.sampleRate) * 1000;
     if (res.frames > 20 && jitterMs > 2) {
       if (!jitterWarned) {
@@ -555,15 +1363,52 @@ function updateReadouts(res) {
     }
   }
 
-  const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
-  $('rdLevel').textContent = (level > 0 ? (20 * Math.log10(level)).toFixed(1) : '-inf') + ' dBFS';
-
+  $('rdLevel').textContent = levelReadout();
   $('rdRate').textContent = (res.sampleRate / 1000).toFixed(1) + 'k · ' + res.df.toFixed(1) + ' Hz';
 
-  const deltaEl = $('rdDelta');
-  deltaEl.textContent = state.snapshot ? (totalMs - state.snapshot.delayMs).toFixed(2) + ' ms' : '—';
+  $('rdDelta').textContent = state.snapshot
+    ? (totalMs - state.snapshot.delayMs).toFixed(2) + ' ms'
+    : '—';
+  $('rdDeltaB').textContent = state.snapshotB
+    ? (totalMs - state.snapshotB.delayMs).toFixed(2) + ' ms'
+    : '—';
 
   $('irReadout').textContent = 'delay ' + totalMs.toFixed(2) + ' ms';
+  $('btnWaterfall').disabled = false;
+  $('btnExportCsv').disabled = false;
+  $('btnSaveCurrent').disabled = false;
+
+  updateCursorReadout();
+}
+
+function updateCursorReadout() {
+  const res = state.results;
+  const freq = state.cursorFreq;
+  const readout = $('readout');
+
+  if (!res || !freq) {
+    readout.textContent = 'tap the plot';
+    return;
+  }
+
+  const k = Math.min(res.bins - 1, Math.max(0, Math.round(freq / res.df)));
+  const label = freq >= 1000 ? (freq / 1000).toFixed(2) + ' kHz' : freq.toFixed(0) + ' Hz';
+  let text =
+    label +
+    ' · ' +
+    res.magDb[k].toFixed(1) +
+    ' dB · ' +
+    wrapDegrees(res.phaseDeg[k]).toFixed(0) +
+    '° · coh ' +
+    (res.coh[k] * 100).toFixed(0) +
+    '%';
+
+  if (state.target) {
+    const delta = res.magDb[k] - targetDb(state.target, freq);
+    text += ' · Δ target ' + (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' dB';
+  }
+
+  readout.textContent = text;
 }
 
 function meterPercent(rms) {
@@ -611,6 +1456,7 @@ function updateEq(res) {
   } catch (err) {
     items = [];
   }
+  state.eq = items;
 
   if (items.length === 0) {
     const li = document.createElement('li');
@@ -632,13 +1478,13 @@ function updateEq(res) {
   });
 }
 
+/* ---------- running ---------- */
+
 async function startAll() {
   if (starting) return;
 
   if (state.demo) stopDemo();
 
-  // Asking an in-app browser for the microphone is what makes iOS close it,
-  // so point at Safari first instead of losing the page.
   if (inAppBrowser && !allowStartHere) {
     showSafariBanner();
     setStatus('copy this link into Safari first', 'err');
@@ -675,11 +1521,7 @@ async function startAll() {
   buildAnalyser();
   engine.setSignal(state.signal);
   engine.setSineHz(state.sineHz);
-  // The level needs no setting here: the engine already holds it, and a target
-  // on the gain node now would cut the fade-in short.
 
-  // A single-input source (the iPhone microphone) can only work with the
-  // generated reference, and it only offers input 1.
   const mono = channels < 2;
   if (mono && state.refMode === 'loopback') {
     state.refMode = 'internal';
@@ -697,10 +1539,11 @@ async function startAll() {
   state.delayLockedAt = 0;
   state.delayProbedAt = 0;
   state.delayAuto = true;
-  state.snapshot = null;
   state.results = null;
+  state.waterfall = null;
   jitterWarned = false;
   $('numDelay').value = '0.00';
+  resetTraces();
 
   button.textContent = 'Stop';
   button.classList.add('on');
@@ -718,7 +1561,7 @@ async function startAll() {
 
 function loop(now) {
   rafId = requestAnimationFrame(loop);
-  if (!state.running) return;
+  if (!state.running || document.hidden) return;
   if (now - lastAnalysis < 90) return;
   lastAnalysis = now;
   analyse();
@@ -729,11 +1572,15 @@ function stopAll() {
   state.running = false;
   engine.stop();
   state.results = null;
-  state.snapshot = null;
+  state.waterfall = null;
   state.delayEstimate = 0;
   state.delayLockedAt = 0;
   state.delayProbedAt = 0;
   jitterWarned = false;
+  $('btnWaterfall').disabled = false;
+  $('btnExportCsv').disabled = true;
+  $('btnSaveCurrent').disabled = true;
+  resetTraces();
 
   const button = $('btnPower');
   button.textContent = 'Start';
@@ -742,7 +1589,6 @@ function stopAll() {
   updateInterfaceInfo();
   draw();
 }
-
 
 async function listDevices() {
   const select = $('selSource');
@@ -782,42 +1628,10 @@ async function listDevices() {
   select.value = state.inputSource;
 }
 
-function updateCursorReadout() {
-  const res = state.results;
-  const freq = state.cursorFreq;
-  const readout = $('readout');
-
-  if (!res || !freq) {
-    readout.textContent = 'tap the plot';
-    return;
-  }
-
-  const k = Math.min(res.bins - 1, Math.max(0, Math.round(freq / res.df)));
-  const label = freq >= 1000 ? (freq / 1000).toFixed(2) + ' kHz' : freq.toFixed(0) + ' Hz';
-  readout.textContent =
-    label +
-    ' · ' +
-    res.magDb[k].toFixed(1) +
-    ' dB · ' +
-    res.phaseDeg[k].toFixed(0) +
-    '° · coh ' +
-    (res.coh[k] * 100).toFixed(0) +
-    '%';
-}
+/* ---------- delay probe ---------- */
 
 const PROBE_SIZE = 131072;
 
-/**
- * Read one long window pair and find the delay it holds.
- * Returns { samples, confidence, ambiguous } in samples, or null before there
- * is enough audio captured to fill the window.
- *
- * This is the measurement that decides which branch of the circular
- * correlation the short window then tracks. It has to look at the whole window,
- * so it is also the one that has to be big enough: 131072 samples is 2.7 s at
- * 48 kHz, which covers the round trip through the phone speaker and back into
- * the phone microphone with room to spare.
- */
 function probeDelay() {
   if (!engine.running) return null;
   if (state.refMode === 'internal' && !engine.refAligned) return null;
@@ -843,19 +1657,12 @@ function probeDelay() {
   probe.accumulate(mic, ref);
   const res = probe.results({ compensate: false, smoothing: 0, normalize: false });
 
-  // A peak right at the edge of the probe may really belong outside it, which
-  // would put the lock a whole window out. Say so instead of locking onto it.
   const ambiguous = Math.abs(probe.peakIndex) > PROBE_SIZE / 2 - 1024;
   return { samples: offset + probe.peakIndex, confidence: meanCoherence(res), ambiguous };
 }
 
-/** Store a coarse offset and let the analyser start over from it. */
 function applyDelayLock(probe) {
   const total = Math.round(probe.samples);
-  // A negative offset would have the reference read ahead of the capture,
-  // which is silence: leave the display alone instead of breaking it. The
-  // generated reference is a periodic buffer, though, so a negative offset is
-  // just an earlier point in the same loop and reads back fine.
   if (total < 0 && state.refMode !== 'internal') return null;
 
   state.delayEstimate = total;
@@ -867,23 +1674,9 @@ function applyDelayLock(probe) {
   return ms;
 }
 
-/**
- * Lock the coarse delay by itself, and keep it locked.
- *
- * Once an offset is locked in, the short window only follows the delay within a
- * fraction of itself; a true offset outside that neighbourhood then reads as a
- * residual sitting on the edge of it. That edge is the signal to measure the
- * whole thing again with the long probe. Doing it this way means the delay is
- * found once and then only nudged, instead of the short window trying to choose
- * between two branches of the circular correlation and hopping between them —
- * the number "going all over the place" that used to happen with a Bluetooth
- * output, and with the phone's own speaker and microphone.
- */
 function maybeLockDelay(res) {
   if (state.demo || !engine.running || !state.delayAuto) return false;
   if (state.refMode === 'internal' && !engine.refAligned) return false;
-  // A sine correlates with every period of itself, so there is no one delay to
-  // lock on: leave that to the operator.
   if (state.signal === 'sine') return false;
 
   const now = engine.micWritten;
@@ -891,19 +1684,12 @@ function maybeLockDelay(res) {
   if (now - state.delayLockedAt < wait) return false;
   if (now - state.delayProbedAt < wait) return false;
 
-  // A residual past an eighth of a window is where the peak starts being
-  // clipped by the fine search, or where the full window's peak flips between
-  // two branches: either way the true delay is not being read. The median of
-  // the last few frames is used rather than the smoothed value, which
-  // approaches that point without ever quite reaching it.
   const residual = Number.isFinite(res.delayMedianSamples)
     ? Math.abs(res.delayMedianSamples)
     : Infinity;
   if (residual < res.fftSize / 8 - 2) return false;
 
   const probe = probeDelay();
-  // Not enough audio yet. Leave delayProbedAt alone so the next frame tries
-  // again rather than waiting another two seconds.
   if (!probe) return false;
   state.delayProbedAt = now;
 
@@ -942,6 +1728,8 @@ function findDelay() {
   state.delayAuto = false;
   setStatus('delay locked at ' + ms.toFixed(2) + ' ms', 'ok');
 }
+
+/* ---------- wiring ---------- */
 
 $('btnPower').addEventListener('click', () => {
   if (state.running && !state.demo) {
@@ -994,6 +1782,7 @@ $('selFft').addEventListener('change', (event) => {
 
 $('rngAvg').addEventListener('input', (event) => {
   state.avgSpeed = Number(event.target.value);
+  $('lblAvg').textContent = state.avgSpeed + '%';
   if (analyser) analyser.updateRate = averagingRate();
 });
 
@@ -1014,37 +1803,84 @@ $('chkPhase').addEventListener('change', () => draw());
 $('chkCoh').addEventListener('change', () => draw());
 $('btnFindDelay').addEventListener('click', findDelay);
 
+$('selTarget').addEventListener('change', (event) => {
+  state.target = event.target.value || null;
+  write(STORAGE.target, state.target || '');
+  $('targetHint').hidden = !state.target;
+  updateCursorReadout();
+  draw();
+});
+
+$('numCalibration').addEventListener('change', (event) => {
+  const value = Number(event.target.value);
+  if (!Number.isFinite(value)) return;
+  state.calibrationDb = value;
+  write(STORAGE.calibration, value);
+  $('rdLevel').textContent = levelReadout();
+});
+
+$('chkSpl').addEventListener('change', (event) => {
+  state.showSpl = event.target.checked;
+  write(STORAGE.spl, state.showSpl ? '1' : '0');
+  $('rdLevel').textContent = levelReadout();
+});
+
+$('chkGate').addEventListener('change', (event) => {
+  state.gate.enabled = event.target.checked;
+  $('numGateStart').disabled = !state.gate.enabled;
+  $('numGateWidth').disabled = !state.gate.enabled;
+  draw();
+});
+
+$('numGateStart').addEventListener('change', () => {
+  const value = parseFloat($('numGateStart').value);
+  if (!Number.isFinite(value)) return;
+  setGate(value, state.gate.widthMs);
+});
+
+$('numGateWidth').addEventListener('change', () => {
+  const value = parseFloat($('numGateWidth').value);
+  if (!Number.isFinite(value)) return;
+  setGate(state.gate.startMs, value);
+});
+
 $('numDelay').addEventListener('change', () => {
   const ms = parseFloat($('numDelay').value);
   if (!Number.isFinite(ms)) return;
   const rate = state.demo ? DEMO_RATE : engine.sampleRate;
   state.delayEstimate = Math.round((ms / 1000) * rate);
-  // A number typed in by hand is the answer from now on: stop re-locking.
   state.delayAuto = false;
   state.delayLockedAt = engine.micWritten;
   if (analyser) analyser.reset();
 });
 
-$('btnCapture').addEventListener('click', () => {
-  const res = state.results;
-  if (!res) return;
-  state.snapshot = {
-    magDb: Float32Array.from(res.magDb),
-    phaseDeg: Float32Array.from(res.phaseDeg),
-    coh: Float32Array.from(res.coh),
-    bins: res.bins,
-    fftSize: res.fftSize,
-    sampleRate: res.sampleRate,
-    delayMs: state.totalDelayMs,
-  };
-  setStatus('captured A at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
-  draw();
+$('btnCapture').addEventListener('click', captureA);
+$('btnClearA').addEventListener('click', clearA);
+$('btnCaptureB').addEventListener('click', captureB);
+$('btnClearB').addEventListener('click', clearB);
+$('btnArmPeak').addEventListener('click', armPeakHold);
+$('btnClearPeak').addEventListener('click', clearPeakHold);
+$('btnArmAverage').addEventListener('click', armAverage);
+$('btnCaptureAverage').addEventListener('click', captureAverage);
+$('btnClearAverage').addEventListener('click', clearAverage);
+$('btnSaved').addEventListener('click', openSaved);
+$('btnCloseSaved').addEventListener('click', () => closeSheet('savedSheet'));
+$('btnSaveCurrent').addEventListener('click', saveCurrent);
+$('btnExportCsv').addEventListener('click', exportCSV);
+$('btnWaterfall').addEventListener('click', openWaterfall);
+$('btnCloseWaterfall').addEventListener('click', closeWaterfall);
+
+$('wfRange').addEventListener('input', (event) => {
+  state.waterfallRangeMs = Number(event.target.value);
+  updateWaterfallLabels();
+  refreshWaterfall(true);
+  drawWaterfall();
 });
 
-$('btnClearA').addEventListener('click', () => {
-  state.snapshot = null;
-  $('rdDelta').textContent = '—';
-  draw();
+$('wfAmp').addEventListener('input', (event) => {
+  state.waterfallAmplitude = Number(event.target.value);
+  updateWaterfallLabels();
+  drawWaterfall();
 });
 
 $('selSource').addEventListener('change', (event) => {
@@ -1105,6 +1941,26 @@ $('btnDemoHere').addEventListener('click', () => {
   startDemo();
 });
 
+$('btnShare').addEventListener('click', () => {
+  shareApp();
+});
+
+$('btnShareApp').addEventListener('click', () => {
+  shareApp();
+});
+
+$('btnCopyApp').addEventListener('click', () => {
+  copyAppLink();
+});
+
+$('btnShareResult').addEventListener('click', () => {
+  shareMeasurement();
+});
+
+$('btnCopyResult').addEventListener('click', () => {
+  copyMeasurement();
+});
+
 $('btnHideInstall').addEventListener('click', () => {
   const card = $('installCard');
   if (card) card.hidden = true;
@@ -1139,9 +1995,33 @@ $('tfChart').addEventListener('pointerleave', () => {
 window.addEventListener('resize', () => {
   tfChart.resize();
   irChart.resize();
+  wfChart.resize();
   draw();
 });
 
+/* ---------- initial state ---------- */
+
+const targetSelect = $('selTarget');
+while (targetSelect.options.length > 1) targetSelect.remove(1);
+TARGET_CURVES.forEach((curve) => {
+  const option = document.createElement('option');
+  option.value = curve.id;
+  option.textContent = curve.label;
+  targetSelect.appendChild(option);
+});
+targetSelect.value = state.target || '';
+$('targetHint').hidden = !state.target;
+$('numCalibration').value = state.calibrationDb.toFixed(1);
+$('chkSpl').checked = state.showSpl;
+$('chkGate').checked = state.gate.enabled;
+$('numGateStart').value = state.gate.startMs.toFixed(1);
+$('numGateWidth').value = state.gate.widthMs.toFixed(1);
+$('numGateStart').disabled = !state.gate.enabled;
+$('numGateWidth').disabled = !state.gate.enabled;
+$('lblAvg').textContent = state.avgSpeed + '%';
+
+updateTraceSummary();
+renderSaved();
 draw();
 
 const inAppBrowser = isLikelyInAppBrowser();
@@ -1154,11 +2034,12 @@ const canCapture = !!(
 
 const address = publicAddress();
 $('safariUrl').value = address;
+const shareField = $('shareField');
+if (shareField) shareField.value = address;
 const openInSafari = $('openInSafari');
 if (openInSafari) openInSafari.href = address;
 
 if (inAppBrowser) {
-  // Say it before Start is pressed: pressing it here closes the page.
   showSafariBanner();
   if (isPrivatePreview()) {
     showPreviewNote();
@@ -1174,8 +2055,6 @@ if (inAppBrowser) {
   showInstallHint();
 }
 
-// Keep a copy of the app for launching with no signal. Optional throughout:
-// a browser without service workers, or a refusal, changes nothing here.
 if ('serviceWorker' in navigator && window.isSecureContext) {
   const registerWorker = () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});

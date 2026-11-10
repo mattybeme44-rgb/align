@@ -38,13 +38,29 @@ What makes it an app rather than a tab:
   takes the newest published files, and the cached copy is used only when the network fails, so the
   app still starts in a room with no signal and can never be stuck on an old version.
 
-iOS draws a home-screen icon from a 180×180 PNG (`apple-touch-icon.png` at the repository root). This
-project ships an SVG icon (`icons/icon.svg`) only, so until a PNG is added iOS uses a screenshot of
-the page. Drop a PNG of that name at the root and it is picked up automatically.
+iOS draws the Home Screen icon from a 180×180 PNG, `apple-touch-icon.png` at the repository root; the
+manifest's PNGs (`icons/icon-192.png`, `icons/icon-512.png`) carry the same artwork for other browsers.
+All three are rasterised from `icons/icon.svg`, so replacing the SVG and re-deriving the PNGs is all a
+new icon needs.
 
 In a home-screen app the microphone may still be refused on some iOS versions — a WebKit limitation
 rather than an app bug. If **Start** fails there, open the same link in Safari; the app says so on
 screen when that happens.
+
+### Sending it to somebody else
+
+**Share** at the top of the page opens iOS's share sheet with Align's address, so the link goes
+straight into Messages, Mail or WhatsApp; **Share Align** on the Share card does the same from further
+down the page, and **Copy link** puts the address on the clipboard.
+
+**Share measurement** sends what is on screen as text — delay, polarity, coherence, the analysis
+settings and the EQ suggestions — which is how a result leaves the phone without a screenshot. It says
+there is nothing to share until a measurement has run, and it only offers the result the app is
+showing, never a hidden capture.
+
+Neither button hands out a private `--preview` address: the public one is used instead. Where a browser
+has no share sheet, both fall back to the clipboard, and the Share card's field shows the text so it
+can be selected by hand.
 
 ### Enabling Pages (one setting)
 
@@ -209,7 +225,13 @@ says which step failed instead of failing silently.
 4. Press **Capture A**.
 5. Move to the second source, or change the delay/EQ you are testing.
 6. Compare: the **Δ vs A** metric shows the delay difference directly, and the ghost trace shows
-   the first magnitude response behind the live one.
+   the first magnitude response behind the live one. **Capture B** adds a third curve with its own
+   **Δ vs B**, and **Arm average / Capture average** settles a power average of repeated captures
+   into one pink ghost.
+7. Turn on **Gate the impulse response** and drag its band tight around the direct arrival to see the
+   loudspeaker rather than the room, then open **Waterfall view** to watch the decay slice by slice.
+   Save a measurement from **Saved measurements** to compare a later position against it, or export
+   the whole measurement as a **CSV**.
 
 To align two sources, add physical or processor delay until the Δ is zero (or a whole multiple of
 the crossover period), and use the phase trace to confirm they track through the crossover region.
@@ -227,20 +249,49 @@ the crossover period), and use the phase trace to confirm they track through the
 - **Averaging** — how quickly the exponential average forgets old frames. Slow for a stable read,
   fast while things are moving.
 - **Smoothing** — fractional-octave smoothing for a readable magnitude trace.
+- **Target curve** — Off by default; **Flat**, a −1 dB per octave tilt above 1 kHz, or a room curve with
+  a +6 dB low end. The chosen target is drawn as a faint dashed line behind the live curve on the same
+  dB scale, the vertical range widens to include it, and the cursor readout gains a **Δ target** figure
+  in dB. The choice is remembered between launches.
 - **Normalize** — references the magnitude to the 300 Hz–3 kHz band average so repeated
   measurements line up.
 - **Phase / Coherence** — show or hide the phase pane and the coherence band under the magnitude
   curve. All three share the same log-frequency axis, so a feature can be read straight down the
   chart: the magnitude curve with its 3 dB grid, the phase against ±180°, and coherence against 1.
-  The legend at the top says which trace is which, and **Capture A** adds the snapshot to it.
+  The phase is read against 1 kHz and eased between frames, so it settles rather than flickering, and
+  it is only drawn where coherence is high enough for it to mean anything. The legend at the top says
+  which trace is which, and **Capture A / B** add snapshots to it.
 - **Compensate** — removes the measured delay from the phase. Turn it off to see the raw phase
   including delay.
+- **Level calibration (dB) / Show input level as dB SPL** — the input readout is dBFS by default; a
+  calibrated microphone's sensitivity offset turns it into dB SPL. The offset and the unit are
+  remembered between launches.
 - **Offset (ms) / Find delay** — locks the compensation offset. Find delay runs a long FFT over the
   last 131072 samples and stores the total there; the reading stays the same before and after. The app
   also does this by itself while the measured delay is past what the fine search can hold — a
   Bluetooth output's latency, or the phone's own speaker and microphone, usually is — and stops once an
   offset is typed in or Find delay pressed.
-- **Capture A / Clear A** — snapshot for A/B comparison.
+- **Gate the impulse response** — windows the impulse response before the transform, so the magnitude
+  curve shows the loudspeaker rather than the room. Drag the band on the impulse plot to move it, grab
+  its edges to change the width, or type start and width in milliseconds. A **GATED** badge marks the
+  transfer function while it is on.
+- **Waterfall view** — the impulse response as a decaying stack of magnitude slices, one window further
+  past the impulse peak each time. The time-range and amplitude sliders set how far the slices run and
+  how tall the stack is drawn, the gate is marked on the axis, and **Done** returns to the main screen.
+  It opens from the Impulse response card once a measurement is running.
+- **Capture A / B, Clear A / B** — two snapshots for A/B/C comparison, with **Δ vs A** and **Δ vs B**
+  in the metrics row and both ghost traces behind the live one.
+- **Arm peak hold / Clear peak** — pins the highest magnitude at each frequency since it was armed,
+  drawn as a dim line that only rises.
+- **Arm average / Capture average / Clear average** — a running power average of the curves captured
+  into it, drawn as a pink dashed ghost and labelled with how many it holds. It resets when the
+  measurement is restarted.
+- **Saved measurements** — save a measurement with a name and the settings it was taken with, kept on
+  the device between launches (up to 20, newest first). Tap one to lay its curve behind the live trace,
+  or delete it.
+- **Export CSV** — one row per frequency bin with frequency, magnitude, phase, coherence and the
+  impulse response, plus a header naming the sample rate, FFT size, smoothing, delay, polarity and
+  gate; it downloads as a file.
 
 ## EQ suggestions
 
@@ -251,17 +302,18 @@ than by boosting.
 
 ## Limits worth knowing
 
-- Levels are **dBFS**, not dB SPL. Absolute SPL needs a calibrated mic and a sensitivity offset,
-  which this version does not apply.
-- No RTA, spectrogram, or multi-time-window view yet.
+- Levels are **dBFS** unless a calibration offset is entered; absolute SPL needs a calibrated mic and
+  its sensitivity figure.
 - Browser audio is resampled to the context rate; very fine low-frequency work benefits from a
   proper two-channel interface in loopback mode.
 - On iOS the microphone needs HTTPS (the published link is).
-- Reflections dominate small rooms. Gating the impulse response is the next thing this would need
-  for meaningful in-room magnitude curves.
+- Reflections dominate small rooms. Gating the impulse response and reading the waterfall is what
+  makes an in-room magnitude curve meaningful.
 - A Bluetooth output's latency is neither small nor steady, and it is part of every reading. The app
   locks and smooths what it can; below roughly 1.3 s the delay is usable as a relative number, and
   beyond that the display says it could not settle it.
+- Saved measurements and the target/calibration choices live in this browser's storage, so clearing
+  site data removes them.
 
 ## Files
 
@@ -270,11 +322,14 @@ than by boosting.
 - `js/audio-engine.js` — capture (ScriptProcessor) and looping stimulus, ring buffers
 - `js/analyser.js` — averaging, transfer function, coherence, impulse response,
   delay tracking, EQ suggestions
-- `js/charts.js` — canvas plots: magnitude, phase and coherence on one frequency axis, and the
-  impulse response
+- `js/charts.js` — canvas plots: magnitude, phase and coherence on one frequency axis, the target,
+  the ghost traces, and the impulse response with its gate
+- `js/waterfall.js` — the waterfall's slices and its canvas plot
 - `js/app.js` — UI wiring
 - `manifest.webmanifest` — home-screen name, icon and full-screen launch
 - `sw.js` — offline shell (network first)
 - `icons/icon.svg` — app icon
+- `icons/icon-192.png`, `icons/icon-512.png`, `apple-touch-icon.png` — the same icon as PNG, for the
+  manifest and for iOS's Home Screen
 - `.github/workflows/pages.yml` — publishes the repository root to GitHub Pages on every push to
   `main`

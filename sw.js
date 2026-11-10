@@ -6,7 +6,7 @@
  * back by an old copy. The cache is what lets the app start from the Home Screen
  * in a room with no usable signal.
  */
-const CACHE = 'align-shell-v1';
+const CACHE = 'align-shell-v3';
 
 const SHELL = [
   './',
@@ -18,8 +18,12 @@ const SHELL = [
   './js/charts.js',
   './js/fft.js',
   './js/signals.js',
+  './js/waterfall.js',
   './manifest.webmanifest',
   './icons/icon.svg',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
