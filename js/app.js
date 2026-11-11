@@ -50,6 +50,10 @@ import { buildSpectrogram, SpectrogramChart } from './spectrogram.js';
 import { bandReadings, bandSummary, speakerBalance, formatBalanceFrequency, GroupDelayChart } from './bands.js';
 import { loadPresets, persistPresets, newPreset, uniqueCopyName, PRESET_LIMIT } from './presets.js';
 import { chartImageBlob, reportPdfBlob, shareOrDownload } from './sharing.js';
+import { buildSumPreview, bestOverlap, drawSumChart } from './sum-preview.js';
+import { parseMeasurementCsv } from './measurement-import.js';
+import { EQ_SET_LIMIT, loadEqSets, persistEqSets, newEqSet } from './eq-sets.js';
+import { drawLevelLog, levelLogCsv, LEVEL_LOG_WINDOW_SECONDS } from './level-log.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -126,6 +130,9 @@ const state = {
   gate: { enabled: false, startMs: -0.5, widthMs: 20 },
   results: null,
   eq: [],
+  eqSets: [],
+  appliedEqSetId: null,
+  eqDirty: false,
   cursorFreq: null,
   inputSource: 'auto',
   waterfallOpen: false,
@@ -248,6 +255,8 @@ function normalizeSavedItem(raw) {
     phaseCoherence: phaseCapable ? phaseCoherence : null,
     phaseCompensated: !!source.phaseCompensated,
     previewDelayMs: clampPreviewDelay(source.previewDelayMs),
+    imported: source.imported === true,
+    sourceName: typeof source.sourceName === 'string' ? source.sourceName.slice(0, 120) : '',
     gate,
   };
 }
@@ -310,6 +319,7 @@ state.showSpl = readString(STORAGE.spl, '0') === '1';
 state.customTargets = loadCustomTargets();
 state.micCal = loadCalibration();
 state.eqFilters = loadEqFilters();
+state.eqSets = loadEqSets();
 state.targetDraft = null;
 state.targetPointIndex = -1;
 state.eqSelectedId = null;
@@ -492,7 +502,8 @@ function updateSheetLock() {
   const open = !$('savedSheet').hidden || !$('waterfallSheet').hidden ||
     !$('meterSheet').hidden || !$('spectrogramSheet').hidden ||
     !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
-    !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden;
+    !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
+    !$('sumSheet').hidden || !$('levelLogSheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -1906,14 +1917,18 @@ function renderSaved() {
     main.className = 'saved-main';
 
     const delay = document.createElement('div'); delay.className = 'saved-delay';
-    delay.textContent = Number(item.delayMs).toFixed(2) + ' ms';
+    delay.textContent = item.imported ? 'Imported' : Number(item.delayMs).toFixed(2) + ' ms';
 
     const meta = document.createElement('div'); meta.className = 'saved-meta';
-    const magnitudeState = item.phase ? 'magnitude + phase' : 'magnitude only';
-    meta.textContent = 'Coherence ' + Math.round(item.coherence * 100) + '% · ' + magnitudeState;
+    meta.textContent = item.imported
+      ? (item.sourceName ? 'From ' + item.sourceName : 'Imported curve')
+      : 'Coherence ' + Math.round(item.coherence * 100) + '% · ' +
+        (item.phase ? 'magnitude + phase' : 'magnitude only');
 
     const settings = document.createElement('div'); settings.className = 'saved-meta';
-    settings.textContent = captureSettingsText(item) || 'no stored settings';
+    settings.textContent = item.imported
+      ? 'Magnitude only · ' + (item.curve ? item.curve.length : 0) + ' points'
+      : (captureSettingsText(item) || 'no stored settings');
 
     const name = document.createElement('div'); name.className = 'saved-name'; name.textContent = item.name;
 
@@ -1928,6 +1943,14 @@ function renderSaved() {
     const date = document.createElement('div'); date.className = 'saved-date';
     date.textContent = formatSavedDate(item.date);
     main.appendChild(date);
+
+    if (item.imported) {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = 'IMPORTED';
+      badge.style.marginTop = '6px';
+      main.appendChild(badge);
+    }
 
     const thumb = document.createElement('canvas'); thumb.className = 'saved-thumb';
     thumb.width = 148; thumb.height = 76;
@@ -3458,6 +3481,7 @@ function updateEQFilter(id, patch) {
     filter.q = Math.min(EQ_Q_RANGE.max, Math.max(EQ_Q_RANGE.min, patch.q));
   }
   if (typeof patch.enabled === 'boolean') filter.enabled = patch.enabled;
+  state.eqDirty = true;
   persistEqFilters(state.eqFilters);
 }
 
@@ -3469,6 +3493,7 @@ function addEQFilterAt(frequency) {
   const filter = newEqFilter(frequency);
   state.eqFilters.push(filter);
   state.eqSelectedId = filter.id;
+  state.eqDirty = true;
   persistEqFilters(state.eqFilters);
   renderEQSheet();
   draw();
@@ -3477,9 +3502,265 @@ function addEQFilterAt(frequency) {
 function resetEQFilters() {
   state.eqFilters = [];
   state.eqSelectedId = null;
+  state.eqDirty = true;
+  state.appliedEqSetId = null;
   persistEqFilters(state.eqFilters);
   renderEQSheet();
   draw();
+}
+
+/* ---------- building filters from the measurement ---------- */
+
+/** The target the filters are being read against, in words. */
+function eqTargetName() {
+  if (!state.target) return "the curve's own average";
+  const select = $('selTarget');
+  if (select && select.selectedIndex >= 0) {
+    return select.options[select.selectedIndex].textContent;
+  }
+  return 'the chosen target';
+}
+
+/**
+ * Cut the peaks, lift the dips only gently, and place each filter at the
+ * centre of its third-octave band. Reads the measurement; changes nothing.
+ */
+function autoEqFromMeasurement() {
+  const res = state.results;
+  if (!res || !(res.bins > 2) || !(res.df > 0)) {
+    return { added: 0, message: 'start a measurement first — there is nothing to correct yet', isError: true };
+  }
+
+  const free = EQ_FILTER_LIMIT - state.eqFilters.length;
+  if (free <= 0) {
+    return { added: 0, message: 'eight filters is the limit — remove one before building more', isError: true };
+  }
+
+  const readings = bandReadings(res, state.target, state.customTargets)
+    .filter((reading) => reading.frequency >= 40 && reading.frequency <= 16000);
+  if (!readings.length) {
+    return { added: 0, message: 'the measurement has no usable third-octave bands yet', isError: true };
+  }
+
+  const baselinePool = readings.filter((reading) => reading.frequency >= 100 && reading.frequency <= 10000);
+  const pool = baselinePool.length ? baselinePool : readings;
+  const baseline = pool.reduce((total, reading) => total + reading.levelDb, 0) / pool.length;
+  const targetName = eqTargetName();
+
+  const candidates = [];
+  readings.forEach((reading) => {
+    if (!(reading.coherence >= 0.5)) return;
+    const wanted = state.target ? targetValue(reading.frequency) : baseline;
+    const delta = reading.levelDb - wanted;
+    if (!Number.isFinite(delta) || Math.abs(delta) < 3) return;
+
+    const occupied = state.eqFilters.some((filter) =>
+      filter.enabled && filter.kind === 'peaking' &&
+      Math.abs(Math.log2(filter.frequency / reading.frequency)) < 1 / 6);
+    if (occupied) return;
+
+    candidates.push({ frequency: reading.frequency, delta });
+  });
+
+  if (!candidates.length) {
+    return {
+      added: 0,
+      message: 'nothing deviates by 3 dB or more from ' + targetName + ' — the curve is already close',
+      isError: false,
+    };
+  }
+
+  candidates.sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta));
+  const chosen = candidates.slice(0, Math.min(6, free));
+
+  chosen.forEach((candidate) => {
+    const gain = candidate.delta > 0
+      ? -Math.min(candidate.delta, 12)
+      : Math.min(Math.abs(candidate.delta) * 0.5, 3);
+    const filter = newEqFilter(Math.min(16000, Math.max(40, candidate.frequency)));
+    filter.gainDb = Math.min(EQ_GAIN_RANGE.max, Math.max(EQ_GAIN_RANGE.min, gain));
+    filter.q = 3.5;
+    filter.enabled = true;
+    state.eqFilters.push(filter);
+  });
+
+  state.eqDirty = true;
+  persistEqFilters(state.eqFilters);
+
+  return {
+    added: chosen.length,
+    message: 'auto-EQ added ' + chosen.length + ' filter' + (chosen.length === 1 ? '' : 's') +
+      ' against ' + targetName + ' — a starting point to drag and trim',
+    isError: false,
+  };
+}
+
+function setEqAutoStatus(message, isError) {
+  const el = $('eqAutoStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+  el.classList.toggle('clip-warning', !!isError);
+  el.style.color = isError ? '' : 'var(--dim)';
+}
+
+/* ---------- saved filter sets ---------- */
+
+function setEqSetError(message) {
+  const el = $('eqSetError');
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+}
+
+function renderEqSets() {
+  const list = $('eqSetList');
+  if (!list) return;
+  list.replaceChildren();
+  $('eqSetDetail').textContent = state.eqSets.length + ' of ' + EQ_SET_LIMIT;
+
+  const query = ($('eqSetSearch').value || '').trim().toLocaleLowerCase();
+  const matches = state.eqSets.filter((set) => !query ||
+    set.name.toLocaleLowerCase().includes(query));
+
+  if (!matches.length) {
+    const empty = document.createElement('li');
+    empty.className = 'saved-empty';
+    empty.textContent = state.eqSets.length
+      ? 'No sets match “' + $('eqSetSearch').value.trim() + '”.'
+      : 'No saved sets yet. Save the current filters to recall a correction rather than rebuild it.';
+    list.appendChild(empty);
+    return;
+  }
+
+  matches.forEach((set) => {
+    const row = document.createElement('li');
+    const card = document.createElement('div');
+    card.className = 'eq-set-row';
+
+    const name = document.createElement('span');
+    name.className = 'eq-set-name';
+    name.textContent = set.name;
+
+    const meta = document.createElement('span');
+    meta.className = 'eq-set-meta';
+    meta.textContent = set.filters.length + ' filter' + (set.filters.length === 1 ? '' : 's') +
+      ' · ' + formatSavedDate(set.date);
+
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.className = 'btn';
+    apply.textContent = state.appliedEqSetId === set.id ? 'Applied' : 'Apply';
+    apply.addEventListener('click', () => applyEqSet(set.id));
+
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'btn';
+    rename.textContent = 'Rename';
+    rename.addEventListener('click', () => renameEqSet(set.id));
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn';
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', () => deleteEqSet(set.id));
+
+    card.append(name, apply, rename, remove, meta);
+    row.appendChild(card);
+    list.appendChild(row);
+  });
+}
+
+function saveEqSet() {
+  if (!state.eqFilters.length) {
+    setEqSetError('there are no filters to save yet.');
+    return;
+  }
+  const answer = window.prompt('Name this filter set', 'Filters ' +
+    new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  if (answer === null) return;
+  const name = answer.trim().slice(0, 40);
+  if (!name) {
+    setEqSetError('give the set a name before saving it.');
+    return;
+  }
+
+  const set = newEqSet(name, state.eqFilters);
+  const updated = [set, ...state.eqSets].slice(0, EQ_SET_LIMIT);
+  if (!persistEqSets(updated)) {
+    setEqSetError('Could not save the sets — browser storage is full or blocked. Nothing was changed.');
+    return;
+  }
+
+  state.eqSets = updated;
+  state.appliedEqSetId = set.id;
+  state.eqDirty = false;
+  setEqSetError('');
+  setEqAutoStatus('saved “' + set.name + '” with ' + set.filters.length +
+    ' filter' + (set.filters.length === 1 ? '' : 's'), false);
+  renderEqSets();
+  renderEQSheet();
+}
+
+function applyEqSet(id) {
+  const set = state.eqSets.find((entry) => entry.id === id);
+  if (!set) return;
+
+  if (state.eqDirty && state.eqFilters.length) {
+    const answer = window.confirm('The filters here have unsaved changes. Apply “' + set.name +
+      '” and replace them?');
+    if (!answer) {
+      setEqAutoStatus('kept the filters being edited — nothing was replaced', false);
+      return;
+    }
+  }
+
+  const replaced = state.eqFilters.length;
+  state.eqFilters = set.filters.map((filter) => ({ ...filter }));
+  state.eqSelectedId = null;
+  state.appliedEqSetId = set.id;
+  state.eqDirty = false;
+  persistEqFilters(state.eqFilters);
+  renderEqSheet();
+  draw();
+  setEqAutoStatus(replaced > 0
+    ? 'applied “' + set.name + '” — replaced ' + replaced + ' unsaved filter' + (replaced === 1 ? '' : 's')
+    : 'applied “' + set.name + '” with ' + set.filters.length + ' filter' +
+      (set.filters.length === 1 ? '' : 's'), false);
+}
+
+function renameEqSet(id) {
+  const set = state.eqSets.find((entry) => entry.id === id);
+  if (!set) return;
+  const answer = window.prompt('Rename filter set', set.name);
+  if (answer === null) return;
+  const name = answer.trim().slice(0, 40);
+  if (!name) {
+    setEqSetError('a set name cannot be empty.');
+    return;
+  }
+
+  const updated = state.eqSets.map((entry) => entry.id === id ? { ...entry, name } : entry);
+  if (!persistEqSets(updated)) {
+    setEqSetError('Could not save the sets — browser storage is full or blocked. Nothing was changed.');
+    return;
+  }
+  state.eqSets = updated;
+  setEqSetError('');
+  renderEqSets();
+}
+
+function deleteEqSet(id) {
+  const updated = state.eqSets.filter((entry) => entry.id !== id);
+  if (!persistEqSets(updated)) {
+    setEqSetError('Could not save the sets — browser storage is full or blocked. Nothing was changed.');
+    return;
+  }
+  state.eqSets = updated;
+  if (state.appliedEqSetId === id) state.appliedEqSetId = null;
+  setEqSetError('');
+  setEqAutoStatus('set deleted — the filters being edited are unchanged', false);
+  renderEqSets();
 }
 
 function buildEQSlider(label, min, max, step, value, format, onInput, onCommit) {
@@ -3573,6 +3854,7 @@ function renderEQRows() {
     remove.addEventListener('click', () => {
       state.eqFilters = state.eqFilters.filter((entry) => entry.id !== filter.id);
       if (state.eqSelectedId === filter.id) state.eqSelectedId = null;
+      state.eqDirty = true;
       persistEqFilters(state.eqFilters);
       renderEQSheet();
       draw();
@@ -3662,6 +3944,8 @@ function updateEQMetrics() {
   $('btnAddEqFilter').disabled = state.eqFilters.length >= EQ_FILTER_LIMIT;
   $('btnResetEq').disabled = !state.eqFilters.length;
   $('btnCopyEq').disabled = !state.eqFilters.some((filter) => filter.enabled);
+  if ($('btnAutoEq')) $('btnAutoEq').disabled = state.eqFilters.length >= EQ_FILTER_LIMIT;
+  if ($('btnSaveEqSet')) $('btnSaveEqSet').disabled = !state.eqFilters.length;
 }
 
 function drawEQChart() {
@@ -3678,6 +3962,7 @@ function drawEQChart() {
 function renderEQSheet() {
   updateEQMetrics();
   renderEQRows();
+  renderEqSets();
   drawEQChart();
 }
 
@@ -4745,7 +5030,360 @@ $('btnCloseBands').addEventListener('click', closeBands);
 $('btnGroupDelay').addEventListener('click', openGroupDelay);
 $('btnCloseGroup').addEventListener('click', closeGroupDelay);
 
+/* ---------- sum preview ---------- */
+
+const sumPreviewState = { delayMs: 0, levelDb: 0, inverted: false };
+
+function openSumPreview() {
+  sumPreviewState.delayMs = 0;
+  sumPreviewState.levelDb = 0;
+  sumPreviewState.inverted = false;
+  $('sumBestNote').hidden = true;
+  $('sumSheet').hidden = false;
+  updateSheetLock();
+  syncSumControls();
+  renderSumPreview();
+}
+
+function closeSumPreview() {
+  closeSheet('sumSheet');
+}
+
+function syncSumControls() {
+  const delayText = signedMs(sumPreviewState.delayMs) + ' ms';
+  const levelText = (sumPreviewState.levelDb >= 0 ? '+' : '') +
+    sumPreviewState.levelDb.toFixed(1) + ' dB';
+
+  $('sumDelayRange').value = String(sumPreviewState.delayMs);
+  $('sumLevelRange').value = String(sumPreviewState.levelDb);
+  $('sumDelayValue').textContent = delayText;
+  $('sumDelay').textContent = delayText;
+  $('sumPath').textContent = Math.round(Math.abs(sumPreviewState.delayMs) * 343) + ' mm of path';
+  $('sumLevelValue').textContent = levelText;
+  $('sumLevel').textContent = levelText;
+  $('sumPolarity').textContent = sumPreviewState.inverted ? 'B flipped' : 'B normal';
+}
+
+function renderSumPreview() {
+  const a = state.snapshot;
+  const b = state.snapshotB;
+
+  if (!a || !b) {
+    $('sumChartDetail').textContent = 'no captures';
+    $('sumSummary').textContent = a || b
+      ? 'One capture is missing — hold both Capture A and Capture B to predict their sum.'
+      : 'Hold Capture A and Capture B first; there is nothing to predict yet.';
+    drawSumChart($('sumChart'), null);
+    return;
+  }
+
+  const data = buildSumPreview(a, b, sumPreviewState);
+  $('sumChartDetail').textContent = data ? 'A + B prediction' : 'unusable captures';
+  $('sumSummary').textContent = data
+    ? data.summary
+    : 'Those captures cannot be laid on one frequency axis.';
+  drawSumChart($('sumChart'), data);
+}
+
+function findBestOverlap() {
+  const a = state.snapshot;
+  const b = state.snapshotB;
+  const note = $('sumBestNote');
+  if (!a || !b) {
+    note.hidden = false;
+    note.textContent = 'Hold both captures first.';
+    return;
+  }
+
+  const best = bestOverlap(a, b, sumPreviewState);
+  if (!best) {
+    note.hidden = false;
+    note.textContent = 'No overlap could be found from those captures.';
+    return;
+  }
+
+  sumPreviewState.delayMs = Math.round(best.delayMs * 100) / 100;
+  syncSumControls();
+  renderSumPreview();
+  note.hidden = false;
+  note.textContent = 'Best overlap at ' + signedMs(best.delayMs) + ' ms — ' +
+    (best.gainDb >= 0 ? '+' : '') + best.gainDb.toFixed(1) +
+    ' dB against B as it arrived. Nothing was applied.';
+}
+
+/* ---------- level log ---------- */
+
+const levelLogState = {
+  samples: [],
+  recording: true,
+  held: false,
+  frozenAt: 0,
+  timer: 0,
+};
+
+function openLevelLog() {
+  levelLogState.samples = [];
+  levelLogState.recording = true;
+  levelLogState.held = false;
+  levelLogState.frozenAt = 0;
+  $('levelLogMessage').hidden = true;
+  $('levelLogSheet').hidden = false;
+  updateSheetLock();
+  startLevelLogTimer();
+  renderLevelLog();
+}
+
+function closeLevelLog() {
+  stopLevelLogTimer();
+  closeSheet('levelLogSheet');
+}
+
+function startLevelLogTimer() {
+  stopLevelLogTimer();
+  levelLogState.timer = setInterval(levelLogTick, 500);
+}
+
+function stopLevelLogTimer() {
+  if (levelLogState.timer) clearInterval(levelLogState.timer);
+  levelLogState.timer = 0;
+}
+
+function levelLogTick() {
+  const now = Date.now();
+  if (levelLogState.recording && !levelLogState.held && state.running) {
+    const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
+    if (level > 0) {
+      const dbfs = 20 * Math.log10(level);
+      const db = state.showSpl ? dbfs + state.calibrationDb : dbfs;
+      const clipped = !state.demo && engine.running &&
+        (engine.channelClippedUntil[state.micChannel] || 0) > now;
+      levelLogState.samples.push({ time: now, db, clipped });
+    }
+  }
+
+  const cutoff = now - LEVEL_LOG_WINDOW_SECONDS * 1000;
+  while (levelLogState.samples.length && levelLogState.samples[0].time < cutoff) {
+    levelLogState.samples.shift();
+  }
+  renderLevelLog();
+}
+
+function renderLevelLog() {
+  const samples = levelLogState.samples;
+  const unit = state.showSpl ? 'dB SPL' : 'dBFS';
+  const reference = levelLogState.held
+    ? (levelLogState.frozenAt || samples[samples.length - 1]?.time || Date.now())
+    : Date.now();
+
+  drawLevelLog($('levelLogChart'), samples, {
+    windowSeconds: LEVEL_LOG_WINDOW_SECONDS,
+    reference,
+    unit,
+  });
+
+  $('levelLogUnit').textContent = unit;
+  $('levelLogValue').textContent = samples.length
+    ? samples[samples.length - 1].db.toFixed(1)
+    : '—';
+
+  const values = samples.map((sample) => sample.db);
+  $('levelLogMin').textContent = values.length ? Math.min(...values).toFixed(1) : '—';
+  $('levelLogPeak').textContent = values.length ? Math.max(...values).toFixed(1) : '—';
+  $('levelLogAverage').textContent = values.length
+    ? (values.reduce((total, value) => total + value, 0) / values.length).toFixed(1)
+    : '—';
+
+  $('levelLogToggle').textContent = levelLogState.recording ? 'Pause' : 'Start log';
+  $('levelLogHold').textContent = levelLogState.held ? 'Resume' : 'Hold';
+  $('levelLogClear').disabled = !samples.length;
+  $('levelLogSave').disabled = !samples.length;
+  $('levelLogSubtitle').textContent = levelLogState.held
+    ? 'Held · the window stays where it was'
+    : levelLogState.recording
+      ? 'Logging the input twice a second · last two minutes'
+      : 'Paused · ' + samples.length + ' sample' + (samples.length === 1 ? '' : 's') + ' kept';
+
+  const clipped = !state.demo && state.running &&
+    (engine.channelClippedUntil[state.micChannel] || 0) > Date.now();
+  const warning = $('levelLogClipping');
+  warning.textContent = clipped ? 'The input is clipping — lower the source or interface gain.' : '';
+  warning.hidden = !clipped;
+
+  const message = $('levelLogMessage');
+  if (!samples.length && !message.dataset.fixed) {
+    message.hidden = false;
+    message.textContent = state.running
+      ? 'Nothing logged yet — the input is silent or not arriving.'
+      : 'Start the measurement to log the selected input.';
+  } else if (!message.dataset.fixed) {
+    message.hidden = true;
+  }
+}
+
+function levelLogMessage(text, isFixed) {
+  const el = $('levelLogMessage');
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.dataset.fixed = isFixed ? '1' : '';
+}
+
+async function saveLevelLogCsv() {
+  if (!levelLogState.samples.length) {
+    levelLogMessage('there is nothing logged yet', true);
+    return;
+  }
+  const unit = state.showSpl ? 'dB SPL' : 'dBFS';
+  const csv = levelLogCsv(levelLogState.samples, unit);
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  try {
+    const result = await shareOrDownload(blob, 'align-level-log-' + stamp + '.csv', 'Align level log');
+    levelLogMessage(result === 'downloaded'
+      ? 'Saved ' + levelLogState.samples.length + ' samples as a CSV file.'
+      : 'The level log is ready to share.', true);
+  } catch (err) {
+    levelLogMessage('This browser could not share the file' +
+      (err && err.message ? ': ' + err.message : '') + '.', true);
+  }
+}
+
+/* ---------- importing a measurement from another tool ---------- */
+
+function chooseMeasurementFile() {
+  const input = $('measurementFile');
+  if (!input) return;
+  input.value = '';
+  input.click();
+}
+
+function handleMeasurementFile(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  const finish = (text) => {
+    const parsed = parseMeasurementCsv(text, file.name);
+    input.value = '';
+    if (!parsed.ok) {
+      libraryMessage(parsed.message, true);
+      setStatus(parsed.message, 'err');
+      return;
+    }
+
+    const item = {
+      schema: SAVED_SCHEMA,
+      id: captureId(),
+      name: parsed.name,
+      date: new Date().toISOString(),
+      source: 'Imported',
+      delayMs: 0,
+      coherence: 0,
+      polarity: 'unknown',
+      fftSize: 0,
+      sampleRate: 0,
+      smoothing: 'Imported',
+      reference: parsed.sourceName,
+      curve: parsed.curve,
+      phase: null,
+      phaseCoherence: null,
+      phaseCompensated: false,
+      previewDelayMs: 0,
+      gate: null,
+      note: '',
+      imported: true,
+      sourceName: parsed.sourceName,
+    };
+
+    const updated = [item, ...state.saved];
+    if (!persistSaved(updated)) return;
+
+    state.saved = updated;
+    renderSaved();
+    const message = 'Imported “' + item.name + '” — ' + parsed.pointCount +
+      ' points, ' + parsed.rangeText + '.';
+    libraryMessage(message, false);
+    setStatus(message, 'ok');
+  };
+
+  const reader = new FileReader();
+  reader.onload = () => finish(String(reader.result || ''));
+  reader.onerror = () => {
+    input.value = '';
+    libraryMessage('Could not read that file.', true);
+  };
+  reader.readAsText(file);
+}
+
 $('btnEQDesigner').addEventListener('click', openEQDesigner);
+$('btnAutoEq').addEventListener('click', () => {
+  const outcome = autoEqFromMeasurement();
+  setEqAutoStatus(outcome.message, outcome.isError);
+  if (outcome.added > 0) {
+    renderEQSheet();
+    draw();
+  }
+});
+$('btnSaveEqSet').addEventListener('click', saveEqSet);
+$('eqSetSearch').addEventListener('input', renderEqSets);
+
+$('btnSumPreview').addEventListener('click', openSumPreview);
+$('btnCloseSum').addEventListener('click', closeSumPreview);
+$('sumDelayRange').addEventListener('input', () => {
+  sumPreviewState.delayMs = Number($('sumDelayRange').value) || 0;
+  syncSumControls();
+  renderSumPreview();
+});
+$('sumLevelRange').addEventListener('input', () => {
+  sumPreviewState.levelDb = Number($('sumLevelRange').value) || 0;
+  syncSumControls();
+  renderSumPreview();
+});
+$('sumFlip').addEventListener('click', () => {
+  sumPreviewState.inverted = !sumPreviewState.inverted;
+  syncSumControls();
+  renderSumPreview();
+});
+$('sumReset').addEventListener('click', () => {
+  sumPreviewState.delayMs = 0;
+  sumPreviewState.levelDb = 0;
+  sumPreviewState.inverted = false;
+  $('sumBestNote').hidden = true;
+  syncSumControls();
+  renderSumPreview();
+});
+$('sumBest').addEventListener('click', findBestOverlap);
+
+$('btnLevelLog').addEventListener('click', openLevelLog);
+$('btnCloseLevelLog').addEventListener('click', closeLevelLog);
+$('levelLogToggle').addEventListener('click', () => {
+  levelLogState.recording = !levelLogState.recording;
+  if (levelLogState.recording) {
+    levelLogState.held = false;
+    levelLogState.frozenAt = 0;
+  }
+  levelLogMessage('', false);
+  renderLevelLog();
+});
+$('levelLogHold').addEventListener('click', () => {
+  levelLogState.held = !levelLogState.held;
+  levelLogState.frozenAt = levelLogState.held
+    ? (levelLogState.samples[levelLogState.samples.length - 1]?.time || Date.now())
+    : 0;
+  renderLevelLog();
+});
+$('levelLogClear').addEventListener('click', () => {
+  levelLogState.samples = [];
+  levelLogState.frozenAt = 0;
+  levelLogState.held = false;
+  levelLogMessage('the log was cleared', true);
+  renderLevelLog();
+});
+$('levelLogSave').addEventListener('click', saveLevelLogCsv);
+
+$('btnImportMeasurement').addEventListener('click', chooseMeasurementFile);
+$('measurementFile').addEventListener('change', handleMeasurementFile);
+
+
 $('btnCloseEQ').addEventListener('click', closeEQDesigner);
 $('btnAddEqFilter').addEventListener('click', () => addEQFilterAt(state.cursorFreq || 1000));
 $('btnResetEq').addEventListener('click', resetEQFilters);

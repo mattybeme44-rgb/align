@@ -107,6 +107,7 @@
     <p id="inputClipping" class="clip-warning" role="status" aria-live="polite" hidden></p>
     <div class="row btns">
       <button id="btnLargeMeter" class="btn" type="button">Large SPL meter</button>
+      <button id="btnLevelLog" class="btn" type="button">Level log</button>
     </div>
     <label class="chk"><input id="chkSpectrograph" type="checkbox" /> Show live spectrograph</label>
     <div class="row btns">
@@ -441,6 +442,7 @@
     </div>
     <div class="row btns">
       <button id="btnSaved" class="btn" type="button">Capture library</button>
+      <button id="btnSumPreview" class="btn" type="button">Sum preview</button>
     </div>
     <p class="source-hint">
       Capture A and Capture B each keep the current magnitude trace behind the live one, so two
@@ -573,6 +575,10 @@
     <button id="btnExportLibrary" class="btn" type="button">Export library</button>
     <button id="btnImportLibrary" class="btn" type="button">Import library</button>
   </div>
+  <div class="row btns">
+    <button id="btnImportMeasurement" class="btn" type="button">Import measurement</button>
+  </div>
+  <input id="measurementFile" type="file" accept=".csv,.txt,text/csv,text/plain" hidden />
   <p id="libraryMessage" class="source-hint" hidden></p>
   <input id="libraryFile" type="file" accept="application/json,.json,text/plain" hidden />
   <p id="savedError" class="clip-warning" hidden></p>
@@ -718,7 +724,31 @@
       <button id="btnAddEqFilter" class="btn" type="button">Add filter</button>
       <button id="btnResetEq" class="btn" type="button">Reset</button>
     </div>
+    <button id="btnAutoEq" class="btn btn-power eq-copy-btn" type="button">Auto-EQ from measurement</button>
+    <p class="source-hint" id="eqAutoStatus" hidden></p>
+    <p class="source-hint">
+      Auto-EQ reads the third-octave bands from 40 Hz to 16 kHz against the chosen target (or the
+      curve's own average), cuts the peaks, lifts the dips only gently and fills the empty rows
+      first. It is a starting point to drag and trim.
+    </p>
     <p class="source-hint" id="eqLimitNote" hidden>Eight filters is the limit — remove one to add another.</p>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Saved sets</h2>
+      <span class="card-detail" id="eqSetDetail">0 of 20</span>
+    </div>
+    <button id="btnSaveEqSet" class="btn" type="button">Save current filters</button>
+    <div class="row">
+      <label for="eqSetSearch">Search</label>
+      <input id="eqSetSearch" type="search" placeholder="Set name" />
+    </div>
+    <p id="eqSetError" class="clip-warning" hidden></p>
+    <ul id="eqSetList" class="preset-list"></ul>
+    <p class="source-hint">
+      Sets are kept in this browser, newest first, and the oldest is dropped past 20. Applying one
+      replaces the filters here — nothing measured, gated or captured is touched.
+    </p>
   </div>
   <div class="card">
     <div class="card-head"><h2>Take it with you</h2></div>
@@ -731,6 +761,84 @@
   <p class="sheet-foot-note">
     A dip is usually better fixed by geometry or delay than by boosting, and no filter can repair a
     null. Use the band table and the coherence curve to decide which peaks are worth a cut.
+  </p>
+</section>
+
+<section id="sumSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Sum preview</h2>
+      <p class="sheet-sub">Capture A + Capture B · prediction only</p>
+    </div>
+    <button id="btnCloseSum" class="btn" type="button">Done</button>
+  </div>
+  <div class="metrics">
+    <div class="metric"><span class="k">A → B delay</span><span class="v" id="sumDelay">+0.00 ms</span><span class="metric-detail" id="sumPath">0 mm of path</span></div>
+    <div class="metric"><span class="k">B level</span><span class="v" id="sumLevel">+0.0 dB</span></div>
+    <div class="metric"><span class="k">Polarity</span><span class="v" id="sumPolarity">B normal</span></div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Predicted sum</h2>
+      <span class="card-detail" id="sumChartDetail">no captures</span>
+    </div>
+    <div class="chart-wrap sum"><canvas id="sumChart" aria-label="Predicted sum of Capture A and Capture B"></canvas></div>
+    <div class="row toggles eq-legend">
+      <span class="legend-swatch ghost">Capture A</span>
+      <span class="legend-swatch ghostB">Capture B</span>
+      <span class="legend-swatch accent">Predicted sum</span>
+    </div>
+    <p class="source-hint" id="sumSummary">Hold both captures to predict their sum.</p>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>B as arranged</h2></div>
+    <div class="row"><label for="sumDelayRange">Delay <span class="hint" id="sumDelayValue">+0.00 ms</span></label></div>
+    <input id="sumDelayRange" type="range" min="-20" max="20" step="0.05" value="0" />
+    <div class="row"><label for="sumLevelRange">Level <span class="hint" id="sumLevelValue">+0.0 dB</span></label></div>
+    <input id="sumLevelRange" type="range" min="-12" max="12" step="0.5" value="0" />
+    <div class="row btns">
+      <button id="sumFlip" class="btn" type="button">Flip B</button>
+      <button id="sumReset" class="btn" type="button">Reset</button>
+      <button id="sumBest" class="btn" type="button">Find best overlap</button>
+    </div>
+    <p id="sumBestNote" class="source-hint" hidden></p>
+  </div>
+  <p class="sheet-foot-note">
+    A prediction from the two stored captures — it changes no measurement, capture, gate or
+    hardware. When either capture is missing, hold A and B first.
+  </p>
+</section>
+
+<section id="levelLogSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Level log</h2>
+      <p class="sheet-sub" id="levelLogSubtitle">Logging the input twice a second · last two minutes</p>
+    </div>
+    <button id="btnCloseLevelLog" class="btn" type="button">Done</button>
+  </div>
+  <div class="meter-focus card">
+    <p id="levelLogHeading">INPUT LEVEL</p>
+    <strong id="levelLogValue">—</strong>
+    <p id="levelLogUnit">dBFS</p>
+  </div>
+  <div class="metrics">
+    <div class="metric"><span class="k">Min</span><span class="v" id="levelLogMin">—</span></div>
+    <div class="metric"><span class="k">Average</span><span class="v" id="levelLogAverage">—</span></div>
+    <div class="metric"><span class="k">Peak</span><span class="v" id="levelLogPeak">—</span></div>
+  </div>
+  <p id="levelLogClipping" class="clip-warning" role="status" aria-live="polite" hidden></p>
+  <div class="chart-wrap level-log"><canvas id="levelLogChart" aria-label="Input level over the last two minutes"></canvas></div>
+  <div class="row btns">
+    <button id="levelLogToggle" class="btn" type="button">Pause</button>
+    <button id="levelLogHold" class="btn" type="button">Hold</button>
+    <button id="levelLogClear" class="btn" type="button">Clear</button>
+    <button id="levelLogSave" class="btn" type="button">Save CSV</button>
+  </div>
+  <p id="levelLogMessage" class="source-hint" hidden></p>
+  <p class="sheet-foot-note">
+    It reads the input only — the signal, the routing and the measurement are untouched. Save
+    writes a time, level, unit and clipped column as a CSV download.
   </p>
 </section>
 

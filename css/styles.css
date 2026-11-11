@@ -2126,3 +2126,27 @@ a.btn.btn-power.services-link:hover {
 .target-actions-note {
   margin: 8px 0 0;
 }
+
+
+/* ---------- sum preview and level log ---------- */
+
+.chart-wrap.sum {
+  height: 300px;
+  margin-bottom: 8px;
+}
+
+.chart-wrap.level-log {
+  height: 230px;
+  margin-bottom: 10px;
+}
+
+.legend-swatch.ghostB::before {
+  background: rgba(143, 199, 250, 0.65);
+}
+
+#eqSetList .saved-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
