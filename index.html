@@ -897,7 +897,7 @@
   <div class="sheet-head">
     <div>
       <h2 class="sheet-title">RTA</h2>
-      <p class="sheet-sub">real-time analyser · 25 Hz – 16 kHz</p>
+      <p class="sheet-sub" id="rtaSubtitle">real-time analyser · 25 Hz – 16 kHz</p>
     </div>
     <button id="btnCloseRTA" class="btn" type="button">Done</button>
   </div>
@@ -910,10 +910,14 @@
     <div class="row">
       <label for="rtaMode">Band width</label>
       <select id="rtaMode">
-        <option value="third" selected>1/3 octave</option>
         <option value="octave">Octave</option>
+        <option value="third" selected>1/3 octave</option>
+        <option value="sixth">1/6 octave</option>
+        <option value="twelfth">1/12 octave</option>
+        <option value="sixteenth">1/16 octave</option>
       </select>
     </div>
+    <p id="rtaResolutionNote" class="source-hint" hidden></p>
     <div class="row btns">
       <button id="btnRtaArm" class="btn" type="button">Arm peaks</button>
       <button id="btnRtaClear" class="btn" type="button">Clear peaks</button>

@@ -3,10 +3,28 @@ import { FFT } from './fft.js';
 const SIZE = 2048;
 const COLUMNS = 80;
 const HISTORY = 60;
+const BAND_SIZE = 16384;
+const bandCache = new Map();
 const fft = new FFT(SIZE);
 const taper = Float64Array.from({ length: SIZE }, (_, i) => 0.5 * (1 - Math.cos(2 * Math.PI * i / SIZE)));
 const re = new Float64Array(SIZE);
 const im = new Float64Array(SIZE);
+
+/** One FFT, window and output buffer per size, reused between frames. */
+function bandResources(size) {
+  let entry = bandCache.get(size);
+  if (!entry) {
+    entry = {
+      fft: new FFT(size),
+      taper: Float64Array.from({ length: size }, (_, i) => 0.5 * (1 - Math.cos(2 * Math.PI * i / size))),
+      re: new Float64Array(size),
+      im: new Float64Array(size),
+      values: new Float32Array(size / 2),
+    };
+    bandCache.set(size, entry);
+  }
+  return entry;
+}
 
 /** Short-window selected-input spectrum in dBFS, not the impulse-decay spectrogram. */
 export function microphoneSpectrum(samples, rate) {
@@ -30,6 +48,40 @@ export function microphoneSpectrum(samples, rate) {
     output[c] = Math.max(-90, Math.min(0, db));
   }
   return output;
+}
+
+/**
+ * The selected input as one level per FFT bin, for the band analyser: a longer
+ * window than the spectrograph's so the sixth-, twelfth- and sixteenth-octave
+ * widths have more than the 80 coarse columns to average.
+ *
+ * Returns { values, binHz } with values[k] the dBFS level of the bin at
+ * k * binHz, or null when there is not enough audio yet.
+ */
+export function microphoneBandSpectrum(samples, rate) {
+  if (!samples || !(rate > 0)) return null;
+
+  let size = BAND_SIZE;
+  while (size > 2048 && samples.length < size) size /= 2;
+  if (samples.length < size) return null;
+
+  const { fft: bandFft, taper: window, re: bandRe, im: bandIm, values } = bandResources(size);
+  const offset = samples.length - size;
+  for (let i = 0; i < size; i++) {
+    bandRe[i] = samples[offset + i] * window[i];
+    bandIm[i] = 0;
+  }
+  bandFft.forward(bandRe, bandIm);
+
+  const half = size / 2;
+  const scale = 1 / (size * 0.25);
+  values[0] = -120;
+  for (let k = 1; k < half; k++) {
+    const amplitude = Math.sqrt(bandRe[k] * bandRe[k] + bandIm[k] * bandIm[k]) * scale;
+    values[k] = Math.max(-120, Math.min(0, 20 * Math.log10(Math.max(1e-9, amplitude))));
+  }
+
+  return { values, binHz: rate / size };
 }
 
 export class LiveSpectrograph {

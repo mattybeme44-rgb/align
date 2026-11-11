@@ -49,9 +49,9 @@ import { parseLibrary, mergeLibrary, serializeLibrary } from './library.js';
 import { EqDesignerChart, TargetEditorChart } from './editors.js';
 import { buildWaterfall, WaterfallChart } from './waterfall.js';
 import { FFT } from './fft.js';
-import { LiveSpectrograph, microphoneSpectrum } from './spectrograph.js';
+import { LiveSpectrograph, microphoneSpectrum, microphoneBandSpectrum } from './spectrograph.js';
 import { buildReflections, buildRoomDecay, clarityReading } from './decay.js';
-import { bandsFromSpectrumColumns } from './rta.js';
+import { rtaWidth, bandsFromBinSpectrum } from './rta.js';
 import { measureDistortion, DISTORTION_STEPS } from './distortion.js';
 import { buildSpectrogram, SpectrogramChart } from './spectrogram.js';
 import { bandReadings, bandSummary, speakerBalance, formatBalanceFrequency, GroupDelayChart } from './bands.js';
@@ -201,7 +201,7 @@ const state = {
   // The real-time analyser and the distortion sweep.
   rtaOpen: false,
   rtaMode: 'third',
-  rtaColumns: null,
+  rtaSpectrum: null,
   rtaBands: [],
   rtaPeaks: null,
   distortionRunning: false,
@@ -1087,7 +1087,7 @@ function demoFrame() {
 
   if (state.showSpectrograph) liveSpectrograph.add(microphoneSpectrum(mic, DEMO_RATE));
   if (state.rtaOpen) {
-    state.rtaColumns = microphoneSpectrum(mic, DEMO_RATE);
+    state.rtaSpectrum = microphoneBandSpectrum(mic, DEMO_RATE);
     updateRTA();
   }
   refreshWaterfall(false);
@@ -3178,7 +3178,7 @@ function analyse() {
   syncDisplayedImpulse();
   if (state.showSpectrograph) liveSpectrograph.add(microphoneSpectrum(micWin, engine.sampleRate));
   if (state.rtaOpen) {
-    state.rtaColumns = microphoneSpectrum(micWin, engine.sampleRate);
+    state.rtaSpectrum = microphoneBandSpectrum(micWin, engine.sampleRate);
     updateRTA();
   }
   updateReadouts(res);
@@ -4616,15 +4616,37 @@ function openRTA() {
 function closeRTA() {
   state.rtaOpen = false;
   state.rtaPeaks = null;
+  state.rtaSpectrum = null;
+  state.rtaBands = [];
   closeSheet('rtaSheet');
 }
 
 /** Refit the bands from the last short-window spectrum and redraw. */
 function updateRTA() {
   if (!state.rtaOpen) return;
-  const rate = state.demo ? DEMO_RATE : engine.sampleRate;
-  state.rtaBands = bandsFromSpectrumColumns(state.rtaColumns, rate,
-    state.rtaMode === 'octave' ? 1 : 1 / 3);
+
+  const width = rtaWidth(state.rtaMode);
+  const spectrum = state.rtaSpectrum;
+  state.rtaBands = spectrum
+    ? bandsFromBinSpectrum(spectrum.values, spectrum.binHz, width.octaves)
+    : [];
+
+  const subtitle = $('rtaSubtitle');
+  if (subtitle) {
+    const text = width.subtitle + ' · 25 Hz – 16 kHz';
+    if (subtitle.textContent !== text) subtitle.textContent = text;
+  }
+
+  const note = $('rtaResolutionNote');
+  if (note) {
+    const limited = !!spectrum && 100 * (Math.pow(2, width.octaves / 2) -
+      Math.pow(2, -width.octaves / 2)) < spectrum.binHz;
+    note.hidden = !limited;
+    if (limited) {
+      note.textContent = 'At ' + width.subtitle + ' the lowest bars are limited by ' +
+        "the analyser's resolution: below about 200 Hz a bar is one FFT bin wide.";
+    }
+  }
 
   if (state.rtaPeaks) {
     if (state.rtaPeaks.length !== state.rtaBands.length) {
@@ -4697,7 +4719,7 @@ function drawRTA() {
     ctx.textBaseline = 'alphabetic';
   }
 
-  const barWidth = Math.max(2, plot.w / Math.max(1, bands.length) * 0.72);
+  const barWidth = Math.max(1, plot.w / Math.max(1, bands.length) * 0.72);
   for (let index = 0; index < bands.length; index++) {
     const centre = x(bands[index].frequency);
     const top = y(bands[index].db + offset);
@@ -5197,6 +5219,9 @@ function stopAll() {
   state.waterfall = null;
   syncDisplayedImpulse();
   if (state.showSpectrograph) liveSpectrograph.clear();
+  state.rtaSpectrum = null;
+  state.rtaBands = [];
+  if (state.rtaOpen) drawRTA();
   resetRoomInsights();
   state.delayEstimate = 0;
   state.delayLockedAt = 0;
