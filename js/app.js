@@ -3887,6 +3887,8 @@ updateTraceSummary();
 renderBalance();
 updateDelayAdvice();
 renderPresets();
+const copyrightYear = $('copyrightYear');
+if (copyrightYear) copyrightYear.textContent = String(new Date().getFullYear());
 updateTfSpan();
 updateIrSpan();
 updateIrHoldButton();
