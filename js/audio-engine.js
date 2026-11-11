@@ -85,6 +85,7 @@ export class AudioEngine {
     this.deviceChannels = 1;
     this.micLevel = 0;
     this.channelLevel = [0, 0];
+    this.channelClippedUntil = [0, 0];
     this.deviceLabel = '';
     this.deviceIdUsed = '';
     this.exactDeviceRejected = false;
@@ -230,6 +231,7 @@ export class AudioEngine {
     this.micRing = new Ring(capacity);
     this.refRing = new Ring(capacity);
     this.channelLevel = [0, 0];
+    this.channelClippedUntil = [0, 0];
     this.micLevel = 0;
 
     progress('starting audio');
@@ -257,6 +259,10 @@ export class AudioEngine {
         this.channelLevel[0] = this.channelLevel[0] * 0.85 + leftRms * 0.15;
         this.channelLevel[1] = this.channelLevel[1] * 0.85 + rightRms * 0.15;
         this.micLevel = this.channelLevel[0];
+        for (let i = 0; i < left.length; i++) {
+          if (Math.abs(left[i]) >= 0.999) this.channelClippedUntil[0] = Date.now() + 750;
+          if (right && Math.abs(right[i]) >= 0.999) this.channelClippedUntil[1] = Date.now() + 750;
+        }
 
         // A mono device is up-mixed to two channels with silence in the second,
         // so energy there means the interface really is stereo.

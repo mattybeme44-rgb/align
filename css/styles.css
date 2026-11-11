@@ -67,16 +67,19 @@ body {
 /* ---------- header ---------- */
 
 .topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  padding: calc(16px + env(safe-area-inset-top)) 2px 14px;
+  display: block;
+  padding: calc(16px + env(safe-area-inset-top)) 2px 12px;
   position: sticky;
   top: 0;
   background: var(--bg);
   z-index: 5;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .brand {
@@ -128,7 +131,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  flex: 1 1 100%;
+  width: 100%;
+  margin-top: 9px;
   padding: 5px 10px 5px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -244,6 +248,9 @@ body {
   border-radius: 20px;
   padding: 14px;
   margin-bottom: 12px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.025) inset,
+    0 12px 28px rgba(0, 0, 0, 0.22);
 }
 
 .card h2 {
@@ -899,10 +906,10 @@ body.sheet-open {
   margin: 0 0 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
+  line-height: 1.45;
   color: var(--dim);
-  white-space: nowrap;
+  white-space: pre-line;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .row.toggles {
@@ -1206,4 +1213,616 @@ body.sheet-open {
     background: none;
     padding-top: 26px;
   }
+}
+
+
+/* Focused meter, spectrograph, and captured phase controls. */
+#spectrographChart { height: 220px; border-radius: 12px; background: var(--bg-soft); }
+.meter-focus { margin: 14vh 0 24px; text-align: center; padding: 28px 20px; }
+.meter-focus p { margin: 0; color: var(--dim); font-size: 15px; letter-spacing: 0.12em; }
+.meter-focus strong { display: block; color: var(--accent); font-size: clamp(68px, 20vw, 112px); font-variant-numeric: tabular-nums; line-height: 1.2; transition: color 0.18s ease; }
+.meter-focus strong.clipped { color: var(--warn); }
+.meter-focus .meter { margin-top: 20px; height: 12px; }
+#meterLargeBar.clipped { background: var(--warn); box-shadow: 0 0 10px rgba(255, 138, 122, 0.45); }
+#meterSheet #meterSource { margin: 6px 0 12px; text-align: center; }
+.card-head .hint {
+  max-width: 58%;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--dim);
+  text-align: right;
+}
+#meterSheet > .btn-power { width: 100%; margin-top: 20px; }
+.clip-warning { padding: 10px; border-radius: 10px; background: rgba(255,138,122,.12); color: var(--warn); font-size: 12px; }
+.capture-delay { padding: 10px; margin: 9px 0; border-radius: 12px; background: var(--bg-soft); }
+.capture-delay .row { border: 0; padding: 5px 0; }
+.capture-delay input[type="range"] { flex: 1; min-width: 65px; }
+.capture-delay .btn { font-size: 11px; padding: 7px; }
+#savedName,
+#savedNote,
+#savedSearch,
+#presetSearch {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  background-color: rgba(9, 13, 9, 0.85);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13px;
+}
+
+#savedName:focus-visible,
+#savedNote:focus-visible,
+#savedSearch:focus-visible,
+#presetSearch:focus-visible {
+  outline: none;
+  border-color: rgba(201, 255, 112, 0.55);
+  box-shadow: 0 0 0 3px rgba(201, 255, 112, 0.14);
+}
+
+.saved-note {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-soft);
+}
+
+.saved-preview-control {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.saved-preview-control .row {
+  border: 0;
+  padding: 4px 0;
+}
+
+.saved-preview-control .row strong {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.saved-preview-control input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 60px;
+}
+
+.saved-preview-control .btn {
+  font-size: 11px;
+  padding: 7px 11px;
+}
+
+.saved-list > li { display: block; }
+.saved-extra { display: flex; gap: 7px; flex-wrap: wrap; margin: 4px 0 13px; }
+.saved-extra button { padding: 6px 8px; font-size: 11px; }
+.saved-extra .hint { font-size: 10px; }
+#btnClearSavedOverlays { margin-bottom: 8px; }
+#phaseAdvice { line-height: 1.5; }
+
+
+/* ---------- the native-style measurement dashboard ---------- */
+
+.card-detail {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* The visible span under each plot, with its reset beside it. */
+.span-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0 2px;
+}
+
+.span-text {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.link-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+/* The impulse graph's own refresh rate and its freeze control. */
+.row.display-row {
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.display-row > label {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.display-row select {
+  width: 96px;
+  min-width: 96px;
+  max-width: 96px;
+  padding: 6px 26px 6px 10px;
+  font-size: 12px;
+}
+
+.display-row #btnIrHold {
+  margin-left: auto;
+  padding: 7px 14px;
+  font-size: 12px;
+}
+
+/* Phase and coherence read as switches with a coloured line, not a tick box. */
+.toggle-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.toggle-pill input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  pointer-events: none;
+}
+
+.toggle-pill i {
+  display: block;
+  width: 14px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--text-soft);
+  opacity: 0.28;
+  transition: opacity 0.18s ease;
+}
+
+.toggle-pill.phase i {
+  background: var(--phase);
+}
+
+.toggle-pill.coh i {
+  background: var(--violet);
+}
+
+.toggle-pill.ghost i {
+  background: rgba(226, 235, 214, 0.85);
+}
+
+.toggle-pill.ghostB i {
+  background: #8fc7fa;
+}
+
+.toggle-pill:has(input:checked) {
+  color: var(--text-soft);
+}
+
+.toggle-pill:has(input:checked) i {
+  opacity: 1;
+}
+
+.toggle-pill:has(input:disabled) {
+  pointer-events: none;
+}
+
+#capturePhaseRow {
+  padding-top: 2px;
+}
+
+#capturePhaseRow.dimmed {
+  opacity: 0.45;
+}
+
+#tfSpan,
+#irSpan {
+  flex: 1 1 auto;
+}
+
+#rdChannelCount {
+  min-width: 32px;
+  text-align: right;
+}
+
+
+/* ---------- reflections, room decay and the decay spectrogram ---------- */
+
+.reflections-list {
+  margin: 4px 0 0;
+}
+
+.reflections-list > p {
+  margin: 0;
+}
+
+.reflection-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 2px;
+  border-bottom: 1px solid rgba(160, 190, 150, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.reflection-row:last-child {
+  border-bottom: 0;
+}
+
+.reflection-delay {
+  color: var(--text-soft);
+}
+
+.reflection-level {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.room-decay-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 4px 0 8px;
+}
+
+.room-rt60-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: none;
+}
+
+.room-rt60 {
+  color: var(--accent);
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-rt60-label {
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.room-decay-bands {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.room-decay-band {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.room-decay-frequency {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-decay-time {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-wrap.sp {
+  height: 392px;
+  margin-bottom: 12px;
+}
+
+
+/* ---------- recommended delay, balance, bands, group delay and presets ---------- */
+
+.metric-detail {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.metric-action {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.metric-action .v {
+  color: var(--accent);
+  font-size: 20px;
+}
+
+.metric-action:active {
+  transform: scale(0.98);
+}
+
+.balance-summary {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.balance-summary.good {
+  color: var(--good);
+}
+
+.balance-bands {
+  margin: 0 0 8px;
+}
+
+.balance-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 2px;
+  border-bottom: 1px solid rgba(160, 190, 150, 0.08);
+}
+
+.balance-row:last-child {
+  border-bottom: 0;
+}
+
+.balance-frequency {
+  color: var(--text-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.balance-difference {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance-difference.a {
+  color: var(--accent);
+}
+
+.balance-difference.b {
+  color: #8fc7fa;
+}
+
+.band-table {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.band-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 60px 70px 44px;
+  align-items: baseline;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(160, 190, 150, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.band-row:last-child {
+  border-bottom: 0;
+}
+
+.band-header {
+  padding-top: 12px;
+  padding-bottom: 6px;
+  color: var(--dim);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.band-band {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.band-level,
+.band-target,
+.band-coherence {
+  text-align: right;
+  font-size: 12px;
+}
+
+.band-level {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.band-level.good,
+.band-coherence.good {
+  color: var(--good);
+}
+
+.band-level.bad,
+.band-coherence.bad {
+  color: var(--warn);
+}
+
+.band-target {
+  color: var(--text-soft);
+}
+
+.band-target.wide {
+  color: var(--violet);
+}
+
+.band-coherence {
+  color: var(--text);
+}
+
+#bandNote {
+  margin: 0 0 6px;
+}
+
+.group-readout {
+  margin: 0 0 10px;
+  color: var(--phase);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.group-chart {
+  width: 100%;
+  height: 340px;
+  border-radius: 14px;
+  touch-action: none;
+}
+
+.sheet-foot-note {
+  margin-top: 14px;
+}
+
+.preset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.preset-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+}
+
+.preset-item.applied {
+  border-color: rgba(201, 255, 112, 0.55);
+}
+
+.preset-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.preset-name {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-note {
+  margin-top: 2px;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.preset-settings,
+.preset-source {
+  margin-top: 3px;
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-apply {
+  flex: none;
+  padding: 7px 13px;
+  border-color: rgba(201, 255, 112, 0.3);
+  background: rgba(201, 255, 112, 0.1);
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.preset-check {
+  flex: none;
+  width: 14px;
+  color: var(--good);
+  font-size: 16px;
+  text-align: right;
+}
+
+.preset-list + .saved-extra,
+.preset-item + .saved-extra {
+  margin: -2px 0 12px;
+  padding: 0 8px;
+}
+
+.preset-actions-row {
+  list-style: none;
+  margin: -2px 0 12px;
+  padding: 0 8px;
+}
+
+#presetsError {
+  margin: 0 0 10px;
 }

@@ -18,19 +18,27 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <h1>Align</h1>
-    <p class="sub">transfer function · delay finder</p>
-  </div>
-  <div class="top-right">
-    <button id="btnShare" class="btn btn-icon" type="button" aria-label="Share Align" title="Share Align">
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M12 3.2v11.4" />
-        <path d="M8.4 6.8 12 3.2l3.6 3.6" />
-        <path d="M6.2 10.6H4.9A1.9 1.9 0 0 0 3 12.5v6.6A1.9 1.9 0 0 0 4.9 21h14.2a1.9 1.9 0 0 0 1.9-1.9v-6.6a1.9 1.9 0 0 0-1.9-1.9h-1.3" />
-      </svg>
-    </button>
-    <button id="btnPower" class="btn btn-power" type="button">Start</button>
+  <div class="brand-row">
+    <div class="brand">
+      <h1>Align</h1>
+      <p class="sub">transfer function · delay finder</p>
+    </div>
+    <div class="top-right">
+      <a href="manual.html" class="btn btn-icon" aria-label="Open illustrated manual" title="Illustrated manual">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M4 5.4c2.8-1.1 5.2-1.1 8 .2 2.8-1.3 5.2-1.3 8-.2v13.2c-2.8-1.1-5.2-1.1-8 .2-2.8-1.3-5.2-1.3-8-.2z" />
+          <path d="M12 5.6v13.2" />
+        </svg>
+      </a>
+      <button id="btnShare" class="btn btn-icon" type="button" aria-label="Share Align" title="Share Align">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3.2v11.4" />
+          <path d="M8.4 6.8 12 3.2l3.6 3.6" />
+          <path d="M6.2 10.6H4.9A1.9 1.9 0 0 0 3 12.5v6.6A1.9 1.9 0 0 0 4.9 21h14.2a1.9 1.9 0 0 0 1.9-1.9v-6.6a1.9 1.9 0 0 0-1.9-1.9h-1.3" />
+        </svg>
+      </button>
+      <button id="btnPower" class="btn btn-power" type="button">Start</button>
+    </div>
   </div>
   <span class="status" id="status">idle</span>
 </header>
@@ -80,7 +88,7 @@
   <section class="card interface">
     <div class="card-head">
       <h2>Input</h2>
-      <button id="btnRestart" class="btn" type="button">Restart</button>
+      <span class="card-detail" id="rdChannelCount">—</span>
     </div>
     <div class="device-line">
       <span id="rdDevice">no input yet</span>
@@ -96,6 +104,15 @@
         <div class="meter"><i id="meter2"></i></div>
       </div>
     </div>
+    <p id="inputClipping" class="clip-warning" role="status" aria-live="polite" hidden></p>
+    <div class="row btns">
+      <button id="btnLargeMeter" class="btn" type="button">Large SPL meter</button>
+    </div>
+    <label class="chk"><input id="chkSpectrograph" type="checkbox" /> Show live spectrograph</label>
+    <div class="row btns">
+      <button id="btnRestart" class="btn" type="button">Restart</button>
+      <button id="btnDemo" class="btn" type="button">Demo measurement</button>
+    </div>
     <div class="row">
       <label for="selSource">Input <span class="hint">source</span></label>
       <select id="selSource">
@@ -103,19 +120,6 @@
         <option value="phone">iPhone microphone</option>
         <option value="interface">USB audio interface</option>
       </select>
-    </div>
-    <p class="source-hint">
-      The iPhone microphone needs no interface: pick it and the app uses the generated reference on
-      input 1. Plug in a USB-C interface to record from it instead. Changing this while running
-      reopens the stream, which is when iOS switches route.
-    </p>
-    <p class="source-hint">
-      Output over Bluetooth adds 100–300 ms of latency and moves it about as it goes. The app locks the
-      coarse delay itself, but if the delay reading keeps wandering and coherence stays low, that is the
-      link, not the room — use a cable or a USB interface to measure.
-    </p>
-    <div class="row btns">
-      <button id="btnDemo" class="btn" type="button">Demo measurement</button>
     </div>
     <div class="row">
       <label for="selMicCh">Measurement input</label>
@@ -131,6 +135,16 @@
         <option value="1" selected>Input 2</option>
       </select>
     </div>
+    <p class="source-hint">
+      The iPhone microphone needs no interface: pick it and the app uses the generated reference on
+      input 1. Plug in a USB-C interface to record from it instead. Changing this while running
+      reopens the stream, which is when iOS switches route.
+    </p>
+    <p class="source-hint">
+      Output over Bluetooth adds 100–300 ms of latency and moves it about as it goes. The app locks the
+      coarse delay itself, but if the delay reading keeps wandering and coherence stays low, that is the
+      link, not the room — use a cable or a USB interface to measure.
+    </p>
     <div id="audioHelp" class="help-banner" hidden>
       <p id="audioHelpText">Audio could not start in this browser.</p>
       <p class="muted">
@@ -145,6 +159,15 @@
     </div>
   </section>
 
+  <section id="spectrographCard" class="card" hidden>
+    <div class="card-head">
+      <h2>Live spectrograph</h2>
+      <span class="hint" id="spectrographSource">selected input · dBFS</span>
+    </div>
+    <canvas id="spectrographChart" aria-label="Live input spectrum over time, newest at top, 20 hertz to 20 kilohertz"></canvas>
+    <p class="source-hint" id="spectrographNote">Frequency across, time down. This is the selected input, not the impulse-decay spectrogram.</p>
+  </section>
+
   <section class="card">
     <div class="card-head">
       <h2>Transfer function</h2>
@@ -154,11 +177,20 @@
     <div class="chart-wrap tf">
       <canvas id="tfChart"></canvas>
     </div>
+    <div class="span-row">
+      <span class="span-text" id="tfSpan">showing 20 Hz – 20 kHz · drag to zoom</span>
+      <button id="btnTfReset" class="link-btn" type="button" hidden>Reset</button>
+    </div>
     <div class="row toggles">
-      <label class="chk"><input type="checkbox" id="chkPhase" checked /> Phase</label>
-      <label class="chk"><input type="checkbox" id="chkCoh" checked /> Coherence</label>
+      <label class="toggle-pill phase"><input type="checkbox" id="chkPhase" checked /><i></i>Phase</label>
+      <label class="toggle-pill coh"><input type="checkbox" id="chkCoh" checked /><i></i>Coherence</label>
       <span class="trace-note" id="traceSummary">no captures yet</span>
     </div>
+    <div class="row toggles" id="capturePhaseRow" hidden>
+      <label class="toggle-pill ghost" id="phaseALabel" hidden><input type="checkbox" id="chkPhaseA" checked /><i></i>Phase A</label>
+      <label class="toggle-pill ghostB" id="phaseBLabel" hidden><input type="checkbox" id="chkPhaseB" checked /><i></i>Phase B</label>
+    </div>
+    <div class="row btns"><button id="btnBands" class="btn" type="button">Band table</button><button id="btnGroupDelay" class="btn" type="button">Group delay</button></div>
   </section>
 
   <section class="metrics">
@@ -166,18 +198,37 @@
     <div class="metric"><span class="k">Polarity</span><span class="v" id="rdPolarity">—</span></div>
     <div class="metric"><span class="k">Coherence</span><span class="v" id="rdCoh">—</span></div>
     <div class="metric"><span class="k">Input</span><span class="v" id="rdLevel">—</span></div>
+    <div class="metric"><span class="k">Noise floor</span><span class="v" id="rdNoise">—</span></div>
     <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
     <div class="metric"><span class="k">Δ vs A</span><span class="v" id="rdDelta">—</span></div>
     <div class="metric"><span class="k">Δ vs B</span><span class="v" id="rdDeltaB">—</span></div>
+    <div class="metric"><span class="k">Recommended</span><span class="v" id="rdAdvice">—</span><span class="metric-detail" id="rdAdviceDetail"></span></div>
+    <button id="btnApplyDelay" class="metric metric-action" type="button"><span class="k">Apply</span><span class="v">→</span></button>
   </section>
 
   <section class="card">
     <div class="card-head">
       <h2>Impulse response</h2>
-      <span class="readout" id="irReadout">—</span>
+      <span class="head-meta">
+        <span class="card-detail" id="irReadout">—</span>
+        <span class="badge" id="gateBadgeIr" hidden>GATED</span>
+      </span>
     </div>
     <div class="chart-wrap ir">
       <canvas id="irChart"></canvas>
+    </div>
+    <div class="span-row">
+      <span class="span-text" id="irSpan">showing -5.0 – 55.0 ms · drag to zoom</span>
+      <button id="btnIrReset" class="link-btn" type="button" hidden>Reset zoom</button>
+    </div>
+    <div class="row display-row">
+      <label for="selIrRefresh">Display</label>
+      <select id="selIrRefresh">
+        <option value="0.5">0.5 s</option>
+        <option value="1" selected>1 s</option>
+        <option value="2">2 s</option>
+      </select>
+      <button id="btnIrHold" class="btn" type="button" disabled>Hold</button>
     </div>
     <label class="chk gate-toggle">
       <input type="checkbox" id="chkGate" /> Gate the impulse response
@@ -189,13 +240,44 @@
       <input type="number" id="numGateWidth" step="0.1" value="20" disabled />
     </div>
     <p class="source-hint">
-      The gate windows the impulse response before the transform, so the magnitude curve shows the
-      loudspeaker rather than the room. 0 ms is the impulse peak: drag the band on the plot to move it,
-      or grab its edges to change the width.
+      The peak at 0 ms is the direct arrival; smaller peaks after it are reflections. The display
+      refresh only slows this graph — measurement and input meters stay live, and Hold freezes it for
+      inspection. The gate windows the impulse response before the transform, so the magnitude curve
+      shows the loudspeaker rather than the room: drag its edges to resize it, its bottom grip to move
+      it, or drag elsewhere to zoom.
     </p>
     <div class="row btns">
       <button id="btnWaterfall" class="btn" type="button">Waterfall view</button>
+      <button id="btnSpectrogram" class="btn" type="button">Spectrogram</button>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Reflections</h2></div>
+    <div id="reflectionsList" class="reflections-list">
+      <p class="source-hint">Start the measurement to see the reflections.</p>
+    </div>
+    <p class="source-hint">
+      The peaks behind the direct sound in the first 50 ms, strongest first: what the gate removes
+      when it is switched on.
+    </p>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Room decay</h2></div>
+    <div id="roomDecayHead" class="room-decay-head" hidden>
+      <div class="room-rt60-block">
+        <span class="room-rt60" id="roomRt60">—</span>
+        <span class="room-rt60-label">RT60</span>
+      </div>
+      <div id="roomDecayBands" class="room-decay-bands"></div>
+    </div>
+    <p id="roomDecayEmpty" class="source-hint">Start the measurement to read the room's decay.</p>
+    <p id="roomDecayNote" class="source-hint" hidden></p>
+    <p class="source-hint">
+      Comes from the measured decay of the impulse response; it only holds where that decay is real —
+      clear of the noise floor and of the speaker's own ring.
+    </p>
   </section>
 
   <section class="card">
@@ -247,6 +329,12 @@
       The target is drawn as the faint dashed line behind the live curve on the same dB scale, and the
       cursor reads the difference to it in dB.
     </p>
+    <label class="chk">
+      <input type="checkbox" id="chkSpectrographAnalysis" /> Show live spectrograph
+    </label>
+    <p class="source-hint">
+      A scrolling log-frequency view of the selected input, separate from the impulse-decay spectrogram.
+    </p>
     <div class="row checks">
       <label class="chk"><input type="checkbox" id="chkNormalize" checked /> Normalize</label>
       <label class="chk"><input type="checkbox" id="chkCompensate" checked /> Compensate delay</label>
@@ -261,6 +349,12 @@
     <p class="source-hint">
       A calibrated measurement microphone comes with a sensitivity offset, so entering it here lets the
       input read as sound pressure in the room instead of dBFS. With an uncalibrated mic leave it at 0.
+    </p>
+    <div class="row btns">
+      <button id="btnPresets" class="btn" type="button">Presets</button>
+    </div>
+    <p class="source-hint">
+      Presets keep the FFT size, averaging, smoothing, gate, signal, level and reference for a repeatable setup.
     </p>
 
     <h2>Delay</h2>
@@ -300,6 +394,9 @@
         <option value="loopback">Input 2 (loopback)</option>
       </select>
     </div>
+    <button id="btnCheckNoise" class="btn" type="button">Check noise</button>
+    <p class="source-hint">Silences the source for three seconds to measure room noise and signal headroom.</p>
+    <p id="noiseReport" class="source-hint" hidden></p>
   </section>
 
   <section class="card">
@@ -313,6 +410,8 @@
       <button id="btnCaptureB" class="btn" type="button">Capture B</button>
       <button id="btnClearB" class="btn" type="button">Clear B</button>
     </div>
+    <div id="captureDelayControls"></div>
+    <p id="phaseAdvice" class="source-hint">Preview only: + delays that capture, − advances it. For main/sub arrival comparisons, turn Compensate delay off before capturing both speakers — with it on the phase of both captures is already shifted and only arrival timing looks aligned. The preview changes neither the capture nor the hardware routing.</p>
     <div class="row btns">
       <button id="btnArmPeak" class="btn" type="button">Arm peak hold</button>
       <button id="btnClearPeak" class="btn" type="button">Clear peak</button>
@@ -323,13 +422,26 @@
       <button id="btnClearAverage" class="btn" type="button">Clear average</button>
     </div>
     <div class="row btns">
-      <button id="btnSaved" class="btn" type="button">Saved measurements</button>
+      <button id="btnSaved" class="btn" type="button">Capture library</button>
     </div>
     <p class="source-hint">
       Capture A and Capture B each keep the current magnitude trace behind the live one, so two
       positions or two settings can be compared with it at once — with the delay difference to each.
+      Each also carries its phase, drawn beside the live phase with breaks where coherence is too low
+      to trust, and the cursor reads the phase difference to A and B. The phase delay slider rotates
+      only that held phase, so a proposed sub delay can be previewed before anything is applied.
       Peak hold pins the highest magnitude at each frequency since it was armed. The average is a power
       average of the curves captured into it, drawn in pink and labelled with how many it holds.
+    </p>
+  </section>
+
+  <section id="balanceCard" class="card" hidden>
+    <div class="card-head"><h2>Balance</h2></div>
+    <p id="balanceSummary" class="balance-summary"></p>
+    <div id="balanceBands" class="balance-bands"></div>
+    <p class="source-hint">
+      Capture A against Capture B, third-octave bands from 250 Hz to 4 kHz; a plus means A is the
+      louder of the two.
     </p>
   </section>
 
@@ -351,6 +463,10 @@
       <button id="btnShareResult" class="btn" type="button">Share measurement</button>
       <button id="btnCopyResult" class="btn" type="button">Copy result</button>
       <button id="btnExportCsv" class="btn" type="button" disabled>Export CSV</button>
+    </div>
+    <div class="row btns">
+      <button id="btnShareChart" class="btn" type="button" disabled>Share chart image</button>
+      <button id="btnShareReport" class="btn" type="button" disabled>Share PDF report</button>
     </div>
   </section>
 
@@ -394,19 +510,93 @@
   </section>
 </main>
 
-<footer class="foot">Align · runs locally in the browser · no audio leaves the device</footer>
+<footer class="foot">Align · runs locally in the browser · no audio leaves the device · <a href="manual.html">Illustrated manual</a></footer>
+
+<section id="meterSheet" class="sheet" hidden>
+  <div class="sheet-head"><h2 class="sheet-title">Level meter</h2><button id="btnCloseMeter" class="btn" type="button">Done</button></div>
+  <div class="meter-focus card"><p id="meterHeading">INPUT LEVEL</p><strong id="meterNumber">—</strong><p id="meterUnit">dBFS</p><div class="meter"><i id="meterLargeBar"></i></div></div>
+  <p id="meterClipping" class="clip-warning" role="status" aria-live="polite" hidden></p>
+  <p id="meterSource" class="source-hint">Start a measurement to read the selected input.</p>
+  <label class="chk"><input id="chkMeterSpl" type="checkbox" /> Show dB SPL</label>
+  <p class="source-hint">SPL requires a calibrated microphone and its offset in Analysis. Without calibration, use dBFS. This meter follows the selected microphone input.</p>
+  <button id="btnMeterPower" class="btn btn-power" type="button">Start measurement</button>
+</section>
 
 <section id="savedSheet" class="sheet" hidden>
   <div class="sheet-head">
-    <h2 class="sheet-title">Saved measurements</h2>
+    <h2 class="sheet-title">Capture library</h2>
     <button id="btnCloseSaved" class="btn" type="button">Done</button>
   </div>
   <p class="muted" id="savedSubtitle">Kept on this device</p>
+  <p id="savedError" class="clip-warning" hidden></p>
+  <div class="row"><label for="savedSource">Save from</label><select id="savedSource"><option value="live">Live</option><option value="a">Capture A</option><option value="b">Capture B</option></select></div>
+  <div class="row"><label for="savedName">Name</label><input id="savedName" type="text" maxlength="80" placeholder="Capture name" autocomplete="off" /></div>
+  <div class="row"><label for="savedNote">Note <span class="hint">optional</span></label><input id="savedNote" type="text" maxlength="160" placeholder="Speaker, microphone position, room" autocomplete="off" /></div>
+  <div class="row"><label for="savedSearch">Search</label><input id="savedSearch" type="search" placeholder="Name or note" /></div>
   <ul class="saved-list" id="savedList"></ul>
   <div class="sheet-foot">
-    <button id="btnSaveCurrent" class="btn btn-power" type="button">Save current measurement</button>
-    <p class="muted" id="saveHint">A measurement is saved with the FFT size, smoothing and reference mode it was taken with.</p>
+    <button id="btnClearSavedOverlays" class="btn" type="button">Clear all overlays</button>
+    <button id="btnSaveCurrent" class="btn btn-power" type="button">Save capture</button>
+    <p class="muted" id="saveHint">A capture is saved with its magnitude, phase, coherence, delay, settings and note in this browser.</p>
   </div>
+</section>
+
+<section id="spectrogramSheet" class="sheet spectrogram-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Spectrogram</h2>
+      <p class="sheet-sub" id="spSubtitle">impulse decay · 0–50 ms</p>
+    </div>
+    <button id="btnCloseSpectrogram" class="btn" type="button">Done</button>
+  </div>
+  <div class="chart-wrap sp">
+    <canvas id="spectrogramChart" aria-label="Heat map of the impulse decay"></canvas>
+  </div>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label for="spRange">Time range</label>
+      <span class="value-box" id="spRangeValue">50 ms</span>
+    </div>
+    <input type="range" id="spRange" min="0" max="50" step="1" value="50" />
+    <div class="range-labels"><span>0 ms</span><span>50 ms</span></div>
+  </div>
+  <p class="sheet-foot-note">Each row is a window past the impulse peak; brighter is louder.</p>
+</section>
+
+<section id="presetsSheet" class="sheet presets-sheet" hidden>
+  <div class="sheet-head">
+    <h2 class="sheet-title">Presets</h2>
+    <button id="btnClosePresets" class="btn" type="button">Done</button>
+  </div>
+  <p class="muted" id="presetsSubtitle">Kept in this browser</p>
+  <p id="presetsError" class="clip-warning" hidden></p>
+  <div class="row">
+    <label for="presetSearch">Search</label>
+    <input id="presetSearch" type="search" placeholder="Name or note" />
+  </div>
+  <ul id="presetList" class="preset-list"></ul>
+  <div class="sheet-foot">
+    <button id="btnSavePreset" class="btn btn-power" type="button">Save current settings</button>
+    <p class="muted">Saved with the FFT size, averaging, smoothing, gate, signal, level and reference.</p>
+  </div>
+</section>
+
+<section id="bandSheet" class="sheet" hidden>
+  <div class="sheet-head"><h2 class="sheet-title">Band table</h2><button id="btnCloseBands" class="btn" type="button">Done</button></div>
+  <p id="bandSummary" class="muted"></p><div id="bandRows" class="band-table"></div>
+  <p id="bandNote" class="sheet-foot-note">Start the measurement to fill the table.</p>
+</section>
+<section id="groupSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Group delay</h2>
+      <p class="sheet-sub">Timing by frequency · gaps mark low coherence</p>
+    </div>
+    <button id="btnCloseGroup" class="btn" type="button">Done</button>
+  </div>
+  <p id="groupReadout" class="group-readout">Drag over the chart to read group delay.</p>
+  <canvas id="groupChart" class="group-chart" aria-label="Group delay versus frequency, 20 hertz to 20 kilohertz"></canvas>
+  <p class="sheet-foot-note">A changing delay across bands can point to a crossover or resonance.</p>
 </section>
 
 <section id="waterfallSheet" class="sheet waterfall-sheet" hidden>

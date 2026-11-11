@@ -18,6 +18,7 @@ const COL = {
   peak: 'rgba(201,255,112,0.32)',
   average: '#eeaac4',
   overlay: '#b4a7f7',
+  savedColors: ['#b4a7f7', '#fbb679', '#72c7f2', '#eea4b3', '#a8df9b', '#f7d47b', '#86d5ca', '#d8a691'],
   target: 'rgba(214,222,206,0.45)',
   cursor: 'rgba(255,140,120,0.55)',
 };
@@ -131,6 +132,10 @@ export class TransferChart {
     this.dbMax = 10;
     this.w = 0;
     this.h = 0;
+    // The frequency span on show: 20 Hz – 20 kHz until a drag zooms in.
+    this.range = { min: F_MIN, max: F_MAX };
+    /** A drag in progress: the two pixel columns being selected. */
+    this.selection = null;
     // The drawn phase, eased between frames so the trace settles.
     this.phaseValues = null;
     this.phaseStamp = -1;
@@ -147,6 +152,13 @@ export class TransferChart {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
+  /** Show only this frequency span, keeping the logarithmic axis. */
+  setRange(min, max) {
+    const lo = Math.min(Math.max(min, F_MIN), F_MAX * 0.99);
+    const hi = Math.min(F_MAX, Math.max(max, lo * 1.001));
+    this.range = { min: lo, max: hi };
+  }
+
   plotRect() {
     const p = this.pad;
     return {
@@ -159,15 +171,36 @@ export class TransferChart {
 
   xOf(freq) {
     const p = this.plotRect();
-    const t = Math.log(freq / F_MIN) / LOG_SPAN;
+    const r = this.range;
+    const t = Math.log(Math.max(freq, r.min) / r.min) / Math.log(r.max / r.min);
     return p.x + Math.min(1, Math.max(0, t)) * p.w;
   }
 
   freqAtX(x) {
     const p = this.plotRect();
+    const r = this.range;
     const t = Math.min(1, Math.max(0, (x - p.x) / p.w));
-    return F_MIN * Math.exp(t * LOG_SPAN);
+    return r.min * Math.exp(t * Math.log(r.max / r.min));
   }
+
+  /** Frequencies to label: a readable handful however far the axis is zoomed. */
+  frequencyTicks() {
+    const r = this.range;
+    const p = this.plotRect();
+    const many = r.max / r.min >= 900;
+    let ticks = (many ? FREQ_MAJOR : FREQ_LINES).filter((f) => f >= r.min && f <= r.max);
+    const limit = p.w < 380 ? 5 : 10;
+    if (ticks.length > limit) {
+      const picked = [];
+      for (let i = 0; i < limit; i++) {
+        picked.push(ticks[Math.round((i / (limit - 1)) * (ticks.length - 1))]);
+      }
+      ticks = Array.from(new Set(picked));
+    }
+    if (ticks.length === 0) ticks = [r.min, r.max];
+    return ticks;
+  }
+
 
   dbToY(db, pane) {
     const v = Math.min(this.dbMax, Math.max(this.dbMin, db));
@@ -219,14 +252,15 @@ export class TransferChart {
   /** The vertical range, widened to take in every trace and the target. */
   updateRange(res, options) {
     const opts = options || {};
+    const span = this.range;
     let min = Infinity;
     let max = -Infinity;
 
     const include = (trace) => {
       if (!trace || !trace.bins || !trace.sampleRate || !trace.fftSize) return;
       const df = trace.sampleRate / trace.fftSize;
-      const k0 = Math.max(1, Math.floor(30 / df));
-      const k1 = Math.min(trace.bins - 1, Math.ceil(18000 / df));
+      const k0 = Math.max(1, Math.floor(Math.max(30, span.min) / df));
+      const k1 = Math.min(trace.bins - 1, Math.ceil(Math.min(18000, span.max) / df));
       for (let k = k0; k <= k1; k++) {
         const v = trace.magDb[k];
         if (!Number.isFinite(v)) continue;
@@ -241,9 +275,12 @@ export class TransferChart {
     include(opts.secondSnapshot);
     include(opts.snapshot);
 
-    if (opts.savedCurve && opts.savedCurve.length) {
-      for (let i = 0; i < opts.savedCurve.length; i++) {
-        const v = opts.savedCurve[i];
+    for (const item of opts.savedCurves || []) {
+      const curve = item.curve || [];
+      for (let index = 0; index < curve.length; index++) {
+        const frequency = F_MIN * Math.exp((index / Math.max(1, curve.length - 1)) * LOG_SPAN);
+        if (frequency < span.min || frequency > span.max) continue;
+        const v = curve[index];
         if (!Number.isFinite(v)) continue;
         if (v < min) min = v;
         if (v > max) max = v;
@@ -251,7 +288,7 @@ export class TransferChart {
     }
 
     if (opts.target) {
-      for (let f = F_MIN; f <= F_MAX; f *= 1.25) {
+      for (let f = span.min; f <= span.max; f *= 1.25) {
         const v = targetDb(opts.target, f);
         if (v < min) min = v;
         if (v > max) max = v;
@@ -279,6 +316,7 @@ export class TransferChart {
     ctx.clearRect(0, 0, this.w, this.h);
     if (this.w < 60 || this.h < 60) return;
 
+    this.pad.top = Math.max(40, 48 + (options.savedCurves || []).length * 12);
     paintPanel(ctx, this.w, this.h);
     this.updateRange(res, options);
     if (res) this.updatePhase(res);
@@ -294,7 +332,9 @@ export class TransferChart {
     this.drawLegend(panes, options);
 
     if (options.target) this.drawTarget(panes.mag, options.target);
-    if (options.savedCurve) this.drawSavedCurve(panes.mag, options.savedCurve);
+    (options.savedCurves || []).forEach((item, index) => {
+      this.drawSavedCurve(panes.mag, item.curve, COL.savedColors[index % COL.savedColors.length]);
+    });
     if (options.peakHold) this.drawPeakHold(panes.mag, options.peakHold);
     if (options.average) this.drawAverage(panes.mag, options.average);
 
@@ -303,10 +343,41 @@ export class TransferChart {
       if (options.snapshot) this.drawGhost(panes.mag, options.snapshot, COL.ghost);
       this.drawMagnitude(panes.mag, res, false);
       if (panes.coh) this.drawCoherence(panes.coh, res);
-      if (panes.phase) this.drawPhase(panes.phase, res);
+      if (panes.phase) {
+        const anchor = this.phaseAnchor(res);
+        if (options.showCaptureAPhase && options.snapshot) {
+          this.drawPhase(panes.phase, options.snapshot, { anchor, held: true, color: COL.ghost });
+        }
+        if (options.showCaptureBPhase && options.secondSnapshot) {
+          this.drawPhase(panes.phase, options.secondSnapshot, { anchor, held: true, color: COL.ghostB });
+        }
+        this.drawPhase(panes.phase, res);
+      }
+    }
+    if (panes.phase) {
+      const anchor = res ? this.phaseAnchor(res) : 0;
+      (options.savedCurves || []).forEach((item, index) => {
+        this.drawSavedPhase(panes.phase, item, anchor, COL.savedColors[index % COL.savedColors.length]);
+      });
     }
 
     if (options.cursorFreq) this.drawCursor(panes, bottom, options.cursorFreq, res);
+    if (this.selection) this.drawSelection(panes, bottom);
+  }
+
+  /** The band a drag is selecting before it becomes the new frequency span. */
+  drawSelection(panes, bottom) {
+    const x0 = Math.min(this.selection.x0, this.selection.x1);
+    const x1 = Math.max(this.selection.x0, this.selection.x1);
+    if (!(x1 - x0 >= 1)) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = 'rgba(201,255,112,0.12)';
+    ctx.fillRect(x0, panes.mag.y, x1 - x0, bottom - panes.mag.y);
+    ctx.strokeStyle = 'rgba(201,255,112,0.6)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(Math.round(x0) + 0.5, Math.round(panes.mag.y) + 0.5, x1 - x0, bottom - panes.mag.y);
+    ctx.restore();
   }
 
   drawFrames(panes, bottom) {
@@ -329,12 +400,13 @@ export class TransferChart {
 
     for (let i = 0; i < FREQ_LINES.length; i++) {
       const f = FREQ_LINES[i];
+      if (f < this.range.min || f > this.range.max) continue;
       const x = this.xOf(f);
       const major = FREQ_MAJOR.indexOf(f) >= 0;
       rule(ctx, x, p.y, x, bottom, major ? COL.gridMajor : COL.gridMinor);
     }
 
-    const labels = p.w < 380 ? FREQ_LABELS_NARROW : FREQ_MAJOR;
+    const labels = this.frequencyTicks();
     ctx.save();
     ctx.font = FONT_AXIS;
     ctx.fillStyle = COL.text;
@@ -433,15 +505,18 @@ export class TransferChart {
     if (panes.phase) items.push(['Phase', COL.phase]);
     if (panes.coh) items.push([short ? 'Coh' : 'Coherence', COL.coh]);
     if (options.target) items.push(['Target', COL.target]);
-    if (options.savedCurve) items.push(['Saved', COL.overlay]);
+    (options.savedCurves || []).forEach((item, index) => items.push([
+      (item.name || 'Saved').slice(0, short ? 12 : 24), COL.savedColors[index % COL.savedColors.length],
+    ]));
+    if (panes.phase && options.showCaptureAPhase && options.snapshot) items.push(['Phase A', COL.ghost]);
+    if (panes.phase && options.showCaptureBPhase && options.secondSnapshot) items.push(['Phase B', COL.ghostB]);
     if (options.peakHold) items.push(['Peak', COL.peak]);
     if (options.average) items.push(['Avg ' + (options.averageCount || 0), COL.average]);
     if (options.snapshot) items.push([short ? 'A' : 'Capture A', COL.ghost]);
     if (options.secondSnapshot) items.push([short ? 'B' : 'Capture B', COL.ghostB]);
 
     let x = p.x;
-    let y = p.y - 15;
-    let wrapped = false;
+    let y = 16;
 
     ctx.save();
     ctx.font = FONT_LEGEND;
@@ -454,11 +529,9 @@ export class TransferChart {
       const color = items[i][1];
       const width = 16 + ctx.measureText(label).width;
 
-      // A second row, so a chart with every trace on it still names them all.
-      if (!wrapped && x > p.x + 1 && x + width > p.x + p.w + 2) {
-        wrapped = true;
+      if (x > p.x + 1 && x + width > p.x + p.w + 2) {
         x = p.x;
-        y = p.y - 29;
+        y += 14;
       }
 
       ctx.strokeStyle = color;
@@ -609,7 +682,7 @@ export class TransferChart {
   }
 
   /** A saved measurement's curve, log-spaced from 20 Hz to 20 kHz. */
-  drawSavedCurve(pane, curve) {
+  drawSavedCurve(pane, curve, color = COL.overlay) {
     if (!curve || curve.length < 2) return;
     const ctx = this.ctx;
     const count = Math.max(2, Math.ceil(pane.w));
@@ -618,8 +691,8 @@ export class TransferChart {
     let started = false;
 
     for (let i = 0; i < count; i++) {
-      const t = i / (count - 1);
-      const position = t * (curve.length - 1);
+      const frequency = this.freqAtX(pane.x + i);
+      const position = (Math.log(frequency / F_MIN) / LOG_SPAN) * (curve.length - 1);
       const lower = Math.min(curve.length - 1, Math.max(0, Math.floor(position)));
       const upper = Math.min(curve.length - 1, lower + 1);
       const fraction = position - lower;
@@ -637,13 +710,44 @@ export class TransferChart {
       }
     }
 
-    ctx.strokeStyle = COL.overlay;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1.4;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.setLineDash([5, 4]);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  drawSavedPhase(pane, item, anchor, color) {
+    if (!Array.isArray(item.phase) || !Array.isArray(item.phaseCoherence) || item.phase.length < 2) return;
+    const ctx = this.ctx;
+    const count = Math.ceil(pane.w);
+    ctx.save();
+    ctx.beginPath();
+    let started = false;
+    let previous = null;
+    for (let i = 0; i < count; i++) {
+      const freq = this.freqAtX(pane.x + i);
+      const position = Math.log(freq / F_MIN) / LOG_SPAN * (item.phase.length - 1);
+      const low = Math.min(item.phase.length - 1, Math.max(0, Math.floor(position)));
+      const high = Math.min(item.phase.length - 1, low + 1);
+      const t = position - low;
+      const coh = item.phaseCoherence[low] * (1 - t) + item.phaseCoherence[high] * t;
+      if (!(coh >= 0.35)) { started = false; previous = null; continue; }
+      const raw = item.phase[low] * (1 - t) + item.phase[high] * t;
+      const angle = wrapDegrees(raw - anchor - 360 * freq * (item.previewDelayMs || 0) / 1000);
+      if (!Number.isFinite(angle)) { started = false; previous = null; continue; }
+      if (previous !== null && Math.abs(angle - previous) > 180) started = false;
+      if (started) ctx.lineTo(pane.x + i, this.phaseToY(angle, pane));
+      else { ctx.moveTo(pane.x + i, this.phaseToY(angle, pane)); started = true; }
+      previous = angle;
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([3, 3]);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -673,23 +777,25 @@ export class TransferChart {
    * normalised to — so a noisy lowest bin cannot carry the whole curve off by a
    * whole turn from one frame to the next.
    */
-  relativePhase(res) {
+  phaseAnchor(res) {
     const df = res.sampleRate / res.fftSize;
-    const out = new Float32Array(res.bins);
-    if (!(res.bins > 2) || !(df > 0)) return out;
-
-    const anchorBin = Math.min(Math.max(1, Math.round(1000 / df)), res.bins - 1);
+    if (!(res.bins > 2) || !(df > 0)) return 0;
+    const bin = Math.min(Math.max(1, Math.round(1000 / df)), res.bins - 1);
     let sum = 0;
     let n = 0;
-    for (let i = Math.max(0, anchorBin - 4); i <= Math.min(res.bins - 1, anchorBin + 4); i++) {
-      const v = res.phaseDeg[i];
-      if (!Number.isFinite(v)) continue;
-      sum += v;
-      n += 1;
+    for (let i = Math.max(0, bin - 4); i <= Math.min(res.bins - 1, bin + 4); i++) {
+      if (Number.isFinite(res.phaseDeg[i])) { sum += res.phaseDeg[i]; n++; }
     }
-    const anchor = n > 0 ? sum / n : 0;
+    return n ? sum / n : 0;
+  }
 
-    for (let k = 0; k < res.bins; k++) out[k] = res.phaseDeg[k] - anchor;
+  relativePhase(res, sharedAnchor) {
+    const df = res.sampleRate / res.fftSize;
+    const out = new Float32Array(res.bins);
+    const anchor = sharedAnchor === undefined ? this.phaseAnchor(res) : sharedAnchor;
+    for (let k = 0; k < res.bins; k++) {
+      out[k] = res.phaseDeg[k] - anchor - 360 * k * df * (res.previewDelayMs || 0) / 1000;
+    }
     return out;
   }
 
@@ -718,14 +824,15 @@ export class TransferChart {
     this.phaseStamp = res.frames;
   }
 
-  drawPhase(pane, res) {
+  drawPhase(pane, res, opts = {}) {
     const ctx = this.ctx;
     const df = res.sampleRate / res.fftSize;
     if (!(df > 0) || res.bins < 3) return;
 
     const bins = res.bins;
-    const values =
-      this.phaseValues && this.phaseValues.length === bins ? this.phaseValues : this.relativePhase(res);
+    const values = opts.held
+      ? this.relativePhase(res, opts.anchor)
+      : this.phaseValues && this.phaseValues.length === bins ? this.phaseValues : this.relativePhase(res);
     const count = Math.max(2, Math.ceil(pane.w));
     const continuous = new Float64Array(count);
     const readable = new Uint8Array(count);
@@ -783,11 +890,14 @@ export class TransferChart {
 
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(119,200,193,0.18)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    ctx.strokeStyle = COL.phase;
-    ctx.lineWidth = 1.6;
+    if (!opts.held) {
+      ctx.strokeStyle = 'rgba(119,200,193,0.18)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+    ctx.strokeStyle = opts.color || COL.phase;
+    ctx.lineWidth = opts.held ? 1.2 : 1.6;
+    if (opts.held) ctx.setLineDash([4, 3]);
     ctx.stroke();
     ctx.restore();
   }
@@ -901,6 +1011,10 @@ export class ImpulseChart {
     this.w = 0;
     this.h = 0;
     this.layout = null;
+    // Milliseconds relative to the impulse peak; null is -5…55 ms.
+    this.zoom = null;
+    /** A drag in progress: the two pixel columns being selected. */
+    this.selection = null;
     this.resize();
   }
 
@@ -931,11 +1045,18 @@ export class ImpulseChart {
     return l.p.x + ((ms - l.xMin) / (l.xMax - l.xMin)) * l.p.w;
   }
 
+  /** The time under an x, relative to the impulse peak. */
+  msAtX(x) {
+    const l = this.layout;
+    if (!l) return 0;
+    return l.xMin + ((x - l.p.x) / Math.max(1, l.p.w)) * (l.xMax - l.xMin);
+  }
+
   /** Which part of the gate a tap landed on: 'start', 'end' or 'move'. */
   gateModeAt(x, gate) {
     if (!this.layout || !gate) return 'move';
-    const startX = this.xForMs(this.layout.peakMs + gate.startMs);
-    const endX = this.xForMs(this.layout.peakMs + gate.startMs + gate.widthMs);
+    const startX = this.xForMs(gate.startMs);
+    const endX = this.xForMs(gate.startMs + gate.widthMs);
     if (Math.abs(x - startX) <= 16) return 'start';
     if (Math.abs(x - endX) <= 16) return 'end';
     return 'move';
@@ -977,9 +1098,9 @@ export class ImpulseChart {
       peakMs = (signed / sr) * 1000;
     }
 
-    const xMin = peakMs - 5;
-    const xMax = peakMs + 55;
-    const span = xMax - xMin;
+    const xMin = this.zoom ? this.zoom.min : -5;
+    const xMax = this.zoom ? this.zoom.max : 55;
+    const span = Math.max(0.1, xMax - xMin);
     const xOf = (ms) => p.x + ((ms - xMin) / span) * p.w;
     const yOf = (db) => p.y + (Math.min(0, Math.max(-80, db)) / -80) * p.h;
     const bottom = p.y + p.h;
@@ -997,7 +1118,7 @@ export class ImpulseChart {
       ctx.fillText(db + '', p.x - 8, y);
     }
 
-    const stepMs = span > 80 ? 20 : 10;
+    const stepMs = span > 80 ? 20 : span > 30 ? 10 : span > 12 ? 5 : span > 5 ? 2 : 0.5;
     const startTick = Math.ceil(xMin / stepMs) * stepMs;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -1005,7 +1126,7 @@ export class ImpulseChart {
       const x = xOf(ms);
       rule(ctx, x, p.y, x, bottom, COL.gridMinor);
       ctx.fillStyle = COL.text;
-      ctx.fillText(ms.toFixed(0), x, bottom + 5);
+      ctx.fillText(stepMs < 1 ? ms.toFixed(1) : ms.toFixed(0), x, bottom + 5);
     }
 
     ctx.font = FONT_UNIT;
@@ -1017,36 +1138,47 @@ export class ImpulseChart {
     ctx.restore();
 
     if (gate && gate.enabled) {
-      const startX = Math.min(p.x + p.w, Math.max(p.x, xOf(peakMs + gate.startMs)));
-      const endX = Math.min(p.x + p.w, Math.max(p.x, xOf(peakMs + gate.startMs + gate.widthMs)));
+      const gateStartX = xOf(gate.startMs);
+      const gateEndX = xOf(gate.startMs + gate.widthMs);
+      const startX = Math.min(p.x + p.w, Math.max(p.x, gateStartX));
+      const endX = Math.min(p.x + p.w, Math.max(p.x, gateEndX));
 
-      ctx.save();
-      ctx.fillStyle = 'rgba(201,255,112,0.10)';
-      ctx.fillRect(Math.min(startX, endX), p.y, Math.max(1, Math.abs(endX - startX)), p.h);
-      ctx.strokeStyle = 'rgba(201,255,112,0.85)';
-      ctx.lineWidth = 1.5;
+      if (gateEndX > p.x && gateStartX < p.x + p.w) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(201,255,112,0.10)';
+        ctx.fillRect(Math.min(startX, endX), p.y, Math.max(1, Math.abs(endX - startX)), p.h);
+        ctx.strokeStyle = 'rgba(201,255,112,0.85)';
+        ctx.lineWidth = 1.5;
 
-      for (const x of [startX, endX]) {
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x) + 0.5, p.y);
-        ctx.lineTo(Math.round(x) + 0.5, bottom);
-        ctx.stroke();
+        for (const x of [startX, endX]) {
+          ctx.beginPath();
+          ctx.moveTo(Math.round(x) + 0.5, p.y);
+          ctx.lineTo(Math.round(x) + 0.5, bottom);
+          ctx.stroke();
 
+          ctx.fillStyle = COL.trace;
+          roundRect(ctx, x - 2.5, p.y, 5, 12, 2);
+          ctx.fill();
+          roundRect(ctx, x - 2.5, bottom - 12, 5, 12, 2);
+          ctx.fill();
+        }
+
+        // A grip on the bottom edge moves the whole gate; the plot stays free
+        // above it for drawing a zoom selection.
+        const midX = (startX + endX) / 2;
+        ctx.fillStyle = 'rgba(201,255,112,0.28)';
+        roundRect(ctx, midX - 15, bottom - 5, 30, 5, 2.5);
+        ctx.fill();
+
+        const label = this.gateLabel(gate);
+        ctx.font = FONT_UNIT;
         ctx.fillStyle = COL.trace;
-        roundRect(ctx, x - 2.5, p.y, 5, 12, 2);
-        ctx.fill();
-        roundRect(ctx, x - 2.5, bottom - 12, 5, 12, 2);
-        ctx.fill();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const labelX = Math.min(p.x + p.w - 44, Math.max(p.x + 44, midX));
+        ctx.fillText(label, labelX, p.y + 8);
+        ctx.restore();
       }
-
-      const label = this.gateLabel(gate);
-      ctx.font = FONT_UNIT;
-      ctx.fillStyle = COL.trace;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const labelX = Math.min(p.x + p.w - 44, Math.max(p.x + 44, (startX + endX) / 2));
-      ctx.fillText(label, labelX, p.y + 8);
-      ctx.restore();
     }
 
     if (!res) return;
@@ -1055,7 +1187,7 @@ export class ImpulseChart {
     const count = Math.max(2, Math.ceil(p.w));
     const columns = new Float32Array(count).fill(-Infinity);
     for (let i = 0; i < n; i++) {
-      const time = ((i > n / 2 ? i - n : i) / sr) * 1000;
+      const time = ((i > n / 2 ? i - n : i) / sr) * 1000 - peakMs;
       if (time < xMin || time > xMax) continue;
       const x = xOf(time);
       const c = Math.min(count - 1, Math.max(0, Math.floor(x - p.x)));
@@ -1102,7 +1234,7 @@ export class ImpulseChart {
     ctx.stroke();
     ctx.restore();
 
-    const xp = xOf(peakMs);
+    const xp = xOf(0);
     if (xp >= p.x - 2 && xp <= p.x + p.w + 2) {
       ctx.save();
       ctx.strokeStyle = 'rgba(201,255,112,0.35)';
@@ -1120,6 +1252,20 @@ export class ImpulseChart {
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.restore();
+    }
+
+    if (this.selection) {
+      const sx0 = Math.min(this.selection.x0, this.selection.x1);
+      const sx1 = Math.max(this.selection.x0, this.selection.x1);
+      if (sx1 - sx0 >= 1) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(201,255,112,0.12)';
+        ctx.fillRect(sx0, p.y, sx1 - sx0, p.h);
+        ctx.strokeStyle = 'rgba(201,255,112,0.6)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(Math.round(sx0) + 0.5, Math.round(p.y) + 0.5, sx1 - sx0, p.h);
+        ctx.restore();
+      }
     }
   }
 }

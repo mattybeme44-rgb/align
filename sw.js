@@ -6,18 +6,25 @@
  * back by an old copy. The cache is what lets the app start from the Home Screen
  * in a room with no usable signal.
  */
-const CACHE = 'align-shell-v3';
+const CACHE = 'align-shell-v6';
 
 const SHELL = [
   './',
   './index.html',
+  './manual.html',
   './css/styles.css',
   './js/app.js',
   './js/analyser.js',
   './js/audio-engine.js',
+  './js/bands.js',
   './js/charts.js',
+  './js/decay.js',
   './js/fft.js',
+  './js/presets.js',
+  './js/sharing.js',
   './js/signals.js',
+  './js/spectrogram.js',
+  './js/spectrograph.js',
   './js/waterfall.js',
   './manifest.webmanifest',
   './icons/icon.svg',
