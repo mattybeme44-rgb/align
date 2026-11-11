@@ -2150,3 +2150,54 @@ a.btn.btn-power.services-link:hover {
   gap: 6px;
   margin-top: 8px;
 }
+
+
+/* Speech clarity beside the RT60 readout. */
+.room-clarity {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.room-clarity-figure {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.room-clarity-figure b {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ced3c6;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-clarity-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(176, 186, 164, 0.7);
+}
+
+.room-clarity-reading {
+  flex: 1;
+  min-width: 120px;
+  text-align: right;
+  font-size: 11px;
+  color: #a8b6a3;
+}
+
+/* Charts for the RTA and the distortion sweep. */
+.chart-wrap.rta,
+.chart-wrap.dist {
+  height: 240px;
+}
+
+.chart-wrap.rta canvas,
+.chart-wrap.dist canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

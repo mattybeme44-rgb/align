@@ -108,6 +108,7 @@
     <div class="row btns">
       <button id="btnLargeMeter" class="btn" type="button">Large SPL meter</button>
       <button id="btnLevelLog" class="btn" type="button">Level log</button>
+      <button id="btnRTA" class="btn" type="button">RTA</button>
     </div>
     <label class="chk"><input id="chkSpectrograph" type="checkbox" /> Show live spectrograph</label>
     <div class="row btns">
@@ -194,7 +195,7 @@
       <label class="toggle-pill ghost" id="phaseALabel" hidden><input type="checkbox" id="chkPhaseA" checked /><i></i>Phase A</label>
       <label class="toggle-pill ghostB" id="phaseBLabel" hidden><input type="checkbox" id="chkPhaseB" checked /><i></i>Phase B</label>
     </div>
-    <div class="row btns"><button id="btnBands" class="btn" type="button">Band table</button><button id="btnGroupDelay" class="btn" type="button">Group delay</button><button id="btnEQDesigner" class="btn" type="button">EQ designer</button></div>
+    <div class="row btns"><button id="btnBands" class="btn" type="button">Band table</button><button id="btnGroupDelay" class="btn" type="button">Group delay</button><button id="btnEQDesigner" class="btn" type="button">EQ designer</button><button id="btnDistortion" class="btn" type="button">Distortion</button></div>
   </section>
 
   <section class="metrics">
@@ -274,6 +275,11 @@
       <div class="room-rt60-block">
         <span class="room-rt60" id="roomRt60">—</span>
         <span class="room-rt60-label">RT60</span>
+      </div>
+      <div id="roomClarity" class="room-clarity" hidden>
+        <span class="room-clarity-figure"><b id="roomC50">—</b><span class="room-clarity-label">C50</span></span>
+        <span class="room-clarity-figure"><b id="roomC80">—</b><span class="room-clarity-label">C80</span></span>
+        <span class="room-clarity-reading" id="roomClarityReading"></span>
       </div>
       <div id="roomDecayBands" class="room-decay-bands"></div>
     </div>
@@ -858,6 +864,66 @@
   </p>
 </section>
 
+<section id="rtaSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">RTA</h2>
+      <p class="sheet-sub">real-time analyser · 25 Hz – 16 kHz</p>
+    </div>
+    <button id="btnCloseRTA" class="btn" type="button">Done</button>
+  </div>
+  <div class="metrics">
+    <div class="metric"><span class="k">Overall</span><span class="v" id="rtaOverall">—</span><span class="metric-detail" id="rtaUnit">dBFS</span></div>
+    <div class="metric"><span class="k">Loudest</span><span class="v" id="rtaLoudest">—</span></div>
+  </div>
+  <div class="chart-wrap rta"><canvas id="rtaChart" aria-label="Real-time analyser bars from 25 hertz to 16 kilohertz"></canvas></div>
+  <div class="card">
+    <div class="row">
+      <label for="rtaMode">Band width</label>
+      <select id="rtaMode">
+        <option value="third" selected>1/3 octave</option>
+        <option value="octave">Octave</option>
+      </select>
+    </div>
+    <div class="row btns">
+      <button id="btnRtaArm" class="btn" type="button">Arm peaks</button>
+      <button id="btnRtaClear" class="btn" type="button">Clear peaks</button>
+    </div>
+  </div>
+  <p class="sheet-foot-note">
+    It reads the selected input only — the signal, the routing and the measurement are untouched.
+    In demo mode these bars are the synthetic signal, not microphone audio.
+  </p>
+</section>
+
+<section id="distortionSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Distortion</h2>
+      <p class="sheet-sub" id="distSubtitle">total harmonic distortion by stepped tone</p>
+    </div>
+    <button id="btnCloseDistortion" class="btn" type="button">Done</button>
+  </div>
+  <div class="meter-focus card">
+    <p id="distHeading">TOTAL HARMONIC DISTORTION</p>
+    <strong id="distValue">—</strong>
+    <p id="distDetail">Start the sweep to read distortion.</p>
+  </div>
+  <div class="chart-wrap dist"><canvas id="distChart" aria-label="Total harmonic distortion by tone from 100 hertz to 8 kilohertz"></canvas></div>
+  <div class="card">
+    <div class="row btns">
+      <button id="btnDistStart" class="btn btn-power" type="button">Start sweep</button>
+      <button id="btnDistStop" class="btn" type="button">Stop</button>
+    </div>
+    <p id="distMessage" class="source-hint" hidden></p>
+  </div>
+  <p class="sheet-foot-note">
+    Each tone plays through the measurement output for about a second and is read from the
+    microphone. The sweep replaces the stimulus, so the transfer function re-locks once it is
+    over — the gate and the captures are untouched. Demo mode has no real output to excite.
+  </p>
+</section>
+
 <section id="targetSheet" class="sheet target-sheet" hidden>
   <div class="sheet-head">
     <div>
@@ -896,6 +962,11 @@
       <button id="btnDeleteTarget" class="btn" type="button">Delete</button>
       <button id="btnNewTarget" class="btn" type="button">New target</button>
     </div>
+    <div class="row btns">
+      <button id="btnExportTarget" class="btn" type="button">Export target</button>
+      <button id="btnImportTarget" class="btn" type="button">Import target</button>
+    </div>
+    <input id="targetFile" type="file" accept=".json,application/json,text/plain" hidden />
     <p class="source-hint" id="targetMessage" hidden></p>
   </div>
   <p class="sheet-foot-note">
@@ -918,6 +989,7 @@
       <span class="badge" id="calSheetBadge" hidden>CAL</span>
     </div>
     <div id="calSheetBody"></div>
+    <button id="btnExportCal" class="btn" type="button">Export calibration</button>
   </div>
   <div class="card">
     <div class="card-head"><h2>Import a calibration file</h2></div>

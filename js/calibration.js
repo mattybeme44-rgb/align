@@ -143,6 +143,66 @@ export function clearCalibration() {
   }
 }
 
+/* ---------- moving a calibration between devices ---------- */
+
+/** The calibration as portable JSON text, or null when it cannot be written. */
+export function serializeCalibration(cal) {
+  if (!cal || !Array.isArray(cal.points) || cal.points.length < 3) return null;
+  return JSON.stringify({
+    kind: 'align-calibration',
+    version: 1,
+    name: cal.name,
+    points: cal.points,
+  }, null, 2);
+}
+
+/**
+ * Read a portable calibration file back, rejecting anything malformed rather
+ * than half-importing it.
+ */
+export function parseCalibrationFile(text) {
+  let envelope = null;
+  try { envelope = JSON.parse(text); } catch (err) { /* not JSON */ }
+  if (!envelope || typeof envelope !== 'object') {
+    return { ok: false, message: 'That file is not a calibration — a JSON file with a name and points was expected.' };
+  }
+  if (envelope.kind !== 'align-calibration') {
+    return { ok: false, message: 'That file is not an Align calibration.' };
+  }
+
+  const name = typeof envelope.name === 'string' ? envelope.name.trim() : '';
+  if (!name) {
+    return { ok: false, message: "The calibration's name is missing — it was rejected rather than half-imported." };
+  }
+
+  const rawPoints = Array.isArray(envelope.points) ? envelope.points : [];
+  if (rawPoints.length < 3) {
+    return { ok: false, message: 'A calibration needs at least three frequency and dB points — it was rejected rather than half-imported.' };
+  }
+
+  const points = [];
+  for (const raw of rawPoints) {
+    const frequency = Number(raw && raw.frequency);
+    const db = Number(raw && raw.db);
+    if (!Number.isFinite(frequency) || !Number.isFinite(db)
+        || frequency < 5 || frequency > 40000 || Math.abs(db) > 60) {
+      return { ok: false, message: 'A point in the file sits outside the measurable range — it was rejected rather than half-imported.' };
+    }
+    points.push({ frequency, db });
+  }
+  points.sort((a, b) => a.frequency - b.frequency);
+
+  return {
+    ok: true,
+    calibration: {
+      id: calibrationId(),
+      name,
+      loaded: new Date().toISOString(),
+      points,
+    },
+  };
+}
+
 /** The correction in dB at a frequency, zero outside the file's range. */
 export function correctionDb(cal, frequency) {
   if (!cal || !Array.isArray(cal.points) || cal.points.length < 2) return 0;

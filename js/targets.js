@@ -200,3 +200,55 @@ export function targetSummaryText(target) {
   const count = sortedTargetPoints(target).length;
   return count + (count === 1 ? ' point · ' : ' points · ') + targetRangeText(target);
 }
+
+/* ---------- moving a curve between devices ---------- */
+
+/** One target as portable JSON text, or null when it cannot be written. */
+export function serializeTarget(target) {
+  const points = sortedTargetPoints(target);
+  if (points.length < 2) return null;
+  return JSON.stringify({
+    kind: 'align-target',
+    version: 1,
+    name: target && target.name ? target.name : 'My target',
+    points,
+  }, null, 2);
+}
+
+/**
+ * Read a portable target file back, rejecting anything malformed rather
+ * than half-importing it.
+ */
+export function parseTargetFile(text) {
+  let envelope = null;
+  try { envelope = JSON.parse(text); } catch (err) { /* not JSON */ }
+  if (!envelope || typeof envelope !== 'object') {
+    return { ok: false, message: 'That file is not a target curve — a JSON file with a name and points was expected.' };
+  }
+  if (envelope.kind !== 'align-target') {
+    return { ok: false, message: 'That file is not an Align target curve.' };
+  }
+
+  const name = typeof envelope.name === 'string' ? envelope.name.trim() : '';
+  if (!name) {
+    return { ok: false, message: "The curve's name is missing — it was rejected rather than half-imported." };
+  }
+
+  const rawPoints = Array.isArray(envelope.points) ? envelope.points : [];
+  if (rawPoints.length < 2) {
+    return { ok: false, message: 'The curve needs at least two frequency and dB points — it was rejected rather than half-imported.' };
+  }
+
+  const points = [];
+  for (const raw of rawPoints) {
+    const frequency = Number(raw && raw.frequency);
+    const db = Number(raw && raw.db);
+    if (!Number.isFinite(frequency) || !Number.isFinite(db)
+        || frequency < 5 || frequency > 40000 || Math.abs(db) > 60) {
+      return { ok: false, message: 'A point in the file sits outside the measurable range — it was rejected rather than half-imported.' };
+    }
+    points.push({ frequency, db });
+  }
+
+  return { ok: true, target: normalizeTarget({ name, points }) };
+}

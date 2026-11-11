@@ -10,6 +10,9 @@ import {
   starterTarget,
   targetPointInWidestGap,
   targetSummaryText,
+  targetRangeText,
+  serializeTarget,
+  parseTargetFile,
   customTargetRef,
   customTargetIdFromRef,
   sortedTargetPoints,
@@ -24,6 +27,8 @@ import {
   calibrationSummaryText,
   calibrationRangeText,
   calibrationCountText,
+  serializeCalibration,
+  parseCalibrationFile,
 } from './calibration.js';
 import {
   EQ_FILTER_LIMIT,
@@ -45,7 +50,9 @@ import { EqDesignerChart, TargetEditorChart } from './editors.js';
 import { buildWaterfall, WaterfallChart } from './waterfall.js';
 import { FFT } from './fft.js';
 import { LiveSpectrograph, microphoneSpectrum } from './spectrograph.js';
-import { buildReflections, buildRoomDecay } from './decay.js';
+import { buildReflections, buildRoomDecay, clarityReading } from './decay.js';
+import { bandsFromSpectrumColumns } from './rta.js';
+import { measureDistortion, DISTORTION_STEPS } from './distortion.js';
 import { buildSpectrogram, SpectrogramChart } from './spectrogram.js';
 import { bandReadings, bandSummary, speakerBalance, formatBalanceFrequency, GroupDelayChart } from './bands.js';
 import { loadPresets, persistPresets, newPreset, uniqueCopyName, PRESET_LIMIT } from './presets.js';
@@ -153,6 +160,14 @@ const state = {
   irRefreshSeconds: 1,
   irHeld: false,
   displayedImpulse: null,
+  // The real-time analyser and the distortion sweep.
+  rtaOpen: false,
+  rtaMode: 'third',
+  rtaColumns: null,
+  rtaBands: [],
+  rtaPeaks: null,
+  distortionRunning: false,
+  distortionSteps: [],
 };
 
 /* ---------- storage ---------- */
@@ -505,7 +520,8 @@ function updateSheetLock() {
     !$('meterSheet').hidden || !$('spectrogramSheet').hidden ||
     !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
-    !$('sumSheet').hidden || !$('levelLogSheet').hidden;
+    !$('sumSheet').hidden || !$('levelLogSheet').hidden ||
+    !$('rtaSheet').hidden || !$('distortionSheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -1027,6 +1043,10 @@ function demoFrame() {
   if (eqTick % 3 === 0) updateEq(res);
 
   if (state.showSpectrograph) liveSpectrograph.add(microphoneSpectrum(mic, DEMO_RATE));
+  if (state.rtaOpen) {
+    state.rtaColumns = microphoneSpectrum(mic, DEMO_RATE);
+    updateRTA();
+  }
   refreshWaterfall(false);
   draw();
 }
@@ -2572,6 +2592,8 @@ function renderRoomDecay() {
 
   head.hidden = true;
   note.hidden = true;
+  $('roomClarity').hidden = true;
+  $('roomClarityReading').textContent = '';
   bands.replaceChildren();
 
   if (!state.results) {
@@ -2590,6 +2612,18 @@ function renderRoomDecay() {
   empty.hidden = true;
   head.hidden = false;
   $('roomRt60').textContent = decay.overall.toFixed(2) + ' s';
+
+  const clarityBox = $('roomClarity');
+  if (decay.clarity) {
+    clarityBox.hidden = false;
+    $('roomC50').textContent =
+      (decay.clarity.c50 >= 0 ? '+' : '') + decay.clarity.c50.toFixed(1) + ' dB';
+    $('roomC80').textContent =
+      (decay.clarity.c80 >= 0 ? '+' : '') + decay.clarity.c80.toFixed(1) + ' dB';
+    $('roomClarityReading').textContent = clarityReading(decay.clarity.c50);
+  } else {
+    clarityBox.hidden = true;
+  }
 
   decay.bands.forEach((band) => {
     const item = document.createElement('div');
@@ -3106,6 +3140,10 @@ function analyse() {
   if (!state.checkingNoise && maybeLockDelay(res)) return;
   syncDisplayedImpulse();
   if (state.showSpectrograph) liveSpectrograph.add(microphoneSpectrum(micWin, engine.sampleRate));
+  if (state.rtaOpen) {
+    state.rtaColumns = microphoneSpectrum(micWin, engine.sampleRate);
+    updateRTA();
+  }
   updateReadouts(res);
   updateInterfaceInfo();
   refreshRoomInsights(false);
@@ -4468,14 +4506,7 @@ function setCalMessage(text, isError) {
   el.classList.toggle('source-hint', !isError);
 }
 
-function importCalibrationText(text, name) {
-  const calibration = parseCalibration(text, name);
-  if (!calibration) {
-    return {
-      ok: false,
-      message: 'Could not read a calibration from that file — it needs at least three frequency and dB pairs.',
-    };
-  }
+function installCalibration(calibration) {
   if (!persistCalibration(calibration)) {
     return { ok: false, message: 'Could not store the calibration in this browser.' };
   }
@@ -4494,6 +4525,21 @@ function importCalibrationText(text, name) {
   };
 }
 
+function importCalibrationText(text, name) {
+  // A file this app exported is read back whole, or not at all.
+  const portable = parseCalibrationFile(text);
+  if (portable.ok) return installCalibration(portable.calibration);
+
+  const calibration = parseCalibration(text, name);
+  if (!calibration) {
+    return {
+      ok: false,
+      message: 'Could not read a calibration from that file — it needs at least three frequency and dB pairs.',
+    };
+  }
+  return installCalibration(calibration);
+}
+
 function removeMicCalibration() {
   clearCalibration();
   state.micCal = null;
@@ -4502,6 +4548,353 @@ function removeMicCalibration() {
   if (state.results) updateReadouts(state.results);
   draw();
   setStatus('calibration removed — the magnitude is shown as measured', 'ok');
+}
+
+/* ---------- real-time analyser ---------- */
+
+function rtaOffset() {
+  return state.showSpl && Number.isFinite(state.calibrationDb) ? state.calibrationDb : 0;
+}
+
+function rtaUnit() {
+  return state.showSpl ? 'dB SPL' : 'dBFS';
+}
+
+function openRTA() {
+  state.rtaOpen = true;
+  $('rtaSheet').hidden = false;
+  updateSheetLock();
+  updateRTA();
+}
+
+function closeRTA() {
+  state.rtaOpen = false;
+  state.rtaPeaks = null;
+  closeSheet('rtaSheet');
+}
+
+/** Refit the bands from the last short-window spectrum and redraw. */
+function updateRTA() {
+  if (!state.rtaOpen) return;
+  const rate = state.demo ? DEMO_RATE : engine.sampleRate;
+  state.rtaBands = bandsFromSpectrumColumns(state.rtaColumns, rate,
+    state.rtaMode === 'octave' ? 1 : 1 / 3);
+
+  if (state.rtaPeaks) {
+    if (state.rtaPeaks.length !== state.rtaBands.length) {
+      state.rtaPeaks = state.rtaBands.map((band) => band.db);
+    } else {
+      state.rtaPeaks = state.rtaPeaks.map((peak, index) =>
+        Math.max(peak, state.rtaBands[index].db));
+    }
+  }
+  drawRTA();
+}
+
+function drawRTA() {
+  const canvas = $('rtaChart');
+  if (!canvas || !state.rtaOpen) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const padLeft = 38, padRight = 8, padTop = 8, padBottom = 18;
+  const plot = {
+    x: padLeft,
+    y: padTop,
+    w: Math.max(10, rect.width - padLeft - padRight),
+    h: Math.max(10, rect.height - padTop - padBottom),
+  };
+
+  ctx.fillStyle = '#101510';
+  ctx.fillRect(plot.x, plot.y, plot.w, plot.h);
+
+  const floor = -80;
+  const ceiling = 0;
+  const offset = rtaOffset();
+  const y = (db) => {
+    const t = Math.min(1, Math.max(0, (Math.min(Math.max(db, floor), ceiling) - floor) / (ceiling - floor)));
+    return plot.y + plot.h - t * plot.h;
+  };
+  const x = (frequency) => {
+    const t = (Math.log(frequency) - Math.log(25)) / (Math.log(16000) - Math.log(25));
+    return plot.x + Math.min(1, Math.max(0, t)) * plot.w;
+  };
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  for (let db = floor; db <= ceiling; db += 20) {
+    ctx.fillStyle = 'rgba(176,186,164,0.75)';
+    ctx.fillText(String(db), plot.x - 4, y(db) + 3);
+    ctx.fillStyle = db === 0 ? 'rgba(176,186,164,0.35)' : 'rgba(176,186,164,0.15)';
+    ctx.fillRect(plot.x, y(db), plot.w, 1);
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(176,186,164,0.75)';
+  for (const [frequency, label] of [[25, '25'], [100, '100'], [1000, '1k'], [4000, '4k'], [16000, '16k']]) {
+    ctx.fillText(label, x(frequency), rect.height - 4);
+  }
+
+  const bands = state.rtaBands;
+  if (!bands.length) {
+    ctx.fillStyle = 'rgba(176,186,164,0.72)';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(state.running ? 'Collecting audio…' : 'Start the measurement to fill the analyser.',
+      plot.x + plot.w / 2, plot.y + plot.h / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  const barWidth = Math.max(2, plot.w / Math.max(1, bands.length) * 0.72);
+  for (let index = 0; index < bands.length; index++) {
+    const centre = x(bands[index].frequency);
+    const top = y(bands[index].db + offset);
+    ctx.fillStyle = '#55bb84';
+    ctx.fillRect(centre - barWidth / 2, top, barWidth, Math.max(1, plot.y + plot.h - top));
+    if (state.rtaPeaks && index < state.rtaPeaks.length) {
+      const capY = y(state.rtaPeaks[index] + offset);
+      ctx.fillStyle = '#c9ff70';
+      ctx.fillRect(centre - barWidth / 2 - 1, capY, barWidth + 2, 2);
+    }
+  }
+
+  const unit = rtaUnit();
+  const overallEl = $('rtaOverall');
+  const loudestEl = $('rtaLoudest');
+  const unitEl = $('rtaUnit');
+  if (unitEl) unitEl.textContent = unit;
+  if (bands.length) {
+    let sum = 0;
+    for (const band of bands) sum += Math.pow(10, band.db / 10);
+    if (overallEl) {
+      overallEl.textContent = (10 * Math.log10(sum / bands.length) + offset).toFixed(1) + ' ' + unit;
+    }
+    let loudest = bands[0];
+    for (const band of bands) if (band.db > loudest.db) loudest = band;
+    if (loudestEl) {
+      const label = loudest.frequency >= 1000
+        ? (loudest.frequency / 1000).toFixed(1) + ' kHz'
+        : loudest.frequency.toFixed(0) + ' Hz';
+      loudestEl.textContent = label + ' · ' + (loudest.db + offset).toFixed(1) + ' ' + unit;
+    }
+  } else {
+    if (overallEl) overallEl.textContent = '—';
+    if (loudestEl) loudestEl.textContent = '—';
+  }
+}
+
+/* ---------- distortion by stepped tone ---------- */
+
+function distortionSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setDistortionMessage(text, isError) {
+  const el = $('distMessage');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.classList.toggle('clip-warning', !!isError);
+  el.classList.toggle('source-hint', !isError);
+}
+
+function setDistortionSubtitle(text) {
+  const el = $('distSubtitle');
+  if (!el) return;
+  el.textContent = text || 'total harmonic distortion by stepped tone';
+}
+
+function updateDistortionButtons() {
+  $('btnDistStart').disabled = state.distortionRunning;
+  $('btnDistStop').disabled = !state.distortionRunning;
+}
+
+function ordinalHarmonic(n) {
+  return n === 2 ? '2nd' : n === 3 ? '3rd' : n + 'th';
+}
+
+function updateDistortionReadout() {
+  const steps = state.distortionSteps;
+  const last = steps[steps.length - 1];
+  if (last && last.valid && last.thdPercent != null) {
+    $('distValue').textContent = last.thdPercent.toFixed(2) + ' %';
+    $('distDetail').textContent = 'fundamental ' + last.fundamentalDb.toFixed(1) + ' dBFS · '
+      + ordinalHarmonic(last.strongest) + ' harmonic ' + last.strongestDb.toFixed(1) + ' dBFS';
+  } else if (last) {
+    $('distValue').textContent = '—';
+    $('distDetail').textContent = 'Input level too low for a trustworthy figure.';
+  } else if (!state.distortionRunning) {
+    $('distValue').textContent = '—';
+    $('distDetail').textContent = 'Start the sweep to read distortion.';
+  }
+  drawDistortionChart();
+}
+
+function drawDistortionChart() {
+  const canvas = $('distChart');
+  if (!canvas) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const padLeft = 38, padRight = 8, padTop = 8, padBottom = 18;
+  const plot = {
+    x: padLeft,
+    y: padTop,
+    w: Math.max(10, rect.width - padLeft - padRight),
+    h: Math.max(10, rect.height - padTop - padBottom),
+  };
+
+  ctx.fillStyle = '#101510';
+  ctx.fillRect(plot.x, plot.y, plot.w, plot.h);
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  for (let percent = 0; percent <= 10; percent += 2) {
+    const py = plot.y + plot.h - (percent / 10) * plot.h;
+    ctx.fillStyle = 'rgba(176,186,164,0.75)';
+    ctx.fillText(percent + '%', plot.x - 4, py + 3);
+    ctx.fillStyle = percent === 0 ? 'rgba(176,186,164,0.35)' : 'rgba(176,186,164,0.15)';
+    ctx.fillRect(plot.x, py, plot.w, 1);
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(176,186,164,0.75)';
+  const x = (frequency) => {
+    const t = (Math.log(frequency) - Math.log(100)) / (Math.log(8000) - Math.log(100));
+    return plot.x + Math.min(1, Math.max(0, t)) * plot.w;
+  };
+  for (const [frequency, label] of [[100, '100 Hz'], [1000, '1k'], [8000, '8k']]) {
+    ctx.fillText(label, x(frequency), rect.height - 4);
+  }
+
+  for (const step of state.distortionSteps) {
+    if (step.thdPercent == null || !step.valid) continue;
+    const centre = x(step.frequency);
+    const t = Math.min(1, Math.max(0, step.thdPercent / 10));
+    const top = plot.y + plot.h - t * plot.h;
+    const barWidth = Math.max(3, plot.w / DISTORTION_STEPS.length * 0.7);
+    ctx.fillStyle = step.thdPercent > 3 ? '#c9ff70' : '#55bb84';
+    ctx.fillRect(centre - barWidth / 2, top, barWidth, Math.max(1, plot.y + plot.h - top));
+  }
+  ctx.textAlign = 'left';
+}
+
+async function runDistortionSweep() {
+  if (state.distortionRunning) return;
+  if (!state.running) {
+    setDistortionMessage('Start the measurement first — the sweep plays through its output.', true);
+    return;
+  }
+  if (state.demo) {
+    setDistortionMessage('Demo mode has no real output to excite — run the real measurement to measure distortion.', true);
+    return;
+  }
+
+  state.distortionRunning = true;
+  state.distortionSteps = [];
+  setDistortionMessage(null);
+  updateDistortionButtons();
+
+  const signal = state.signal;
+  const sineHz = state.sineHz;
+  engine.setSignal('sine');
+  const window = new Float32Array(16384);
+
+  try {
+    for (const f0 of DISTORTION_STEPS) {
+      if (!state.distortionRunning || !engine.running || state.demo) break;
+      engine.setSineHz(f0);
+      setDistortionSubtitle('measuring ' + (f0 >= 1000 ? (f0 / 1000).toFixed(1) + ' kHz' : f0.toFixed(0) + ' Hz'));
+      await distortionSleep(900);
+      if (!state.distortionRunning || !engine.running || state.demo) break;
+
+      let step;
+      if (engine.micWritten > window.length) {
+        engine.readMic(window, engine.micWritten - window.length);
+        step = measureDistortion(window, engine.sampleRate, f0);
+      } else {
+        step = { frequency: f0, thdPercent: null, valid: false, fundamentalDb: null, strongest: null, strongestDb: null };
+      }
+      state.distortionSteps.push(step);
+      updateDistortionReadout();
+    }
+  } finally {
+    // Hand the stimulus back to what the Source card says it is, and let the
+    // analysis re-lock, since the sweep replaced what it was correlating.
+    engine.setSignal(signal);
+    engine.setSineHz(sineHz);
+    if (analyser) analyser.reset();
+    state.distortionRunning = false;
+    setDistortionSubtitle(null);
+    updateDistortionButtons();
+    if (state.distortionSteps.length === DISTORTION_STEPS.length) {
+      setDistortionMessage('Sweep finished over ' + state.distortionSteps.length + ' tones — the measurement is re-locking.');
+    } else if (state.distortionSteps.length) {
+      setDistortionMessage('Sweep stopped after ' + state.distortionSteps.length + ' tones — the measurement is re-locking.');
+    }
+  }
+}
+
+function stopDistortionSweep() {
+  if (!state.distortionRunning) return;
+  state.distortionRunning = false;
+  updateDistortionButtons();
+}
+
+function closeDistortion() {
+  stopDistortionSweep();
+  closeSheet('distortionSheet');
+}
+
+/* ---------- moving targets and calibrations between devices ---------- */
+
+async function exportTargetFile(target) {
+  const text = serializeTarget(target);
+  if (!text) {
+    setTargetMessage('The curve needs at least two points before it can be exported.', true);
+    return;
+  }
+  const safe = (target.name || 'curve').replace(/[\/:]/g, '-');
+  try {
+    const blob = new Blob([text], { type: 'application/json' });
+    const result = await shareOrDownload(blob, 'Align target ' + safe + '.json', 'Align target curve');
+    if (result === 'downloaded') setTargetMessage('The target file was downloaded.');
+  } catch (err) {
+    setTargetMessage('Could not share the target file.', true);
+  }
+}
+
+async function importTargetFileText(text) {
+  const outcome = parseTargetFile(text);
+  if (!outcome.ok) {
+    setTargetMessage(outcome.message, true);
+    return;
+  }
+  let target = outcome.target;
+  if (state.customTargets.some((item) => item.name.toLowerCase() === target.name.toLowerCase())) {
+    target = normalizeTarget({ name: target.name + ' (imported)', points: target.points });
+  }
+  state.customTargets.unshift(target);
+  if (!persistCustomTargets(state.customTargets)) {
+    state.customTargets.shift();
+    setTargetMessage('Could not save the target — browser storage is full or blocked.', true);
+    return;
+  }
+  state.targetDraft = target;
+  $('targetName').value = target.name;
+  $('targetSubtitle').textContent = targetSummaryText(target);
+  refreshTargetSelect();
+  setTargetMessage('Imported ' + target.points.length + ' points over ' + targetRangeText(target) + '.');
+  draw();
 }
 
 function handleCalibrationFile(event) {
@@ -5519,6 +5912,73 @@ $('btnChooseCalFile').addEventListener('click', () => {
   const input = $('calFile');
   input.value = '';
   input.click();
+});
+
+$('btnExportCal').addEventListener('click', () => {
+  const text = serializeCalibration(state.micCal);
+  if (!text) {
+    setCalMessage('No calibration is loaded — there is nothing to export.', true);
+    return;
+  }
+  const safe = (state.micCal.name || 'mic').replace(/[\/:]/g, '-');
+  const blob = new Blob([text], { type: 'application/json' });
+  shareOrDownload(blob, 'Align calibration ' + safe + '.json', 'Align mic calibration')
+    .then((result) => {
+      if (result === 'downloaded') setCalMessage('The calibration file was downloaded.');
+    })
+    .catch(() => setCalMessage('Could not share the calibration file.', true));
+});
+
+/* ---------- real-time analyser and distortion ---------- */
+
+$('btnRTA').addEventListener('click', openRTA);
+$('btnCloseRTA').addEventListener('click', closeRTA);
+$('rtaMode').addEventListener('change', (event) => {
+  state.rtaMode = event.target.value;
+  state.rtaPeaks = null;
+  updateRTA();
+});
+$('btnRtaArm').addEventListener('click', () => {
+  state.rtaPeaks = state.rtaBands.map((band) => band.db);
+  updateRTA();
+});
+$('btnRtaClear').addEventListener('click', () => {
+  state.rtaPeaks = null;
+  updateRTA();
+});
+
+$('btnDistortion').addEventListener('click', () => {
+  state.distortionSteps = [];
+  state.distortionRunning = false;
+  updateDistortionButtons();
+  setDistortionMessage(null);
+  updateDistortionReadout();
+  $('distortionSheet').hidden = false;
+  updateSheetLock();
+});
+$('btnCloseDistortion').addEventListener('click', closeDistortion);
+$('btnDistStart').addEventListener('click', runDistortionSweep);
+$('btnDistStop').addEventListener('click', stopDistortionSweep);
+
+$('btnExportTarget').addEventListener('click', () => {
+  if (!state.targetDraft) return;
+  exportTargetFile(state.targetDraft);
+});
+$('btnImportTarget').addEventListener('click', () => {
+  const input = $('targetFile');
+  input.value = '';
+  input.click();
+});
+$('targetFile').addEventListener('change', async (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    await importTargetFileText(text);
+  } catch (err) {
+    setTargetMessage('Could not read that file.', true);
+  }
+  event.target.value = '';
 });
 
 $('btnExportLibrary').addEventListener('click', exportLibrary);

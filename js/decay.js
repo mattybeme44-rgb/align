@@ -159,6 +159,44 @@ function fitDecayRT60(envelope, sampleRate) {
   return rt60;
 }
 
+/** C50 and C80 from an energy envelope that starts at the impulse peak. */
+export function decayClarity(envelope, sampleRate) {
+  if (!envelope || envelope.length <= 8 || !(sampleRate > 0)) return null;
+  // A decay shorter than 100 ms after the peak cannot say anything honest.
+  if (envelope.length < 0.1 * sampleRate) return null;
+
+  let loudest = -Infinity;
+  let total = 0;
+  for (const value of envelope) {
+    if (!Number.isFinite(value)) continue;
+    loudest = Math.max(loudest, value);
+    total += Math.pow(10, value / 10);
+  }
+  if (!Number.isFinite(loudest) || loudest <= -80 || total <= 0) return null;
+
+  const clarity = (seconds) => {
+    const split = Math.min(envelope.length, Math.round(seconds * sampleRate));
+    let early = 0;
+    for (let i = 0; i < split; i++) {
+      const value = envelope[i];
+      if (!Number.isFinite(value)) continue;
+      early += Math.pow(10, value / 10);
+    }
+    const late = total - early;
+    if (!(early > 0) || late <= 1e-12 * total) return 99;
+    return 10 * Math.log10(early / late);
+  };
+
+  return { c50: clarity(0.05), c80: clarity(0.08) };
+}
+
+/** Plain words for what the clarity ratios say about the listening position. */
+export function clarityReading(c50) {
+  if (c50 >= 10) return 'A speech-friendly position.';
+  if (c50 >= 0) return 'Between speech and music.';
+  return 'A reverberant position.';
+}
+
 /**
  * RT60 overall and per third-octave band from 250 Hz to 4 kHz, read from the
  * gate when it is on and from the whole response when it is off.
@@ -205,6 +243,7 @@ export function buildRoomDecay(res, gate) {
 
   const envelope = decayEnvelope(spectrumRe, spectrumIm, length, sampleRate);
   const overall = fitDecayRT60(envelope, sampleRate);
+  const clarity = decayClarity(envelope, sampleRate);
 
   const fft = fftFor(n);
   fft.forward(spectrumRe, spectrumIm);
@@ -233,5 +272,5 @@ export function buildRoomDecay(res, gate) {
     if (rt60 !== null) bands.push({ frequency: centre, rt60 });
   }
 
-  return { overall, bands, gated };
+  return { overall, bands, gated, clarity };
 }
