@@ -250,7 +250,8 @@ the crossover period), and use the phase trace to confirm they track through the
   fast while things are moving.
 - **Smoothing** — fractional-octave smoothing for a readable magnitude trace.
 - **Target curve** — Off by default; **Flat**, a −1 dB per octave tilt above 1 kHz, or a room curve with
-  a +6 dB low end. The chosen target is drawn as a faint dashed line behind the live curve on the same
+  a +6 dB low end, or a curve you draw yourself in the **Target curve editor** (Edit target) and save
+  beside the built-ins. The chosen target is drawn as a faint dashed line behind the live curve on the same
   dB scale, the vertical range widens to include it, and the cursor readout gains a **Δ target** figure
   in dB. The choice is remembered between launches.
 - **Normalize** — references the magnitude to the 300 Hz–3 kHz band average so repeated
@@ -286,9 +287,25 @@ the crossover period), and use the phase trace to confirm they track through the
 - **Arm average / Capture average / Clear average** — a running power average of the curves captured
   into it, drawn as a pink dashed ghost and labelled with how many it holds. It resets when the
   measurement is restarted.
-- **Saved measurements** — save a measurement with a name and the settings it was taken with, kept on
-  the device between launches (up to 20, newest first). Tap one to lay its curve behind the live trace,
-  or delete it.
+- **Capture library** — save the live measurement, Capture A or Capture B with a name, note and the
+  settings it was taken with, kept in this browser between launches. Tap entries to overlay up to eight
+  curves at once, search, sort, rename, annotate or delete. Phase-capable saves carry a phase overlay
+  with its own preview delay. **Export library** writes the whole library as one JSON file and **Import
+  library** adds what is not already stored, validating the file before touching anything.
+- **EQ designer** — add up to eight peaking, low-shelf, high-shelf and high-pass filters, drag their
+  nodes on a log-frequency chart, edit frequency, gain and Q as rows, and read the predicted corrected
+  response in lime over the measurement as a dim ghost. It shows the maximum boost and the mean
+  deviation from the chosen target, and **Copy filter list** puts the values on the clipboard. The set
+  is remembered between launches and never changes the measurement, the gate or the captures.
+- **Capture polarity** — compares each held capture's main lobe with the live arrival and says **Inverted
+  vs A** or **Same as A** in the metrics row and the status pill, from the wrapped phase difference once
+  the delay between the two arrivals is taken out. **Show A/B inverted** previews the correction on the
+  phase curves only; amplitude response alone cannot show polarity.
+- **Mic calibration file** — **Import calibration** under Analysis reads the frequency/dB file a
+  measurement microphone maker ships, takes that response off the displayed magnitude and the band
+  table, and leaves phase, coherence and the impulse response as measured. The **cal** badge on the
+  transfer card names what is loaded and offers to replace or remove it. It is separate from the dB SPL
+  level offset.
 - **Export CSV** — one row per frequency bin with frequency, magnitude, phase, coherence and the
   impulse response, plus a header naming the sample rate, FFT size, smoothing, delay, polarity and
   gate; it downloads as a file.

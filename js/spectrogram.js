@@ -114,7 +114,51 @@ export function buildSpectrogram(res, rangeMs) {
     }
   }
 
+  smoothHeat(db);
+
   return { times, freqs, db, rangeMs: span };
+}
+
+/*
+ * The grid is far coarser than the display, so a light blur across frequency
+ * and then across time keeps the decay reading as smooth bands rather than as
+ * visible cells. The edges are clamped, so the map keeps its shape and size.
+ */
+function smoothHeat(db) {
+  const rows = db.length;
+  if (rows < 3) return;
+  const columns = db[0].length;
+  if (columns < 3) return;
+
+  let source = db;
+
+  for (let pass = 0; pass < 2; pass++) {
+    const acrossFrequency = source.map((row) => Float64Array.from(row));
+    for (let r = 0; r < rows; r++) {
+      const row = source[r];
+      const out = acrossFrequency[r];
+      for (let c = 0; c < columns; c++) {
+        const left = row[c > 0 ? c - 1 : 0];
+        const right = row[c < columns - 1 ? c + 1 : columns - 1];
+        out[c] = row[c] * 0.5 + (left + right) * 0.25;
+      }
+    }
+
+    const acrossTime = acrossFrequency.map((row) => Float64Array.from(row));
+    for (let r = 0; r < rows; r++) {
+      const row = acrossFrequency[r];
+      const above = acrossFrequency[r > 0 ? r - 1 : 0];
+      const below = acrossFrequency[r < rows - 1 ? r + 1 : rows - 1];
+      const out = acrossTime[r];
+      for (let c = 0; c < columns; c++) {
+        out[c] = row[c] * 0.5 + (above[c] + below[c]) * 0.25;
+      }
+    }
+
+    source = acrossTime;
+  }
+
+  for (let r = 0; r < rows; r++) db[r].set(source[r]);
 }
 
 const STOPS = [
@@ -149,6 +193,61 @@ function formatFrequency(frequency) {
     return (Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)) + 'k';
   }
   return frequency.toFixed(0);
+}
+
+/* How many bitmap pixels stand in for each grid cell. */
+const HEAT_SCALE = 3;
+
+/* One bitmap per build, kept so moving the gate or resizing is free. */
+const heatCache = new WeakMap();
+
+/* The map as a bitmap, interpolated between grid cells rather than blocky. */
+function heatImage(data) {
+  const cached = heatCache.get(data);
+  if (cached) return cached;
+
+  const rows = data.db.length;
+  const columns = data.db[0].length;
+  const width = columns * HEAT_SCALE;
+  const height = rows * HEAT_SCALE;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(width, height);
+  const pixels = image.data;
+
+  for (let y = 0; y < height; y++) {
+    const sourceY = Math.min(rows - 1, Math.max(0, (y + 0.5) / HEAT_SCALE - 0.5));
+    const y0 = Math.floor(sourceY);
+    const y1 = Math.min(rows - 1, y0 + 1);
+    const fy = sourceY - y0;
+    const rowA = data.db[y0];
+    const rowB = data.db[y1];
+
+    for (let x = 0; x < width; x++) {
+      const sourceX = Math.min(columns - 1, Math.max(0, (x + 0.5) / HEAT_SCALE - 0.5));
+      const x0 = Math.floor(sourceX);
+      const x1 = Math.min(columns - 1, x0 + 1);
+      const fx = sourceX - x0;
+
+      const top = rowA[x0] + (rowA[x1] - rowA[x0]) * fx;
+      const bottom = rowB[x0] + (rowB[x1] - rowB[x0]) * fx;
+      const value = top + (bottom - top) * fy;
+      const [red, green, blue] = heatColour((value + 60) / 60);
+
+      const index = (y * width + x) * 4;
+      pixels[index] = red;
+      pixels[index + 1] = green;
+      pixels[index + 2] = blue;
+      pixels[index + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+  heatCache.set(data, canvas);
+  return canvas;
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -228,20 +327,14 @@ export class SpectrogramChart {
       return;
     }
 
-    const rows = data.db.length;
-    const columns = data.db[0].length;
-    const cellW = plot.w / columns;
-    const cellH = plot.h / rows;
-
-    for (let r = 0; r < rows; r++) {
-      const y = plot.y + (r / rows) * plot.h;
-      for (let c = 0; c < columns; c++) {
-        const t = (data.db[r][c] + 60) / 60;
-        const [red, green, blue] = heatColour(t);
-        ctx.fillStyle = 'rgb(' + red + ',' + green + ',' + blue + ')';
-        ctx.fillRect(plot.x + c * cellW, y, cellW + 0.5, cellH + 0.5);
-      }
-    }
+    // The map, drawn from a bitmap interpolated between the grid cells so the
+    // decay reads as smooth bands rather than as a block of cells.
+    const heat = heatImage(data);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(heat, plot.x, plot.y, plot.w, plot.h);
+    ctx.restore();
 
     // Time grid and labels down the side.
     const step = timeStep(span);

@@ -171,7 +171,10 @@
   <section class="card">
     <div class="card-head">
       <h2>Transfer function</h2>
-      <span class="badge" id="gateBadge" hidden>GATED</span>
+      <span class="head-meta">
+        <button id="btnCalBadge" class="badge cal-badge" type="button" hidden title="Microphone calibration">cal</button>
+        <span class="badge" id="gateBadge" hidden>GATED</span>
+      </span>
     </div>
     <p class="cursor-readout" id="readout">tap the plot</p>
     <div class="chart-wrap tf">
@@ -190,7 +193,7 @@
       <label class="toggle-pill ghost" id="phaseALabel" hidden><input type="checkbox" id="chkPhaseA" checked /><i></i>Phase A</label>
       <label class="toggle-pill ghostB" id="phaseBLabel" hidden><input type="checkbox" id="chkPhaseB" checked /><i></i>Phase B</label>
     </div>
-    <div class="row btns"><button id="btnBands" class="btn" type="button">Band table</button><button id="btnGroupDelay" class="btn" type="button">Group delay</button></div>
+    <div class="row btns"><button id="btnBands" class="btn" type="button">Band table</button><button id="btnGroupDelay" class="btn" type="button">Group delay</button><button id="btnEQDesigner" class="btn" type="button">EQ designer</button></div>
   </section>
 
   <section class="metrics">
@@ -202,6 +205,7 @@
     <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
     <div class="metric"><span class="k">Δ vs A</span><span class="v" id="rdDelta">—</span></div>
     <div class="metric"><span class="k">Δ vs B</span><span class="v" id="rdDeltaB">—</span></div>
+    <div class="metric"><span class="k">Capture polar.</span><span class="v" id="rdCapturePolarity">—</span><span class="metric-detail" id="rdCapturePolarityNote"></span></div>
     <div class="metric"><span class="k">Recommended</span><span class="v" id="rdAdvice">—</span><span class="metric-detail" id="rdAdviceDetail"></span></div>
     <button id="btnApplyDelay" class="metric metric-action" type="button"><span class="k">Apply</span><span class="v">→</span></button>
   </section>
@@ -329,6 +333,11 @@
       The target is drawn as the faint dashed line behind the live curve on the same dB scale, and the
       cursor reads the difference to it in dB.
     </p>
+    <div class="row btns">
+      <button id="btnTargetEditor" class="btn" type="button">Edit target</button>
+      <button id="btnImportCalibration" class="btn" type="button">Import calibration</button>
+    </div>
+    <p class="source-hint" id="calStatus" hidden></p>
     <label class="chk">
       <input type="checkbox" id="chkSpectrographAnalysis" /> Show live spectrograph
     </label>
@@ -411,6 +420,15 @@
       <button id="btnClearB" class="btn" type="button">Clear B</button>
     </div>
     <div id="captureDelayControls"></div>
+    <div class="row toggles" id="captureInvertRow" hidden>
+      <label class="chk"><input type="checkbox" id="chkInvertA" /> Show A inverted</label>
+      <label class="chk"><input type="checkbox" id="chkInvertB" /> Show B inverted</label>
+    </div>
+    <p class="source-hint" id="invertNote" hidden>
+      Flipping a capture turns only its drawn phase by 180° so the correction can be previewed. It
+      changes nothing about the measurement, the stored capture or the audio path — and magnitude
+      alone can never show polarity.
+    </p>
     <p id="phaseAdvice" class="source-hint">Preview only: + delays that capture, − advances it. For main/sub arrival comparisons, turn Compensate delay off before capturing both speakers — with it on the phase of both captures is already shifted and only arrival timing looks aligned. The preview changes neither the capture nor the hardware routing.</p>
     <div class="row btns">
       <button id="btnArmPeak" class="btn" type="button">Arm peak hold</button>
@@ -551,6 +569,12 @@
     <button id="btnCloseSaved" class="btn" type="button">Done</button>
   </div>
   <p class="muted" id="savedSubtitle">Kept on this device</p>
+  <div class="row btns">
+    <button id="btnExportLibrary" class="btn" type="button">Export library</button>
+    <button id="btnImportLibrary" class="btn" type="button">Import library</button>
+  </div>
+  <p id="libraryMessage" class="source-hint" hidden></p>
+  <input id="libraryFile" type="file" accept="application/json,.json,text/plain" hidden />
   <p id="savedError" class="clip-warning" hidden></p>
   <div class="row"><label for="savedSource">Save from</label><select id="savedSource"><option value="live">Live</option><option value="a">Capture A</option><option value="b">Capture B</option></select></div>
   <div class="row"><label for="savedName">Name</label><input id="savedName" type="text" maxlength="80" placeholder="Capture name" autocomplete="off" /></div>
@@ -654,6 +678,141 @@
     there to remove.
   </p>
 </section>
+
+<section id="eqSheet" class="sheet eq-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">EQ designer</h2>
+      <p class="sheet-sub" id="eqSubtitle">0 of 8 filters · drag a node to shape it</p>
+    </div>
+    <button id="btnCloseEQ" class="btn" type="button">Done</button>
+  </div>
+  <div class="metrics eq-metrics">
+    <div class="metric"><span class="k">Filters</span><span class="v" id="eqCount">0</span><span class="metric-detail" id="eqCountDetail">of 8</span></div>
+    <div class="metric"><span class="k">Max boost</span><span class="v" id="eqMaxBoost">+0.0 dB</span></div>
+    <div class="metric"><span class="k">Predicted</span><span class="v" id="eqDeviation">—</span><span class="metric-detail" id="eqDeviationBasis">no measurement</span></div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Predicted response</h2>
+      <span class="card-detail" id="eqChartDetail">live + correction</span>
+    </div>
+    <div class="chart-wrap eq-chart-wrap"><canvas id="eqChart" aria-label="Predicted corrected response"></canvas></div>
+    <div class="row toggles eq-legend">
+      <span class="legend-swatch ghost">Measurement</span>
+      <span class="legend-swatch accent">Predicted</span>
+      <span class="legend-swatch phase">Filters</span>
+    </div>
+    <p class="source-hint">
+      The dim line is the measurement as it is; the lime line is that curve with the filters below
+      added to it. Measured response and correction only — nothing is sent to the speaker.
+    </p>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Filters</h2>
+      <span class="card-detail" id="eqFilterDetail">none yet</span>
+    </div>
+    <div id="eqRows"></div>
+    <div class="row btns">
+      <button id="btnAddEqFilter" class="btn" type="button">Add filter</button>
+      <button id="btnResetEq" class="btn" type="button">Reset</button>
+    </div>
+    <p class="source-hint" id="eqLimitNote" hidden>Eight filters is the limit — remove one to add another.</p>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Take it with you</h2></div>
+    <button id="btnCopyEq" class="btn btn-power eq-copy-btn" type="button">Copy filter list</button>
+    <p class="source-hint" id="eqCopyNote">
+      The filters are kept between sessions, so a correction can be finished over more than one.
+      Copy puts them on the clipboard as text for a DSP or a notes app.
+    </p>
+  </div>
+  <p class="sheet-foot-note">
+    A dip is usually better fixed by geometry or delay than by boosting, and no filter can repair a
+    null. Use the band table and the coherence curve to decide which peaks are worth a cut.
+  </p>
+</section>
+
+<section id="targetSheet" class="sheet target-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Target curve editor</h2>
+      <p class="sheet-sub" id="targetSubtitle">6 points · 20 Hz – 20 kHz</p>
+    </div>
+    <button id="btnCloseTarget" class="btn" type="button">Done</button>
+  </div>
+  <div class="card">
+    <div class="row">
+      <label for="targetName">Name</label>
+      <input id="targetName" class="text-field" type="text" maxlength="40" placeholder="My target" autocomplete="off" />
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>The curve</h2>
+      <span class="card-detail">drag a point up or down</span>
+    </div>
+    <div class="chart-wrap target-chart-wrap"><canvas id="targetChart" aria-label="Target curve editor"></canvas></div>
+    <p class="source-hint">
+      The measurement is drawn faintly behind the target so the curve can be placed against what the
+      system is actually doing. The target is a reference only: it never changes the measurement.
+    </p>
+  </div>
+  <div class="card">
+    <div class="row btns">
+      <button id="btnAddTargetPoint" class="btn" type="button">Add point</button>
+      <button id="btnRemoveTargetPoint" class="btn" type="button">Remove point</button>
+    </div>
+    <p class="source-hint" id="targetPointNote">Drag a point to move it · tap a point to select it.</p>
+  </div>
+  <div class="card">
+    <div class="row btns">
+      <button id="btnSaveTarget" class="btn btn-power" type="button">Save &amp; use</button>
+      <button id="btnDeleteTarget" class="btn" type="button">Delete</button>
+      <button id="btnNewTarget" class="btn" type="button">New target</button>
+    </div>
+    <p class="source-hint" id="targetMessage" hidden></p>
+  </div>
+  <p class="sheet-foot-note">
+    The curve is smooth between the points and held flat beyond the outermost ones. Saved curves
+    appear in the target picker beside Flat, the tilt and the room curve, and are kept between sessions.
+  </p>
+</section>
+
+<section id="calSheet" class="sheet cal-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Mic calibration</h2>
+      <p class="sheet-sub">The microphone's own response</p>
+    </div>
+    <button id="btnCloseCal" class="btn" type="button">Done</button>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Loaded calibration</h2>
+      <span class="badge" id="calSheetBadge" hidden>CAL</span>
+    </div>
+    <div id="calSheetBody"></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Import a calibration file</h2></div>
+    <button id="btnChooseCalFile" class="btn btn-power eq-copy-btn" type="button">Choose file</button>
+    <p class="source-hint" id="calMessage" hidden></p>
+    <p class="source-hint">
+      One frequency and dB pair per line, separated by a comma, tab, semicolon or space — the format
+      most measurement microphone makers ship. Comment lines starting with # or // are skipped, and a
+      header line is ignored.
+    </p>
+  </div>
+  <p class="sheet-foot-note">
+    The correction is taken off the displayed magnitude and the band table's levels; phase, coherence
+    and the impulse response are left exactly as measured. It is remembered between launches, and the
+    point count and range above say how much of the band it covers.
+  </p>
+</section>
+
+<input id="calFile" type="file" accept=".txt,.csv,.cal,text/plain,text/csv" hidden />
 
 <script type="module" src="js/app.js"></script>
 </body>

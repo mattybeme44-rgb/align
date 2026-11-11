@@ -1,4 +1,4 @@
-import { targetDb } from './charts.js';
+import { targetDb } from './targets.js';
 
 /* The third-octave views: the band table, the A/B balance and group delay. */
 
@@ -37,7 +37,7 @@ export function bandLevel(trace, centre) {
   return 10 * Math.log10(Math.max(power / (k1 - k0 + 1), 1e-14));
 }
 
-export function bandReadings(res, target) {
+export function bandReadings(res, target, customs) {
   if (!res || !(res.bins > 2) || !(res.df > 0)) return [];
   const ratio = Math.pow(2, 1 / 6);
 
@@ -57,7 +57,7 @@ export function bandReadings(res, target) {
     const count = k1 - k0 + 1;
     const levelDb = 10 * Math.log10(Math.max(power / count, 1e-14));
     const meanCoherence = coherence / count;
-    const targetDelta = target ? levelDb - targetDb(target, frequency) : null;
+    const targetDelta = target ? levelDb - targetDb(target, frequency, customs) : null;
     return { frequency, levelDb, targetDelta, coherence: meanCoherence };
   });
 }

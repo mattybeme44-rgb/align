@@ -1891,3 +1891,238 @@ a.btn.btn-power.services-link:hover {
 .services-card .source-hint {
   margin-bottom: 0;
 }
+
+
+
+/* ---------- EQ designer, target editor and mic calibration ---------- */
+
+.head-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.cal-badge {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  cursor: pointer;
+  border-color: rgba(119, 200, 193, 0.45);
+  background: rgba(119, 200, 193, 0.14);
+  color: var(--phase);
+}
+
+.cal-badge:active {
+  transform: scale(0.96);
+}
+
+.text-field {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: rgba(9, 13, 9, 0.85);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+  max-width: 62%;
+  text-align: right;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35) inset;
+}
+
+.text-field:focus-visible {
+  outline: none;
+  border-color: rgba(201, 255, 112, 0.55);
+  box-shadow: 0 0 0 3px rgba(201, 255, 112, 0.14);
+}
+
+.chart-wrap.eq-chart-wrap,
+.chart-wrap.target-chart-wrap {
+  height: 268px;
+  margin-bottom: 8px;
+}
+
+.chart-wrap.target-chart-wrap {
+  height: 272px;
+}
+
+.eq-chart-wrap canvas,
+.target-chart-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  touch-action: none;
+}
+
+.eq-legend {
+  gap: 16px;
+  padding-top: 0;
+}
+
+.legend-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-soft);
+}
+
+.legend-swatch::before {
+  content: "";
+  width: 14px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.legend-swatch.ghost {
+  color: rgba(226, 235, 214, 0.55);
+}
+
+.legend-swatch.accent {
+  color: var(--accent);
+}
+
+.legend-swatch.phase {
+  color: var(--phase);
+}
+
+.metrics.eq-metrics {
+  margin-bottom: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.eq-row {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(160, 190, 150, 0.08);
+}
+
+.eq-row:last-child {
+  border-bottom: 0;
+}
+
+.eq-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.eq-kind {
+  min-width: 0;
+  max-width: 46%;
+  padding: 6px 26px 6px 9px;
+  font-size: 12px;
+}
+
+.eq-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eq-icon-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.eq-icon-btn.delete {
+  color: var(--warn);
+}
+
+.eq-icon-btn:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.eq-row.disabled {
+  opacity: 0.6;
+}
+
+.eq-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.eq-slider-row > .eq-slider-label {
+  width: 30px;
+  flex: none;
+  font-size: 9px;
+  color: var(--dim);
+}
+
+.eq-slider-row input[type="range"] {
+  flex: 1;
+  width: auto;
+  min-width: 60px;
+}
+
+.eq-slider-row .value-box {
+  flex: none;
+  min-width: 66px;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.eq-copy-btn {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border-radius: 999px;
+  font-size: 14px;
+}
+
+.cal-line {
+  margin: 0 0 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-soft);
+  word-break: break-word;
+}
+
+.cal-line.dim {
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.cal-remove {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid rgba(255, 138, 122, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 138, 122, 0.1);
+  color: var(--warn);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.target-actions-note {
+  margin: 8px 0 0;
+}

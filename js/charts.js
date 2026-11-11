@@ -1,3 +1,5 @@
+import { targetDb } from './targets.js';
+
 const F_MIN = 20;
 const F_MAX = 20000;
 const LOG_SPAN = Math.log(F_MAX / F_MIN);
@@ -33,28 +35,6 @@ const FREQ_LINES = [
 ];
 const FREQ_MAJOR = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 const FREQ_LABELS_NARROW = [20, 200, 2000, 20000];
-
-/** The magnitude targets, as the app's Analysis card offers them. */
-export const TARGET_CURVES = [
-  { id: 'flat', label: 'Flat' },
-  { id: 'tilt', label: '−1 dB/oct above 1 kHz' },
-  { id: 'room', label: 'Room curve (+6 dB low end)' },
-];
-
-/** The target in dB, 0 dB being the app's normalised reference level. */
-export function targetDb(id, frequency) {
-  const f = Math.max(frequency, 1);
-  if (id === 'tilt') {
-    if (f <= 1000) return 0;
-    return -Math.log2(f / 1000);
-  }
-  if (id === 'room') {
-    if (f >= 200) return 0;
-    const t = Math.log2(200 / f) / Math.log2(200 / 30);
-    return 6 * Math.min(1, Math.max(0, t));
-  }
-  return 0;
-}
 
 /** Wrap an angle into ±180°, the range the phase pane shows. */
 export function wrapDegrees(deg) {
@@ -289,7 +269,7 @@ export class TransferChart {
 
     if (opts.target) {
       for (let f = span.min; f <= span.max; f *= 1.25) {
-        const v = targetDb(opts.target, f);
+        const v = targetDb(opts.target, f, opts.customTargets);
         if (v < min) min = v;
         if (v > max) max = v;
       }
@@ -331,7 +311,7 @@ export class TransferChart {
     if (panes.coh) this.drawCohAxis(panes.coh);
     this.drawLegend(panes, options);
 
-    if (options.target) this.drawTarget(panes.mag, options.target);
+    if (options.target) this.drawTarget(panes.mag, options.target, options.customTargets);
     (options.savedCurves || []).forEach((item, index) => {
       this.drawSavedCurve(panes.mag, item.curve, COL.savedColors[index % COL.savedColors.length]);
     });
@@ -346,10 +326,20 @@ export class TransferChart {
       if (panes.phase) {
         const anchor = this.phaseAnchor(res);
         if (options.showCaptureAPhase && options.snapshot) {
-          this.drawPhase(panes.phase, options.snapshot, { anchor, held: true, color: COL.ghost });
+          this.drawPhase(panes.phase, options.snapshot, {
+            anchor,
+            held: true,
+            color: COL.ghost,
+            inverted: options.snapshot.showInverted,
+          });
         }
         if (options.showCaptureBPhase && options.secondSnapshot) {
-          this.drawPhase(panes.phase, options.secondSnapshot, { anchor, held: true, color: COL.ghostB });
+          this.drawPhase(panes.phase, options.secondSnapshot, {
+            anchor,
+            held: true,
+            color: COL.ghostB,
+            inverted: options.secondSnapshot.showInverted,
+          });
         }
         this.drawPhase(panes.phase, res);
       }
@@ -508,12 +498,20 @@ export class TransferChart {
     (options.savedCurves || []).forEach((item, index) => items.push([
       (item.name || 'Saved').slice(0, short ? 12 : 24), COL.savedColors[index % COL.savedColors.length],
     ]));
-    if (panes.phase && options.showCaptureAPhase && options.snapshot) items.push(['Phase A', COL.ghost]);
-    if (panes.phase && options.showCaptureBPhase && options.secondSnapshot) items.push(['Phase B', COL.ghostB]);
+    if (panes.phase && options.showCaptureAPhase && options.snapshot) {
+      items.push(['Phase A' + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost]);
+    }
+    if (panes.phase && options.showCaptureBPhase && options.secondSnapshot) {
+      items.push(['Phase B' + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB]);
+    }
     if (options.peakHold) items.push(['Peak', COL.peak]);
     if (options.average) items.push(['Avg ' + (options.averageCount || 0), COL.average]);
-    if (options.snapshot) items.push([short ? 'A' : 'Capture A', COL.ghost]);
-    if (options.secondSnapshot) items.push([short ? 'B' : 'Capture B', COL.ghostB]);
+    if (options.snapshot) {
+      items.push([(short ? 'A' : 'Capture A') + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost]);
+    }
+    if (options.secondSnapshot) {
+      items.push([(short ? 'B' : 'Capture B') + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB]);
+    }
 
     let x = p.x;
     let y = 16;
@@ -752,7 +750,7 @@ export class TransferChart {
   }
 
   /** The target, faint and dashed, behind every trace. */
-  drawTarget(pane, id) {
+  drawTarget(pane, ref, customs) {
     const ctx = this.ctx;
     const count = Math.max(2, Math.ceil(pane.w));
 
@@ -760,7 +758,7 @@ export class TransferChart {
     ctx.beginPath();
     for (let i = 0; i < count; i++) {
       const f = this.freqAtX(pane.x + i);
-      const y = this.dbToY(targetDb(id, f), pane);
+      const y = this.dbToY(targetDb(ref, f, customs), pane);
       if (i === 0) ctx.moveTo(pane.x + i + 0.5, y);
       else ctx.lineTo(pane.x + i + 0.5, y);
     }
@@ -789,12 +787,13 @@ export class TransferChart {
     return n ? sum / n : 0;
   }
 
-  relativePhase(res, sharedAnchor) {
+  relativePhase(res, sharedAnchor, extraDeg) {
     const df = res.sampleRate / res.fftSize;
     const out = new Float32Array(res.bins);
     const anchor = sharedAnchor === undefined ? this.phaseAnchor(res) : sharedAnchor;
+    const extra = Number(extraDeg) || 0;
     for (let k = 0; k < res.bins; k++) {
-      out[k] = res.phaseDeg[k] - anchor - 360 * k * df * (res.previewDelayMs || 0) / 1000;
+      out[k] = res.phaseDeg[k] - anchor - 360 * k * df * (res.previewDelayMs || 0) / 1000 + extra;
     }
     return out;
   }
@@ -831,7 +830,7 @@ export class TransferChart {
 
     const bins = res.bins;
     const values = opts.held
-      ? this.relativePhase(res, opts.anchor)
+      ? this.relativePhase(res, opts.anchor, opts.inverted ? 180 : 0)
       : this.phaseValues && this.phaseValues.length === bins ? this.phaseValues : this.relativePhase(res);
     const count = Math.max(2, Math.ceil(pane.w));
     const continuous = new Float64Array(count);

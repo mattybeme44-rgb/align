@@ -1,6 +1,47 @@
 import { AudioEngine } from './audio-engine.js';
 import { Analyser, suggestEq } from './analyser.js';
-import { TransferChart, ImpulseChart, targetDb, wrapDegrees, TARGET_CURVES } from './charts.js';
+import { TransferChart, ImpulseChart, wrapDegrees } from './charts.js';
+import {
+  TARGET_CURVES,
+  targetDb,
+  loadCustomTargets,
+  persistCustomTargets,
+  normalizeTarget,
+  starterTarget,
+  targetPointInWidestGap,
+  targetSummaryText,
+  customTargetRef,
+  customTargetIdFromRef,
+  sortedTargetPoints,
+  frequencyText as targetFrequencyText,
+} from './targets.js';
+import {
+  loadCalibration,
+  persistCalibration,
+  clearCalibration,
+  parseCalibration,
+  applyCalibration,
+  calibrationSummaryText,
+  calibrationRangeText,
+  calibrationCountText,
+} from './calibration.js';
+import {
+  EQ_FILTER_LIMIT,
+  EQ_FILTER_KINDS,
+  EQ_FREQUENCY_RANGE,
+  EQ_GAIN_RANGE,
+  EQ_Q_RANGE,
+  loadEqFilters,
+  persistEqFilters,
+  bankResponseDb,
+  filterDetailText,
+  filterListText,
+  filterBankText,
+  eqFilterKind,
+  newFilter as newEqFilter,
+} from './parametric-eq.js';
+import { parseLibrary, mergeLibrary, serializeLibrary } from './library.js';
+import { EqDesignerChart, TargetEditorChart } from './editors.js';
 import { buildWaterfall, WaterfallChart } from './waterfall.js';
 import { FFT } from './fft.js';
 import { LiveSpectrograph, microphoneSpectrum } from './spectrograph.js';
@@ -264,12 +305,28 @@ state.target = readString(STORAGE.target, '') || null;
 state.calibrationDb = readNumber(STORAGE.calibration, 0);
 state.showSpl = readString(STORAGE.spl, '0') === '1';
 
+// The features carried over from the iOS app: drawn targets, the microphone's
+// own calibration and the parametric filters being designed against the room.
+state.customTargets = loadCustomTargets();
+state.micCal = loadCalibration();
+state.eqFilters = loadEqFilters();
+state.targetDraft = null;
+state.targetPointIndex = -1;
+state.eqSelectedId = null;
+state.eqOpen = false;
+state.targetOpen = false;
+state.calOpen = false;
+state.eqCopied = false;
+state.rawResults = null;
+
 const tfChart = new TransferChart($('tfChart'));
 const irChart = new ImpulseChart($('irChart'));
 const wfChart = new WaterfallChart($('wfChart'));
 const liveSpectrograph = new LiveSpectrograph($('spectrographChart'));
 const spectrogramChart = new SpectrogramChart($('spectrogramChart'));
 const groupDelayChart = new GroupDelayChart($('groupChart'));
+const eqChart = new EqDesignerChart($('eqChart'));
+const targetChart = new TargetEditorChart($('targetChart'));
 
 /* ---------- chart spans ---------- */
 
@@ -281,6 +338,45 @@ function frequencyLabel(frequency) {
 
 function signedMs(value) {
   return (value >= 0 ? '+' : '') + value.toFixed(2);
+}
+
+/** The chosen target — built-in or hand-drawn — in dB at a frequency. */
+function targetValue(frequency) {
+  return targetDb(state.target, frequency, state.customTargets);
+}
+
+/** Keep the picker in step with the built-in and drawn targets available. */
+function refreshTargetSelect() {
+  const select = $('selTarget');
+  if (!select) return;
+
+  while (select.options.length > 1) select.remove(1);
+  TARGET_CURVES.forEach((curve) => {
+    const option = document.createElement('option');
+    option.value = curve.id;
+    option.textContent = curve.label;
+    select.appendChild(option);
+  });
+
+  if (state.customTargets.length) {
+    const group = document.createElement('optgroup');
+    group.label = 'Saved targets';
+    state.customTargets.forEach((target) => {
+      const option = document.createElement('option');
+      option.value = customTargetRef(target.id);
+      option.textContent = target.name;
+      group.appendChild(option);
+    });
+    select.appendChild(group);
+  }
+
+  const available = Array.prototype.map.call(select.options, (option) => option.value);
+  if (state.target && available.indexOf(state.target) < 0) {
+    state.target = null;
+    write(STORAGE.target, '');
+  }
+  select.value = state.target || '';
+  $('targetHint').hidden = !state.target;
 }
 
 function updateTfSpan() {
@@ -395,7 +491,8 @@ function hideAudioHelp() {
 function updateSheetLock() {
   const open = !$('savedSheet').hidden || !$('waterfallSheet').hidden ||
     !$('meterSheet').hidden || !$('spectrogramSheet').hidden ||
-    !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden;
+    !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
+    !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -863,6 +960,7 @@ function demoFrame() {
     analyser = new Analyser(n, DEMO_RATE);
     analyser.updateRate = averagingRate();
     state.results = null;
+    state.rawResults = null;
   }
 
   const ref = demoRef;
@@ -896,12 +994,14 @@ function demoFrame() {
   analyser.updateRate = averagingRate();
   analyser.accumulate(mic, ref);
 
-  const res = analyser.results({
+  const raw = analyser.results({
     compensate: state.compensate,
     smoothing: state.smoothing,
     normalize: state.normalize,
     gate: state.gate,
   });
+  state.rawResults = raw;
+  const res = applyCalibration(raw, state.micCal);
 
   state.results = res;
   if (state.peakHoldArmed) state.peakHold = mergePeakHold(state.peakHold, res);
@@ -980,6 +1080,7 @@ function stopDemo() {
   if (button) button.textContent = 'Demo measurement';
 
   state.results = null;
+  state.rawResults = null;
   state.totalDelayMs = 0;
   state.delayLockedAt = 0;
   state.delayProbedAt = 0;
@@ -1048,6 +1149,7 @@ function buildAnalyser() {
   micWin = new Float32Array(state.fftSize);
   refWin = new Float32Array(state.fftSize);
   state.results = null;
+  state.rawResults = null;
   state.eq = [];
   resetRoomInsights();
 }
@@ -1074,6 +1176,10 @@ function resetTraces() {
   state.snapshotB = null;
   $('phaseALabel').hidden = true;
   $('phaseBLabel').hidden = true;
+  $('chkInvertA').checked = false;
+  $('chkInvertB').checked = false;
+  $('captureInvertRow').hidden = true;
+  $('invertNote').hidden = true;
   renderCaptureDelays();
   state.peakHold = null;
   state.peakHoldArmed = false;
@@ -1087,6 +1193,9 @@ function resetTraces() {
   $('btnCaptureAverage').disabled = true;
   $('rdDelta').textContent = '—';
   $('rdDeltaB').textContent = '—';
+  $('rdCapturePolarity').textContent = '—';
+  $('rdCapturePolarityNote').textContent = '';
+  lastPolarityKey = '';
   resetRoomInsights();
   renderBalance();
   updateDelayAdvice();
@@ -1205,6 +1314,102 @@ function applyRecommendedDelay() {
   draw();
 }
 
+/* ---------- polarity between captures ---------- */
+
+let lastPolarityKey = '';
+
+/**
+ * Compare each held capture with the live arrival: the mean of the wrapped
+ * phase difference once the delay between the two arrivals is taken out. Half
+ * a turn or more means one of them is inverted.
+ */
+function polarityFindings() {
+  const live = state.results;
+  if (!live || !(live.bins > 4) || !(live.df > 0) || !(live.frames > 4)) return [];
+
+  const found = [];
+  for (const [label, trace] of [['A', state.snapshot], ['B', state.snapshotB]]) {
+    if (!trace) continue;
+    const finding = polarityFinding(label, trace, live);
+    if (finding) found.push(finding);
+  }
+  return found;
+}
+
+function polarityFinding(label, trace, live) {
+  if (!trace || !(trace.bins > 4) || !(trace.sampleRate > 0) || !(trace.fftSize > 0)) return null;
+  if (!live.df || !live.phaseDeg || !trace.phaseDeg || !live.coh || !trace.coh) return null;
+
+  const delaySeconds = ((trace.delayMs || 0) - state.totalDelayMs) / 1000;
+  const traceDf = trace.sampleRate / trace.fftSize;
+  const count = Math.min(live.bins, trace.bins);
+  let cosine = 0;
+  let sine = 0;
+  let used = 0;
+
+  for (let k = 1; k < count; k++) {
+    const frequency = k * live.df;
+    if (frequency < 100 || frequency > 5000) continue;
+    if (!(live.coh[k] >= 0.5)) continue;
+
+    // The capture may carry a different bin spacing: read the same frequency.
+    const j = Math.round(frequency / traceDf);
+    if (!(j >= 1) || j >= trace.bins) continue;
+    if (!(trace.coh[j] >= 0.5)) continue;
+    if (!Number.isFinite(live.phaseDeg[k]) || !Number.isFinite(trace.phaseDeg[j])) continue;
+
+    const raw = live.phaseDeg[k] - trace.phaseDeg[j];
+    const aligned = raw - 360 * frequency * delaySeconds;
+    const angle = wrapDegrees(aligned) * Math.PI / 180;
+    cosine += Math.cos(angle);
+    sine += Math.sin(angle);
+    used += 1;
+  }
+
+  if (used < 12) return null;
+
+  const mean = Math.atan2(sine, cosine) * 180 / Math.PI;
+  return {
+    capture: label,
+    inverted: Math.cos(mean * Math.PI / 180) < 0,
+    meanPhaseDeg: mean,
+    bins: used,
+  };
+}
+
+function updateCapturePolarity() {
+  const value = $('rdCapturePolarity');
+  const note = $('rdCapturePolarityNote');
+  if (!value || !note) return;
+
+  const findings = polarityFindings();
+  if (!findings.length) {
+    value.textContent = '—';
+    value.className = 'v';
+    note.textContent = '';
+    lastPolarityKey = '';
+    return;
+  }
+
+  value.textContent = findings
+    .map((finding) => (finding.inverted ? 'Inverted vs ' : 'Same as ') + finding.capture)
+    .join(' · ');
+  value.className = 'v ' + (findings.some((finding) => finding.inverted) ? 'bad' : 'good');
+  note.textContent = 'from phase';
+
+  const key = findings
+    .map((finding) => finding.capture + (finding.inverted ? '-' : '+'))
+    .join('|');
+  if (key !== lastPolarityKey) {
+    lastPolarityKey = key;
+    setStatus(
+      value.textContent +
+        ' — amplitude response cannot show this. Show inverted previews the correction.',
+      findings.some((finding) => finding.inverted) ? 'err' : 'ok',
+    );
+  }
+}
+
 function renderBalance() {
   const card = $('balanceCard');
   const summary = $('balanceSummary');
@@ -1256,6 +1461,10 @@ function updateTraceSummary() {
   if (summary) summary.textContent = text;
   $('traceSummary').textContent = text;
   $('capturePhaseRow').hidden = !state.snapshot && !state.snapshotB;
+  $('captureInvertRow').hidden = !state.snapshot && !state.snapshotB;
+  $('invertNote').hidden = !state.snapshot && !state.snapshotB;
+  $('chkInvertA').checked = !!(state.snapshot && state.snapshot.showInverted);
+  $('chkInvertB').checked = !!(state.snapshotB && state.snapshotB.showInverted);
   updatePhaseToggleState();
 }
 
@@ -1280,7 +1489,8 @@ function captureA() {
   const res = state.results;
   if (!res) return;
   state.snapshot = Object.assign(captureTrace(res), {
-    delayMs: state.totalDelayMs, previewDelayMs: 0, smoothing: smoothingLabel(),
+    delayMs: state.totalDelayMs, previewDelayMs: 0, showInverted: false,
+    smoothing: smoothingLabel(),
     reference: referenceLabel(), phaseCompensated: state.compensate,
     gate: { enabled: !!state.gate.enabled, startMs: state.gate.startMs, widthMs: state.gate.widthMs },
     polarity: res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown',
@@ -1291,6 +1501,7 @@ function captureA() {
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
+  updateCapturePolarity();
   setStatus('captured A at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
   updateTraceSummary();
   draw();
@@ -1302,6 +1513,7 @@ function clearA() {
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
+  updateCapturePolarity();
   $('rdDelta').textContent = '—';
   updateTraceSummary();
   draw();
@@ -1311,7 +1523,8 @@ function captureB() {
   const res = state.results;
   if (!res) return;
   state.snapshotB = Object.assign(captureTrace(res), {
-    delayMs: state.totalDelayMs, previewDelayMs: 0, smoothing: smoothingLabel(),
+    delayMs: state.totalDelayMs, previewDelayMs: 0, showInverted: false,
+    smoothing: smoothingLabel(),
     reference: referenceLabel(), phaseCompensated: state.compensate,
     gate: { enabled: !!state.gate.enabled, startMs: state.gate.startMs, widthMs: state.gate.widthMs },
     polarity: res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown',
@@ -1322,6 +1535,7 @@ function captureB() {
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
+  updateCapturePolarity();
   setStatus('captured B at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
   updateTraceSummary();
   draw();
@@ -1333,6 +1547,7 @@ function clearB() {
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
+  updateCapturePolarity();
   $('rdDeltaB').textContent = '—';
   updateTraceSummary();
   draw();
@@ -1848,6 +2063,7 @@ function openSaved() {
   nameField.dataset.suggestion = suggestion;
   $('savedNote').value = '';
   setLibraryError('');
+  libraryMessage('', false);
   renderSaved();
   $('savedSheet').hidden = false;
   updateSheetLock();
@@ -2392,7 +2608,7 @@ function renderBandTable() {
     return;
   }
 
-  const readings = bandReadings(state.results, state.target);
+  const readings = bandReadings(state.results, state.target, state.customTargets);
   const totals = bandSummary(readings);
   const parts = ['1/3 oct'];
   if (totals.overall !== null) parts.push('overall ' + totals.overall.toFixed(1) + ' dB');
@@ -2681,6 +2897,7 @@ function drawNow() {
     showCaptureAPhase: $('chkPhaseA').checked,
     showCaptureBPhase: $('chkPhaseB').checked,
     target: state.target,
+    customTargets: state.customTargets,
     cursorFreq: state.cursorFreq,
   });
 
@@ -2696,6 +2913,11 @@ function drawNow() {
   if (state.spectrogramOpen && refreshSpectrogram(false)) drawSpectrogram();
   if (state.groupDelayOpen && refreshGroupDelay(false)) drawGroupDelay();
   if (state.bandOpen) refreshBandTable(false);
+  if (state.eqOpen) {
+    drawEQChart();
+    updateEQMetrics();
+  }
+  if (state.targetOpen) drawTargetChart();
 }
 
 function meanCoherence(res) {
@@ -2745,12 +2967,14 @@ function analyse() {
   analyser.searchRadius = tracking ? fineSearchRadius(n) : 0;
   analyser.accumulate(micWin, refWin);
 
-  const res = analyser.results({
+  const raw = analyser.results({
     compensate: state.compensate,
     smoothing: state.smoothing,
     normalize: state.normalize,
     gate: state.gate,
   });
+  state.rawResults = raw;
+  const res = applyCalibration(raw, state.micCal);
 
   state.results = res;
   if (state.peakHoldArmed) state.peakHold = mergePeakHold(state.peakHold, res);
@@ -3011,6 +3235,7 @@ function updateReadouts(res) {
     : '—';
 
   updateDelayAdvice();
+  updateCapturePolarity();
 
   $('irReadout').textContent = 'delay ' + totalMs.toFixed(2) + ' ms';
   $('btnWaterfall').disabled = false;
@@ -3045,7 +3270,7 @@ function updateCursorReadout() {
     '%';
 
   if (state.target) {
-    const delta = res.magDb[k] - targetDb(state.target, freq);
+    const delta = res.magDb[k] - targetValue(freq);
     text += ' · Δ target ' + (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' dB';
   }
 
@@ -3082,7 +3307,8 @@ function phaseDifference(live, held, frequency) {
   const heldPhase = coherentPhaseAt(held, frequency);
   if (livePhase === null || heldPhase === null) return '—';
 
-  const previewed = heldPhase - 360 * frequency * (held.previewDelayMs || 0) / 1000;
+  const previewed = heldPhase - 360 * frequency * (held.previewDelayMs || 0) / 1000 +
+    (held.showInverted ? 180 : 0);
   const difference = wrapDegrees(livePhase - previewed);
   return (difference >= 0 ? '+' : '') + difference.toFixed(0) + '°';
 }
@@ -3160,6 +3386,886 @@ function updateEq(res) {
   });
 }
 
+/* ---------- EQ designer ---------- */
+
+function eqSampleRate() {
+  if (state.results && state.results.sampleRate > 0) return state.results.sampleRate;
+  if (state.demo) return DEMO_RATE;
+  return engine.sampleRate > 0 ? engine.sampleRate : 48000;
+}
+
+/** The level of a 1/12-octave band, the spacing the designer reads against. */
+function designBandLevel(res, frequency) {
+  const ratio = Math.pow(2, 1 / 12);
+  const k0 = Math.max(1, Math.floor(frequency / ratio / res.df));
+  const k1 = Math.min(res.bins - 1, Math.ceil(frequency * ratio / res.df));
+  if (!(k1 >= k0)) return -140;
+
+  let power = 0;
+  for (let k = k0; k <= k1; k++) power += Math.pow(10, res.magDb[k] / 10);
+  return 10 * Math.log10(Math.max(power / (k1 - k0 + 1), 1e-14));
+}
+
+function meanDesignBandLevel(res) {
+  const centres = [100, 200, 400, 800, 1600, 3200, 6400, 10000];
+  let total = 0;
+  centres.forEach((frequency) => { total += designBandLevel(res, frequency); });
+  return total / centres.length;
+}
+
+function eqSummary() {
+  const rate = eqSampleRate();
+  const filters = state.eqFilters;
+
+  let maxBoost = 0;
+  for (let frequency = 30; frequency <= 16000; frequency *= Math.pow(2, 1 / 12)) {
+    maxBoost = Math.max(maxBoost, bankResponseDb(filters, frequency, rate));
+  }
+
+  const res = state.results;
+  if (!res || !(res.bins > 2) || !(res.df > 0)) {
+    return { maxBoost, deviation: null, basis: 'no measurement' };
+  }
+
+  const flatness = meanDesignBandLevel(res);
+  let total = 0;
+  let count = 0;
+  for (let frequency = 100; frequency <= 10000; frequency *= Math.pow(2, 1 / 12)) {
+    const predicted = designBandLevel(res, frequency) + bankResponseDb(filters, frequency, rate);
+    const wanted = state.target ? targetValue(frequency) : flatness;
+    total += Math.abs(predicted - wanted);
+    count += 1;
+  }
+
+  return {
+    maxBoost,
+    deviation: count > 0 ? total / count : null,
+    basis: state.target ? 'from target' : 'flatness',
+  };
+}
+
+function updateEQFilter(id, patch) {
+  const filter = state.eqFilters.find((entry) => entry.id === id);
+  if (!filter) return;
+  if (patch.kind) filter.kind = patch.kind;
+  if (Number.isFinite(patch.frequency)) {
+    filter.frequency = Math.min(EQ_FREQUENCY_RANGE.max, Math.max(EQ_FREQUENCY_RANGE.min, patch.frequency));
+  }
+  if (Number.isFinite(patch.gainDb)) {
+    filter.gainDb = Math.min(EQ_GAIN_RANGE.max, Math.max(EQ_GAIN_RANGE.min, patch.gainDb));
+  }
+  if (Number.isFinite(patch.q)) {
+    filter.q = Math.min(EQ_Q_RANGE.max, Math.max(EQ_Q_RANGE.min, patch.q));
+  }
+  if (typeof patch.enabled === 'boolean') filter.enabled = patch.enabled;
+  persistEqFilters(state.eqFilters);
+}
+
+function addEQFilterAt(frequency) {
+  if (state.eqFilters.length >= EQ_FILTER_LIMIT) {
+    setStatus('eight filters is the limit — remove one first', 'err');
+    return;
+  }
+  const filter = newEqFilter(frequency);
+  state.eqFilters.push(filter);
+  state.eqSelectedId = filter.id;
+  persistEqFilters(state.eqFilters);
+  renderEQSheet();
+  draw();
+}
+
+function resetEQFilters() {
+  state.eqFilters = [];
+  state.eqSelectedId = null;
+  persistEqFilters(state.eqFilters);
+  renderEQSheet();
+  draw();
+}
+
+function buildEQSlider(label, min, max, step, value, format, onInput, onCommit) {
+  const row = document.createElement('label');
+  row.className = 'eq-slider-row';
+
+  const name = document.createElement('span');
+  name.className = 'eq-slider-label';
+  name.textContent = label;
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(min);
+  slider.max = String(max);
+  slider.step = String(step);
+  slider.value = String(value);
+  slider.setAttribute('aria-label', label);
+
+  const box = document.createElement('span');
+  box.className = 'value-box';
+  box.textContent = format(value);
+
+  slider.addEventListener('input', () => {
+    const next = Number(slider.value);
+    box.textContent = format(next);
+    onInput(next);
+  });
+  slider.addEventListener('change', () => onCommit(Number(slider.value)));
+
+  row.append(name, slider, box);
+  return row;
+}
+
+function renderEQRows() {
+  const holder = $('eqRows');
+  if (!holder) return;
+  holder.replaceChildren();
+
+  if (!state.eqFilters.length) {
+    const empty = document.createElement('p');
+    empty.className = 'source-hint';
+    empty.textContent =
+      'Add a filter to start shaping a correction. Peaking filters fix a band; shelves and a high-pass handle the ends.';
+    holder.appendChild(empty);
+    return;
+  }
+
+  state.eqFilters.forEach((filter) => {
+    const row = document.createElement('div');
+    row.className = 'eq-row' + (filter.enabled ? '' : ' disabled');
+
+    const head = document.createElement('div');
+    head.className = 'eq-row-head';
+
+    const kind = document.createElement('select');
+    kind.className = 'eq-kind';
+    kind.setAttribute('aria-label', 'Filter type');
+    EQ_FILTER_KINDS.forEach((entry) => {
+      const option = document.createElement('option');
+      option.value = entry.id;
+      option.textContent = entry.title;
+      kind.appendChild(option);
+    });
+    kind.value = filter.kind;
+    kind.addEventListener('change', () => {
+      updateEQFilter(filter.id, { kind: kind.value });
+      renderEQSheet();
+      draw();
+    });
+
+    const detail = document.createElement('span');
+    detail.className = 'eq-detail';
+    detail.textContent = filterDetailText(filter);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'eq-icon-btn';
+    toggle.textContent = filter.enabled ? 'On' : 'Off';
+    toggle.setAttribute('aria-label', filter.enabled ? 'Bypass filter' : 'Enable filter');
+    toggle.addEventListener('click', () => {
+      updateEQFilter(filter.id, { enabled: !filter.enabled });
+      renderEQSheet();
+      draw();
+    });
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'eq-icon-btn delete';
+    remove.textContent = 'Delete';
+    remove.setAttribute('aria-label', 'Delete filter');
+    remove.addEventListener('click', () => {
+      state.eqFilters = state.eqFilters.filter((entry) => entry.id !== filter.id);
+      if (state.eqSelectedId === filter.id) state.eqSelectedId = null;
+      persistEqFilters(state.eqFilters);
+      renderEQSheet();
+      draw();
+    });
+
+    head.append(kind, detail, toggle, remove);
+    row.appendChild(head);
+
+    const refreshDetail = () => { detail.textContent = filterDetailText(filter); };
+
+    row.appendChild(buildEQSlider(
+      'Freq',
+      Math.log10(EQ_FREQUENCY_RANGE.min),
+      Math.log10(EQ_FREQUENCY_RANGE.max),
+      0.001,
+      Math.log10(Math.max(EQ_FREQUENCY_RANGE.min, filter.frequency)),
+      (value) => targetFrequencyText(Math.pow(10, value)),
+      (value) => {
+        filter.frequency = Math.pow(10, value);
+        refreshDetail();
+        drawEQChart();
+      },
+      () => {
+        persistEqFilters(state.eqFilters);
+        updateEQMetrics();
+      },
+    ));
+
+    if (eqFilterKind(filter.kind).allowsGain) {
+      row.appendChild(buildEQSlider(
+        'Gain',
+        EQ_GAIN_RANGE.min,
+        EQ_GAIN_RANGE.max,
+        0.1,
+        filter.gainDb,
+        (value) => (value >= 0 ? '+' : '') + value.toFixed(1) + ' dB',
+        (value) => {
+          filter.gainDb = value;
+          refreshDetail();
+          drawEQChart();
+        },
+        () => {
+          persistEqFilters(state.eqFilters);
+          updateEQMetrics();
+        },
+      ));
+    }
+
+    row.appendChild(buildEQSlider(
+      'Q',
+      EQ_Q_RANGE.min,
+      EQ_Q_RANGE.max,
+      0.05,
+      filter.q,
+      (value) => value.toFixed(1),
+      (value) => {
+        filter.q = value;
+        refreshDetail();
+        drawEQChart();
+      },
+      () => {
+        persistEqFilters(state.eqFilters);
+        updateEQMetrics();
+      },
+    ));
+
+    holder.appendChild(row);
+  });
+}
+
+function updateEQMetrics() {
+  const summary = eqSummary();
+  const enabled = state.eqFilters.filter((filter) => filter.enabled).length;
+
+  $('eqCount').textContent = String(enabled);
+  $('eqCountDetail').textContent = 'of ' + EQ_FILTER_LIMIT;
+  $('eqMaxBoost').textContent = (summary.maxBoost >= 0 ? '+' : '') + summary.maxBoost.toFixed(1) + ' dB';
+  $('eqMaxBoost').className = 'v' + (summary.maxBoost > 6 ? ' bad' : '');
+  $('eqDeviation').textContent = summary.deviation === null ? '—' : '±' + summary.deviation.toFixed(1) + ' dB';
+  $('eqDeviation').className = 'v ' + (summary.deviation !== null && summary.deviation <= 3 ? 'good' : '');
+  $('eqDeviationBasis').textContent = summary.basis;
+  $('eqSubtitle').textContent =
+    state.eqFilters.length + ' of ' + EQ_FILTER_LIMIT + ' filters · drag a node to shape it';
+  $('eqFilterDetail').textContent = state.eqFilters.length ? String(state.eqFilters.length) : 'none yet';
+  $('eqChartDetail').textContent = state.results ? 'live + correction' : 'no measurement';
+  $('eqLimitNote').hidden = state.eqFilters.length < EQ_FILTER_LIMIT;
+  $('btnAddEqFilter').disabled = state.eqFilters.length >= EQ_FILTER_LIMIT;
+  $('btnResetEq').disabled = !state.eqFilters.length;
+  $('btnCopyEq').disabled = !state.eqFilters.some((filter) => filter.enabled);
+}
+
+function drawEQChart() {
+  if (!state.eqOpen) return;
+  eqChart.selected = state.eqSelectedId;
+  eqChart.draw({
+    filters: state.eqFilters,
+    res: state.results,
+    sampleRate: eqSampleRate(),
+    selected: state.eqSelectedId,
+  });
+}
+
+function renderEQSheet() {
+  updateEQMetrics();
+  renderEQRows();
+  drawEQChart();
+}
+
+function openEQDesigner() {
+  state.eqOpen = true;
+  $('eqSheet').hidden = false;
+  updateSheetLock();
+  renderEQSheet();
+  requestAnimationFrame(() => {
+    eqChart.resize();
+    drawEQChart();
+  });
+}
+
+function closeEQDesigner() {
+  state.eqOpen = false;
+  closeSheet('eqSheet');
+}
+
+let eqDrag = null;
+
+function eqPoint(event) {
+  const rect = eqChart.canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+$('eqChart').addEventListener('pointerdown', (event) => {
+  const point = eqPoint(event);
+  const filter = eqChart.nearestFilter(state.eqFilters, point.x, point.y);
+  if (!filter) return;
+
+  state.eqSelectedId = filter.id;
+  eqDrag = { pointerId: event.pointerId, id: filter.id };
+  try {
+    eqChart.canvas.setPointerCapture(event.pointerId);
+  } catch (err) {
+    /* not every browser needs it */
+  }
+  event.preventDefault();
+  drawEQChart();
+});
+
+$('eqChart').addEventListener('pointermove', (event) => {
+  if (!eqDrag || event.pointerId !== eqDrag.pointerId) return;
+  const filter = state.eqFilters.find((entry) => entry.id === eqDrag.id);
+  if (!filter) return;
+
+  const point = eqPoint(event);
+  filter.frequency = Math.min(EQ_FREQUENCY_RANGE.max,
+    Math.max(EQ_FREQUENCY_RANGE.min, eqChart.freqAtX(point.x)));
+  if (eqFilterKind(filter.kind).allowsGain) {
+    filter.gainDb = Math.min(EQ_GAIN_RANGE.max, Math.max(EQ_GAIN_RANGE.min, eqChart.dbAtY(point.y)));
+  }
+  drawEQChart();
+});
+
+function endEQDrag(event) {
+  if (!eqDrag || event.pointerId !== eqDrag.pointerId) return;
+  try {
+    eqChart.canvas.releasePointerCapture(event.pointerId);
+  } catch (err) {
+    /* the capture may already be gone */
+  }
+  eqDrag = null;
+  persistEqFilters(state.eqFilters);
+  renderEQSheet();
+  draw();
+}
+
+$('eqChart').addEventListener('pointerup', endEQDrag);
+$('eqChart').addEventListener('pointercancel', endEQDrag);
+
+function copyEQList() {
+  const text = filterBankText(state.eqFilters, eqSampleRate());
+  const note = $('eqCopyNote');
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    note.textContent = 'This browser will not let a page write to the clipboard — select the list from the filters below instead.';
+    setStatus('clipboard is not available in this browser', 'err');
+    return;
+  }
+  navigator.clipboard.writeText(text).then(() => {
+    note.textContent = 'Filter list copied — paste it into a DSP or a notes app.';
+    setStatus('filter list copied', 'ok');
+  }).catch(() => {
+    note.textContent = 'Could not copy — select the list from the filters below instead.';
+    setStatus('could not copy the filter list', 'err');
+  });
+}
+
+/* ---------- target curve editor ---------- */
+
+function currentTargetDraftExists() {
+  if (!state.targetDraft) return false;
+  return state.customTargets.some((target) => target.id === state.targetDraft.id);
+}
+
+function drawTargetChart() {
+  if (!state.targetOpen) return;
+  targetChart.selectedIndex = state.targetPointIndex;
+  targetChart.draw({
+    target: state.targetDraft,
+    res: state.results,
+    selected: state.targetPointIndex,
+  });
+}
+
+function renderTargetSheet() {
+  const target = state.targetDraft;
+  if (!target) return;
+
+  const ordered = sortedTargetPoints(target);
+  const index = state.targetPointIndex;
+  const point = index >= 0 && index < ordered.length ? ordered[index] : null;
+
+  $('targetName').value = target.name;
+  $('targetSubtitle').textContent = targetSummaryText(target);
+  $('targetPointNote').textContent = point
+    ? 'Point ' + (index + 1) + ' of ' + ordered.length +
+      ' · ' + targetFrequencyText(point.frequency) + ' · drag it up or down'
+    : 'Drag a point to move it · tap a point to select it.';
+  $('btnDeleteTarget').disabled = !currentTargetDraftExists();
+  drawTargetChart();
+}
+
+function openTargetEditor() {
+  const currentId = state.target ? customTargetIdFromRef(state.target) : null;
+  const existing = currentId ? state.customTargets.find((target) => target.id === currentId) : null;
+
+  state.targetDraft = existing
+    ? {
+        id: existing.id,
+        name: existing.name,
+        points: sortedTargetPoints(existing).map((point) => ({ frequency: point.frequency, db: point.db })),
+      }
+    : starterTarget('My target');
+  state.targetPointIndex = -1;
+  state.targetOpen = true;
+  $('targetMessage').hidden = true;
+  $('targetSheet').hidden = false;
+  updateSheetLock();
+  renderTargetSheet();
+  requestAnimationFrame(() => {
+    targetChart.resize();
+    drawTargetChart();
+  });
+}
+
+function closeTargetEditor() {
+  state.targetOpen = false;
+  state.targetDraft = null;
+  state.targetPointIndex = -1;
+  closeSheet('targetSheet');
+}
+
+function setTargetMessage(text, isError) {
+  const el = $('targetMessage');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.classList.toggle('clip-warning', !!isError);
+  el.classList.toggle('source-hint', !isError);
+}
+
+let targetDrag = null;
+
+function targetPoint(event) {
+  const rect = targetChart.canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+$('targetChart').addEventListener('pointerdown', (event) => {
+  if (!state.targetDraft) return;
+  const point = targetPoint(event);
+  const index = targetChart.nearestPoint(state.targetDraft, point.x, point.y);
+
+  state.targetPointIndex = index;
+  targetDrag = index >= 0 ? { pointerId: event.pointerId, index } : null;
+  if (targetDrag) {
+    try {
+      targetChart.canvas.setPointerCapture(event.pointerId);
+    } catch (err) {
+      /* not every browser needs it */
+    }
+    event.preventDefault();
+  }
+  renderTargetSheet();
+});
+
+$('targetChart').addEventListener('pointermove', (event) => {
+  if (!targetDrag || event.pointerId !== targetDrag.pointerId || !state.targetDraft) return;
+  const points = state.targetDraft.points;
+  if (targetDrag.index < 0 || targetDrag.index >= points.length) return;
+
+  const point = targetPoint(event);
+  const db = Math.min(24, Math.max(-24, targetChart.dbAtY(point.y)));
+  points[targetDrag.index].db = db;
+
+  const ordered = sortedTargetPoints(state.targetDraft);
+  $('targetSubtitle').textContent = targetSummaryText(state.targetDraft);
+  $('targetPointNote').textContent = 'Point ' + (targetDrag.index + 1) + ' of ' + ordered.length +
+    ' · ' + (db >= 0 ? '+' : '') + db.toFixed(1) + ' dB';
+  drawTargetChart();
+});
+
+function endTargetDrag(event) {
+  if (!targetDrag || event.pointerId !== targetDrag.pointerId) return;
+  try {
+    targetChart.canvas.releasePointerCapture(event.pointerId);
+  } catch (err) {
+    /* the capture may already be gone */
+  }
+  targetDrag = null;
+  renderTargetSheet();
+}
+
+$('targetChart').addEventListener('pointerup', endTargetDrag);
+$('targetChart').addEventListener('pointercancel', endTargetDrag);
+
+function addTargetPoint() {
+  if (!state.targetDraft) return;
+  const points = sortedTargetPoints(state.targetDraft);
+  if (points.length >= 40) {
+    setTargetMessage('Forty points is the limit for one curve.', true);
+    return;
+  }
+
+  const point = targetPointInWidestGap(state.targetDraft);
+  state.targetDraft.points.push(point);
+  state.targetDraft.points.sort((a, b) => a.frequency - b.frequency);
+  state.targetPointIndex = state.targetDraft.points.findIndex(
+    (entry) => entry.frequency === point.frequency && entry.db === point.db,
+  );
+  setTargetMessage('');
+  renderTargetSheet();
+}
+
+function removeTargetPoint() {
+  if (!state.targetDraft) return;
+  const points = sortedTargetPoints(state.targetDraft);
+  if (points.length <= 2) {
+    setTargetMessage('A target needs at least two points.', true);
+    return;
+  }
+  if (state.targetPointIndex < 0 || state.targetPointIndex >= points.length) {
+    setTargetMessage('Tap a point first, then remove it.', true);
+    return;
+  }
+
+  const target = state.targetDraft.points[state.targetPointIndex];
+  state.targetDraft.points = state.targetDraft.points.filter(
+    (point) => point.frequency !== target.frequency || point.db !== target.db,
+  );
+  state.targetPointIndex = -1;
+  setTargetMessage('');
+  renderTargetSheet();
+}
+
+function saveTargetDraft() {
+  if (!state.targetDraft) return;
+
+  const name = $('targetName').value.trim();
+  if (!name) {
+    setTargetMessage('Give the target a name first.', true);
+    return;
+  }
+  const points = sortedTargetPoints(state.targetDraft);
+  if (points.length < 2) {
+    setTargetMessage('A target needs at least two points.', true);
+    return;
+  }
+
+  const normalised = normalizeTarget({
+    id: state.targetDraft.id,
+    name,
+    points,
+  });
+
+  const index = state.customTargets.findIndex((target) => target.id === normalised.id);
+  if (index >= 0) state.customTargets[index] = normalised;
+  else state.customTargets.unshift(normalised);
+
+  if (!persistCustomTargets(state.customTargets)) {
+    setTargetMessage('Could not save the target — browser storage is full or blocked.', true);
+    return;
+  }
+
+  state.target = customTargetRef(normalised.id);
+  write(STORAGE.target, state.target);
+  refreshTargetSelect();
+  state.targetDraft = {
+    id: normalised.id,
+    name: normalised.name,
+    points: normalised.points.map((point) => ({ frequency: point.frequency, db: point.db })),
+  };
+  setTargetMessage('', false);
+  renderTargetSheet();
+  updateCursorReadout();
+  draw();
+  setStatus('target “' + normalised.name + '” saved', 'ok');
+}
+
+function deleteTargetDraft() {
+  if (!state.targetDraft || !currentTargetDraftExists()) {
+    setTargetMessage('This target is not saved yet, so there is nothing to delete.', true);
+    return;
+  }
+
+  const id = state.targetDraft.id;
+  state.customTargets = state.customTargets.filter((target) => target.id !== id);
+  persistCustomTargets(state.customTargets);
+
+  if (state.target === customTargetRef(id)) {
+    state.target = null;
+    write(STORAGE.target, '');
+  }
+  refreshTargetSelect();
+  closeTargetEditor();
+  updateCursorReadout();
+  draw();
+  setStatus('target deleted', 'ok');
+}
+
+function newTargetDraft() {
+  state.targetDraft = starterTarget('My target');
+  state.targetPointIndex = -1;
+  setTargetMessage('');
+  renderTargetSheet();
+}
+
+/* ---------- microphone calibration ---------- */
+
+function updateCalibrationUI() {
+  const cal = state.micCal;
+  const badge = $('btnCalBadge');
+  if (badge) {
+    badge.hidden = !cal;
+    badge.title = cal ? calibrationSummaryText(cal) : 'Microphone calibration';
+  }
+
+  const status = $('calStatus');
+  if (status) {
+    status.hidden = !cal;
+    status.textContent = cal
+      ? 'Calibration: ' + calibrationSummaryText(cal)
+      : '';
+  }
+
+  renderCalSheet();
+}
+
+function renderCalSheet() {
+  const body = $('calSheetBody');
+  const badge = $('calSheetBadge');
+  if (!body) return;
+  if (badge) badge.hidden = !state.micCal;
+
+  body.replaceChildren();
+  const cal = state.micCal;
+
+  if (!cal) {
+    const line = document.createElement('p');
+    line.className = 'cal-line dim';
+    line.textContent = 'No calibration in use — the magnitude is what the microphone heard.';
+    body.appendChild(line);
+    return;
+  }
+
+  const name = document.createElement('p');
+  name.className = 'cal-line';
+  name.textContent = cal.name;
+
+  const range = document.createElement('p');
+  range.className = 'cal-line dim';
+  range.textContent = calibrationRangeText(cal) + ' · ' + calibrationCountText(cal);
+
+  const loaded = document.createElement('p');
+  loaded.className = 'cal-line dim';
+  const date = new Date(cal.loaded);
+  loaded.textContent = Number.isNaN(date.getTime())
+    ? ''
+    : 'Loaded ' + date.toLocaleString([], {
+        day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+      });
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'cal-remove';
+  remove.textContent = 'Remove calibration';
+  remove.addEventListener('click', removeMicCalibration);
+
+  body.append(name, range);
+  if (loaded.textContent) body.appendChild(loaded);
+  body.appendChild(remove);
+}
+
+function setCalMessage(text, isError) {
+  const el = $('calMessage');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.classList.toggle('clip-warning', !!isError);
+  el.classList.toggle('source-hint', !isError);
+}
+
+function importCalibrationText(text, name) {
+  const calibration = parseCalibration(text, name);
+  if (!calibration) {
+    return {
+      ok: false,
+      message: 'Could not read a calibration from that file — it needs at least three frequency and dB pairs.',
+    };
+  }
+  if (!persistCalibration(calibration)) {
+    return { ok: false, message: 'Could not store the calibration in this browser.' };
+  }
+
+  state.micCal = calibration;
+  updateCalibrationUI();
+  if (state.rawResults) {
+    state.results = applyCalibration(state.rawResults, calibration);
+    updateReadouts(state.results);
+  }
+  draw();
+  return {
+    ok: true,
+    message: 'Loaded ' + calibration.name + ': ' + calibrationCountText(calibration) +
+      ', ' + calibrationRangeText(calibration) + '.',
+  };
+}
+
+function removeMicCalibration() {
+  clearCalibration();
+  state.micCal = null;
+  updateCalibrationUI();
+  state.results = state.rawResults || null;
+  if (state.results) updateReadouts(state.results);
+  draw();
+  setStatus('calibration removed — the magnitude is shown as measured', 'ok');
+}
+
+function handleCalibrationFile(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  const name = file.name.replace(/\.[^.]+$/, '') || 'Calibration file';
+  const finish = (result) => {
+    setCalMessage(result.message, !result.ok);
+    setStatus(result.message, result.ok ? 'ok' : 'err');
+    input.value = '';
+  };
+
+  if (typeof file.text === 'function') {
+    file.text().then((text) => finish(importCalibrationText(text, name)))
+      .catch(() => finish({ ok: false, message: 'Could not read that file.' }));
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => finish(importCalibrationText(String(reader.result || ''), name));
+  reader.onerror = () => finish({ ok: false, message: 'Could not read that file.' });
+  reader.readAsText(file);
+}
+
+function openCalibrationSheet() {
+  state.calOpen = true;
+  setCalMessage('');
+  renderCalSheet();
+  $('calSheet').hidden = false;
+  updateSheetLock();
+}
+
+function closeCalibrationSheet() {
+  state.calOpen = false;
+  closeSheet('calSheet');
+}
+
+/* ---------- capture library backup ---------- */
+
+function libraryMessage(text, isError) {
+  const el = $('libraryMessage');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.classList.toggle('clip-warning', !!isError);
+  el.classList.toggle('source-hint', !isError);
+}
+
+async function exportLibrary() {
+  if (!state.saved.length) {
+    libraryMessage('The library is empty — there is nothing to export yet.', true);
+    return;
+  }
+
+  try {
+    const text = serializeLibrary(state.saved);
+    const blob = new Blob([text], { type: 'application/json' });
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const result = await shareOrDownload(blob, 'align-library-' + stamp + '.json', 'Align library');
+    if (result === 'shared') {
+      libraryMessage('Library shared — ' + state.saved.length + ' captures.', false);
+      setStatus('library shared', 'ok');
+    } else if (result === 'downloaded') {
+      libraryMessage('Library downloaded — check Files or your downloads.', false);
+      setStatus('library downloaded', 'ok');
+    } else if (result === 'cancelled') {
+      libraryMessage('', false);
+    } else {
+      libraryMessage('The library file is ready.', false);
+    }
+  } catch (err) {
+    libraryMessage('Could not export the library' + (err && err.message ? ': ' + err.message : ''), true);
+    setStatus('could not export the library', 'err');
+  }
+}
+
+function chooseLibraryFile() {
+  const input = $('libraryFile');
+  if (!input) return;
+  input.value = '';
+  input.click();
+}
+
+function handleLibraryFile(event) {
+  const input = event.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  const finish = (text) => {
+    const parsed = parseLibrary(text);
+    if (!parsed.ok) {
+      libraryMessage(parsed.message, true);
+      setStatus(parsed.message, 'err');
+      input.value = '';
+      return;
+    }
+
+    const result = mergeLibrary(state.saved, parsed.items, normalizeSavedItem, captureId);
+    if (!result.added) {
+      const message = result.skipped
+        ? 'Nothing new — all ' + result.skipped +
+          (result.skipped === 1 ? ' capture is' : ' captures are') + ' already here.'
+        : 'Nothing in that file could be read as a capture.';
+      libraryMessage(message, true);
+      setStatus(message, 'err');
+      input.value = '';
+      return;
+    }
+
+    if (!persistSaved(result.items)) {
+      libraryMessage('Could not write to browser storage — nothing was imported.', true);
+      input.value = '';
+      return;
+    }
+
+    state.saved = result.items;
+    renderSaved();
+    renderSavedOverlayControls();
+    draw();
+
+    const skippedText = result.skipped
+      ? ', skipped ' + result.skipped + ' already here'
+      : '';
+    const message = 'Imported ' + result.added +
+      (result.added === 1 ? ' capture' : ' captures') + skippedText + '.';
+    libraryMessage(message, false);
+    setStatus(message, 'ok');
+    input.value = '';
+  };
+
+  if (typeof file.text === 'function') {
+    file.text().then(finish)
+      .catch(() => {
+        libraryMessage('Could not read that file.', true);
+        input.value = '';
+      });
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => finish(String(reader.result || ''));
+  reader.onerror = () => {
+    libraryMessage('Could not read that file.', true);
+    input.value = '';
+  };
+  reader.readAsText(file);
+}
+
 /* ---------- running ---------- */
 
 async function startAll() {
@@ -3222,6 +4328,7 @@ async function startAll() {
   state.delayProbedAt = 0;
   state.delayAuto = true;
   state.results = null;
+  state.rawResults = null;
   state.waterfall = null;
   state.noiseFloorDb = null;
   state.noiseHeadroomDb = null;
@@ -3261,6 +4368,7 @@ function stopAll() {
   state.running = false;
   engine.stop();
   state.results = null;
+  state.rawResults = null;
   state.waterfall = null;
   syncDisplayedImpulse();
   if (state.showSpectrograph) liveSpectrograph.clear();
@@ -3636,6 +4744,56 @@ $('btnBands').addEventListener('click', openBands);
 $('btnCloseBands').addEventListener('click', closeBands);
 $('btnGroupDelay').addEventListener('click', openGroupDelay);
 $('btnCloseGroup').addEventListener('click', closeGroupDelay);
+
+$('btnEQDesigner').addEventListener('click', openEQDesigner);
+$('btnCloseEQ').addEventListener('click', closeEQDesigner);
+$('btnAddEqFilter').addEventListener('click', () => addEQFilterAt(state.cursorFreq || 1000));
+$('btnResetEq').addEventListener('click', resetEQFilters);
+$('btnCopyEq').addEventListener('click', copyEQList);
+
+$('btnTargetEditor').addEventListener('click', openTargetEditor);
+$('btnCloseTarget').addEventListener('click', closeTargetEditor);
+$('btnAddTargetPoint').addEventListener('click', addTargetPoint);
+$('btnRemoveTargetPoint').addEventListener('click', removeTargetPoint);
+$('btnSaveTarget').addEventListener('click', saveTargetDraft);
+$('btnDeleteTarget').addEventListener('click', deleteTargetDraft);
+$('btnNewTarget').addEventListener('click', newTargetDraft);
+$('targetName').addEventListener('input', () => {
+  if (!state.targetDraft) return;
+  state.targetDraft.name = $('targetName').value;
+  $('targetSubtitle').textContent = targetSummaryText(state.targetDraft);
+});
+
+$('btnImportCalibration').addEventListener('click', () => {
+  const input = $('calFile');
+  input.value = '';
+  input.click();
+});
+$('calFile').addEventListener('change', handleCalibrationFile);
+$('btnCalBadge').addEventListener('click', openCalibrationSheet);
+$('btnCloseCal').addEventListener('click', closeCalibrationSheet);
+$('btnChooseCalFile').addEventListener('click', () => {
+  const input = $('calFile');
+  input.value = '';
+  input.click();
+});
+
+$('btnExportLibrary').addEventListener('click', exportLibrary);
+$('btnImportLibrary').addEventListener('click', chooseLibraryFile);
+$('libraryFile').addEventListener('change', handleLibraryFile);
+
+$('chkInvertA').addEventListener('change', (event) => {
+  if (!state.snapshot) return;
+  state.snapshot.showInverted = event.target.checked;
+  updateCursorReadout();
+  draw();
+});
+$('chkInvertB').addEventListener('change', (event) => {
+  if (!state.snapshotB) return;
+  state.snapshotB.showInverted = event.target.checked;
+  updateCursorReadout();
+  draw();
+});
 $('btnApplyDelay').addEventListener('click', applyRecommendedDelay);
 $('btnPresets').addEventListener('click', openPresets);
 $('btnClosePresets').addEventListener('click', closePresets);
@@ -3852,24 +5010,19 @@ window.addEventListener('resize', () => {
   wfChart.resize();
   spectrogramChart.resize();
   groupDelayChart.resize();
+  eqChart.resize();
+  targetChart.resize();
   if (state.showSpectrograph) liveSpectrograph.draw();
   if (state.spectrogramOpen) drawSpectrogram();
   if (state.groupDelayOpen) drawGroupDelay();
+  if (state.eqOpen) drawEQChart();
+  if (state.targetOpen) drawTargetChart();
   draw();
 });
 
 /* ---------- initial state ---------- */
 
-const targetSelect = $('selTarget');
-while (targetSelect.options.length > 1) targetSelect.remove(1);
-TARGET_CURVES.forEach((curve) => {
-  const option = document.createElement('option');
-  option.value = curve.id;
-  option.textContent = curve.label;
-  targetSelect.appendChild(option);
-});
-targetSelect.value = state.target || '';
-$('targetHint').hidden = !state.target;
+refreshTargetSelect();
 $('numCalibration').value = state.calibrationDb.toFixed(1);
 $('chkSpl').checked = state.showSpl;
 $('chkMeterSpl').checked = state.showSpl;
@@ -3886,6 +5039,8 @@ $('lblAvg').textContent = state.avgSpeed + '%';
 updateTraceSummary();
 renderBalance();
 updateDelayAdvice();
+updateCapturePolarity();
+updateCalibrationUI();
 renderPresets();
 const copyrightYear = $('copyrightYear');
 if (copyrightYear) copyrightYear.textContent = String(new Date().getFullYear());
