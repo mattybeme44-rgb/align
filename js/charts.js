@@ -17,6 +17,10 @@ const COL = {
   coh: '#d9a26c',
   ghost: 'rgba(226,235,214,0.55)',
   ghostB: 'rgba(143,199,250,0.65)',
+  ghostC: 'rgba(197,163,247,0.62)',
+  ghostD: 'rgba(251,184,107,0.66)',
+  ghostE: 'rgba(107,216,248,0.62)',
+  ghostF: 'rgba(250,133,184,0.66)',
   peak: 'rgba(201,255,112,0.32)',
   average: '#eeaac4',
   overlay: '#b4a7f7',
@@ -119,6 +123,8 @@ export class TransferChart {
     // The drawn phase, eased between frames so the trace settles.
     this.phaseValues = null;
     this.phaseStamp = -1;
+    /** How quickly the drawn phase follows: lower is slower. */
+    this.phaseEase = 0.01;
     this.resize();
   }
 
@@ -254,6 +260,7 @@ export class TransferChart {
     include(opts.average);
     include(opts.secondSnapshot);
     include(opts.snapshot);
+    for (const extra of opts.extraSnapshots || []) include(extra.trace);
 
     for (const item of opts.savedCurves || []) {
       const curve = item.curve || [];
@@ -319,12 +326,23 @@ export class TransferChart {
     if (options.average) this.drawAverage(panes.mag, options.average);
 
     if (res) {
+      for (const extra of options.extraSnapshots || []) {
+        this.drawGhost(panes.mag, extra.trace, extra.color);
+      }
       if (options.secondSnapshot) this.drawGhost(panes.mag, options.secondSnapshot, COL.ghostB);
       if (options.snapshot) this.drawGhost(panes.mag, options.snapshot, COL.ghost);
       this.drawMagnitude(panes.mag, res, false);
       if (panes.coh) this.drawCoherence(panes.coh, res);
       if (panes.phase) {
         const anchor = this.phaseAnchor(res);
+        for (const extra of options.extraSnapshots || []) {
+          if (!extra.showPhase) continue;
+          this.drawPhase(panes.phase, extra.trace, {
+            anchor,
+            held: true,
+            color: extra.color,
+          });
+        }
         if (options.showCaptureAPhase && options.snapshot) {
           this.drawPhase(panes.phase, options.snapshot, {
             anchor,
@@ -511,6 +529,10 @@ export class TransferChart {
     }
     if (options.secondSnapshot) {
       items.push([(short ? 'B' : 'Capture B') + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB]);
+    }
+    for (const extra of options.extraSnapshots || []) {
+      items.push([short ? extra.label : 'Capture ' + extra.label, extra.color]);
+      if (panes.phase && extra.showPhase) items.push(['Phase ' + extra.label, extra.color]);
     }
 
     let x = p.x;
@@ -815,9 +837,9 @@ export class TransferChart {
         const target = relative[k];
         const current = this.phaseValues[k];
         if (!Number.isFinite(target) || !Number.isFinite(current)) continue;
-        // A very slow follow: the curve takes ten seconds or more to settle,
-        // so it reads as a shape rather than as movement.
-        this.phaseValues[k] = current + (target - current) * 0.01;
+        // How fast the trace follows the measurement: lower is slower, so
+        // the curve reads as a shape rather than as movement.
+        this.phaseValues[k] = current + (target - current) * this.phaseEase;
       }
     }
     this.phaseStamp = res.frames;

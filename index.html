@@ -191,9 +191,22 @@
       <label class="toggle-pill coh"><input type="checkbox" id="chkCoh" checked /><i></i>Coherence</label>
       <span class="trace-note" id="traceSummary">no captures yet</span>
     </div>
+    <div class="row">
+      <label for="selPhaseSpeed">Phase trace</label>
+      <select id="selPhaseSpeed">
+        <option value="0.01">Fast</option>
+        <option value="0.004" selected>Slow</option>
+        <option value="0.0015">Steady</option>
+      </select>
+    </div>
+    <p class="source-hint">Slower makes the live phase settle over many seconds, so it reads as a shape rather than as movement.</p>
     <div class="row toggles" id="capturePhaseRow" hidden>
       <label class="toggle-pill ghost" id="phaseALabel" hidden><input type="checkbox" id="chkPhaseA" checked /><i></i>Phase A</label>
       <label class="toggle-pill ghostB" id="phaseBLabel" hidden><input type="checkbox" id="chkPhaseB" checked /><i></i>Phase B</label>
+      <label class="toggle-pill ghost" id="phaseCLabel" hidden><input type="checkbox" id="chkPhaseC" checked /><i></i>Phase C</label>
+      <label class="toggle-pill ghost" id="phaseDLabel" hidden><input type="checkbox" id="chkPhaseD" checked /><i></i>Phase D</label>
+      <label class="toggle-pill ghost" id="phaseELabel" hidden><input type="checkbox" id="chkPhaseE" checked /><i></i>Phase E</label>
+      <label class="toggle-pill ghost" id="phaseFLabel" hidden><input type="checkbox" id="chkPhaseF" checked /><i></i>Phase F</label>
     </div>
     <div class="row btns"><button id="btnBands" class="btn" type="button">Band table</button><button id="btnGroupDelay" class="btn" type="button">Group delay</button><button id="btnEQDesigner" class="btn" type="button">EQ designer</button><button id="btnDistortion" class="btn" type="button">Distortion</button></div>
   </section>
@@ -207,6 +220,10 @@
     <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
     <div class="metric"><span class="k">Δ vs A</span><span class="v" id="rdDelta">—</span></div>
     <div class="metric"><span class="k">Δ vs B</span><span class="v" id="rdDeltaB">—</span></div>
+    <div class="metric"><span class="k">Δ vs C</span><span class="v" id="rdDeltaC">—</span></div>
+    <div class="metric"><span class="k">Δ vs D</span><span class="v" id="rdDeltaD">—</span></div>
+    <div class="metric"><span class="k">Δ vs E</span><span class="v" id="rdDeltaE">—</span></div>
+    <div class="metric"><span class="k">Δ vs F</span><span class="v" id="rdDeltaF">—</span></div>
     <div class="metric"><span class="k">Capture polar.</span><span class="v" id="rdCapturePolarity">—</span><span class="metric-detail" id="rdCapturePolarityNote"></span></div>
     <div class="metric"><span class="k">Recommended</span><span class="v" id="rdAdvice">—</span><span class="metric-detail" id="rdAdviceDetail"></span></div>
     <button id="btnApplyDelay" class="metric metric-action" type="button"><span class="k">Apply</span><span class="v">→</span></button>
@@ -426,6 +443,18 @@
       <button id="btnCaptureB" class="btn" type="button">Capture B</button>
       <button id="btnClearB" class="btn" type="button">Clear B</button>
     </div>
+    <div class="row btns">
+      <button id="btnCaptureC" class="btn" type="button">Capture C</button>
+      <button id="btnClearC" class="btn" type="button">Clear C</button>
+      <button id="btnCaptureD" class="btn" type="button">Capture D</button>
+      <button id="btnClearD" class="btn" type="button">Clear D</button>
+    </div>
+    <div class="row btns">
+      <button id="btnCaptureE" class="btn" type="button">Capture E</button>
+      <button id="btnClearE" class="btn" type="button">Clear E</button>
+      <button id="btnCaptureF" class="btn" type="button">Capture F</button>
+      <button id="btnClearF" class="btn" type="button">Clear F</button>
+    </div>
     <div id="captureDelayControls"></div>
     <div class="row toggles" id="captureInvertRow" hidden>
       <label class="chk"><input type="checkbox" id="chkInvertA" /> Show A inverted</label>
@@ -451,10 +480,10 @@
       <button id="btnSumPreview" class="btn" type="button">Sum preview</button>
     </div>
     <p class="source-hint">
-      Capture A and Capture B each keep the current magnitude trace behind the live one, so two
+      Captures A through F each keep the current magnitude trace behind the live one, so several
       positions or two settings can be compared with it at once — with the delay difference to each.
       Each also carries its phase, drawn beside the live phase with breaks where coherence is too low
-      to trust, and the cursor reads the phase difference to A and B. The phase delay slider rotates
+      to trust, and the cursor reads the phase difference to each one. The phase delay sliders rotate
       only that held phase, so a proposed sub delay can be previewed before anything is applied.
       Peak hold pins the highest magnitude at each frequency since it was armed. The average is a power
       average of the curves captured into it, drawn in pink and labelled with how many it holds.
@@ -588,7 +617,7 @@
   <p id="libraryMessage" class="source-hint" hidden></p>
   <input id="libraryFile" type="file" accept="application/json,.json,text/plain" hidden />
   <p id="savedError" class="clip-warning" hidden></p>
-  <div class="row"><label for="savedSource">Save from</label><select id="savedSource"><option value="live">Live</option><option value="a">Capture A</option><option value="b">Capture B</option></select></div>
+  <div class="row"><label for="savedSource">Save from</label><select id="savedSource"><option value="live">Live</option><option value="a">Capture A</option><option value="b">Capture B</option><option value="c">Capture C</option><option value="d">Capture D</option><option value="e">Capture E</option><option value="f">Capture F</option></select></div>
   <div class="row"><label for="savedName">Name</label><input id="savedName" type="text" maxlength="80" placeholder="Capture name" autocomplete="off" /></div>
   <div class="row"><label for="savedNote">Note <span class="hint">optional</span></label><input id="savedNote" type="text" maxlength="160" placeholder="Speaker, microphone position, room" autocomplete="off" /></div>
   <div class="row"><label for="savedSearch">Search</label><input id="savedSearch" type="search" placeholder="Name or note" /></div>

@@ -64,6 +64,39 @@ import { drawLevelLog, levelLogCsv, LEVEL_LOG_WINDOW_SECONDS } from './level-log
 
 const $ = (id) => document.getElementById(id);
 
+/** The further capture slots C–F, each its own colour on the charts. */
+const EXTRA_GHOST_COLORS = {
+  C: 'rgba(197,163,247,0.62)',
+  D: 'rgba(251,184,107,0.66)',
+  E: 'rgba(107,216,248,0.62)',
+  F: 'rgba(250,133,184,0.66)',
+};
+
+/** The held capture in a slot by letter, A through F. */
+function heldSnapshot(letter) {
+  switch (letter) {
+    case 'A': return state ? state.snapshot : null;
+    case 'B': return state ? state.snapshotB : null;
+    case 'C': return state ? state.snapshotC : null;
+    case 'D': return state ? state.snapshotD : null;
+    case 'E': return state ? state.snapshotE : null;
+    case 'F': return state ? state.snapshotF : null;
+    default: return null;
+  }
+}
+
+/** The further capture slots (C–F) as the transfer chart draws them. */
+function extraSnapshots() {
+  const list = [];
+  for (const label of ['C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(label);
+    if (!trace) continue;
+    const chk = $('chkPhase' + label);
+    list.push({ trace, label, color: EXTRA_GHOST_COLORS[label], showPhase: !!(chk && chk.checked) });
+  }
+  return list;
+}
+
 const engine = new AudioEngine();
 
 let analyser = null;
@@ -106,6 +139,7 @@ const state = {
   fftSize: 16384,
   avgSpeed: 45,
   smoothing: 1 / 6,
+  phaseEase: 0.004,
   normalize: true,
   compensate: true,
   delayEstimate: 0,
@@ -115,6 +149,10 @@ const state = {
   totalDelayMs: 0,
   snapshot: null,
   snapshotB: null,
+  snapshotC: null,
+  snapshotD: null,
+  snapshotE: null,
+  snapshotF: null,
   peakHold: null,
   peakHoldArmed: false,
   average: null,
@@ -335,6 +373,7 @@ state.showSpl = readString(STORAGE.spl, '0') === '1';
 // own calibration and the parametric filters being designed against the room.
 state.customTargets = loadCustomTargets();
 state.micCal = loadCalibration();
+state.phaseEase = readNumber('align.phaseEase', 0.004);
 state.eqFilters = loadEqFilters();
 state.eqSets = loadEqSets();
 state.targetDraft = null;
@@ -347,6 +386,7 @@ state.eqCopied = false;
 state.rawResults = null;
 
 const tfChart = new TransferChart($('tfChart'));
+tfChart.phaseEase = state.phaseEase;
 const irChart = new ImpulseChart($('irChart'));
 const wfChart = new WaterfallChart($('wfChart'));
 const liveSpectrograph = new LiveSpectrograph($('spectrographChart'));
@@ -432,6 +472,10 @@ function updatePhaseToggleState() {
   const on = $('chkPhase').checked;
   $('chkPhaseA').disabled = !on;
   $('chkPhaseB').disabled = !on;
+  $('chkPhaseC').disabled = !on;
+  $('chkPhaseD').disabled = !on;
+  $('chkPhaseE').disabled = !on;
+  $('chkPhaseF').disabled = !on;
   $('capturePhaseRow').classList.toggle('dimmed', !on);
 }
 
@@ -682,11 +726,10 @@ function measurementText(res) {
         ' ms',
     );
   }
-  if (state.snapshot) {
-    lines.push('Δ vs A ' + (state.totalDelayMs - state.snapshot.delayMs).toFixed(2) + ' ms');
-  }
-  if (state.snapshotB) {
-    lines.push('Δ vs B ' + (state.totalDelayMs - state.snapshotB.delayMs).toFixed(2) + ' ms');
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(letter);
+    if (!trace) continue;
+    lines.push('Δ vs ' + letter + ' ' + (state.totalDelayMs - trace.delayMs).toFixed(2) + ' ms');
   }
   if (state.eq.length > 0) {
     const bands = state.eq.map((item) => {
@@ -1207,8 +1250,16 @@ function overlaidCurves() {
 function resetTraces() {
   state.snapshot = null;
   state.snapshotB = null;
+  state.snapshotC = null;
+  state.snapshotD = null;
+  state.snapshotE = null;
+  state.snapshotF = null;
   $('phaseALabel').hidden = true;
   $('phaseBLabel').hidden = true;
+  $('phaseCLabel').hidden = true;
+  $('phaseDLabel').hidden = true;
+  $('phaseELabel').hidden = true;
+  $('phaseFLabel').hidden = true;
   $('chkInvertA').checked = false;
   $('chkInvertB').checked = false;
   $('captureInvertRow').hidden = true;
@@ -1226,6 +1277,10 @@ function resetTraces() {
   $('btnCaptureAverage').disabled = true;
   $('rdDelta').textContent = '—';
   $('rdDeltaB').textContent = '—';
+  $('rdDeltaC').textContent = '—';
+  $('rdDeltaD').textContent = '—';
+  $('rdDeltaE').textContent = '—';
+  $('rdDeltaF').textContent = '—';
   $('rdCapturePolarity').textContent = '—';
   $('rdCapturePolarityNote').textContent = '';
   lastPolarityKey = '';
@@ -1238,7 +1293,7 @@ function resetTraces() {
 function renderCaptureDelays() {
   const holder = $('captureDelayControls');
   holder.replaceChildren();
-  for (const [label, trace] of [['A', state.snapshot], ['B', state.snapshotB]]) {
+  for (const [label, trace] of [['A', state.snapshot], ['B', state.snapshotB], ['C', state.snapshotC], ['D', state.snapshotD], ['E', state.snapshotE], ['F', state.snapshotF]]) {
     if (!trace) continue;
     const card = document.createElement('div');
     card.className = 'capture-delay';
@@ -1279,8 +1334,9 @@ function renderCaptureDelays() {
 }
 
 function activeCapture() {
-  if (state.snapshot) return { label: 'A', trace: state.snapshot };
-  if (state.snapshotB) return { label: 'B', trace: state.snapshotB };
+  for (const [label, trace] of [['A', state.snapshot], ['B', state.snapshotB], ['C', state.snapshotC], ['D', state.snapshotD], ['E', state.snapshotE], ['F', state.snapshotF]]) {
+    if (trace) return { label, trace };
+  }
   return null;
 }
 
@@ -1480,22 +1536,21 @@ function renderBalance() {
 
 function updateTraceSummary() {
   const parts = [];
-  if (state.snapshot) {
-    parts.push('A · ' + state.snapshot.delayMs.toFixed(2) + ' ms (' +
-      signedMs(state.snapshot.previewDelayMs || 0) + ' preview)');
-  }
-  if (state.snapshotB) {
-    parts.push('B · ' + state.snapshotB.delayMs.toFixed(2) + ' ms (' +
-      signedMs(state.snapshotB.previewDelayMs || 0) + ' preview)');
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(letter);
+    if (!trace) continue;
+    parts.push(letter + ' · ' + trace.delayMs.toFixed(2) + ' ms (' +
+      signedMs(trace.previewDelayMs || 0) + ' preview)');
   }
   if (state.average) parts.push('avg ' + state.averageCaptures);
   const text = parts.length ? parts.join('  ') : 'no captures yet';
   const summary = $('captureSummary');
   if (summary) summary.textContent = text;
   $('traceSummary').textContent = text;
-  $('capturePhaseRow').hidden = !state.snapshot && !state.snapshotB;
-  $('captureInvertRow').hidden = !state.snapshot && !state.snapshotB;
-  $('invertNote').hidden = !state.snapshot && !state.snapshotB;
+  const anyHeld = !!(state.snapshot || state.snapshotB || state.snapshotC || state.snapshotD || state.snapshotE || state.snapshotF);
+  $('capturePhaseRow').hidden = !anyHeld;
+  $('captureInvertRow').hidden = !(state.snapshot || state.snapshotB);
+  $('invertNote').hidden = !(state.snapshot || state.snapshotB);
   $('chkInvertA').checked = !!(state.snapshot && state.snapshot.showInverted);
   $('chkInvertB').checked = !!(state.snapshotB && state.snapshotB.showInverted);
   updatePhaseToggleState();
@@ -1518,73 +1573,54 @@ function mergePeakHold(held, res) {
   return held;
 }
 
-function captureA() {
+/** Capture the live result into one of the six slots, A through F. */
+function captureSlot(label) {
   const res = state.results;
   if (!res) return;
-  state.snapshot = Object.assign(captureTrace(res), {
+  const slot = { A: 'snapshot', B: 'snapshotB', C: 'snapshotC', D: 'snapshotD', E: 'snapshotE', F: 'snapshotF' }[label];
+  state[slot] = Object.assign(captureTrace(res), {
     delayMs: state.totalDelayMs, previewDelayMs: 0, showInverted: false,
     smoothing: smoothingLabel(),
     reference: referenceLabel(), phaseCompensated: state.compensate,
     gate: { enabled: !!state.gate.enabled, startMs: state.gate.startMs, widthMs: state.gate.widthMs },
     polarity: res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown',
   });
-  $('phaseALabel').hidden = false;
-  $('chkPhaseA').checked = true;
+  const labelEl = $('phase' + label + 'Label');
+  if (labelEl) labelEl.hidden = false;
+  const chk = $('chkPhase' + label);
+  if (chk) chk.checked = true;
   $('phaseAdvice').hidden = false;
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
   updateCapturePolarity();
-  setStatus('captured A at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
+  setStatus('captured ' + label + ' at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
   updateTraceSummary();
   draw();
 }
 
-function clearA() {
-  state.snapshot = null;
-  $('phaseALabel').hidden = true;
+function clearSlot(label) {
+  const slot = { A: 'snapshot', B: 'snapshotB', C: 'snapshotC', D: 'snapshotD', E: 'snapshotE', F: 'snapshotF' }[label];
+  state[slot] = null;
+  const labelEl = $('phase' + label + 'Label');
+  if (labelEl) labelEl.hidden = true;
+  const deltaEl = $('rdDelta' + label);
+  if (deltaEl) deltaEl.textContent = '—';
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
   updateCapturePolarity();
-  $('rdDelta').textContent = '—';
   updateTraceSummary();
   draw();
 }
 
-function captureB() {
-  const res = state.results;
-  if (!res) return;
-  state.snapshotB = Object.assign(captureTrace(res), {
-    delayMs: state.totalDelayMs, previewDelayMs: 0, showInverted: false,
-    smoothing: smoothingLabel(),
-    reference: referenceLabel(), phaseCompensated: state.compensate,
-    gate: { enabled: !!state.gate.enabled, startMs: state.gate.startMs, widthMs: state.gate.widthMs },
-    polarity: res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown',
-  });
-  $('phaseBLabel').hidden = false;
-  $('chkPhaseB').checked = true;
-  $('phaseAdvice').hidden = false;
-  renderCaptureDelays();
-  renderBalance();
-  updateDelayAdvice();
-  updateCapturePolarity();
-  setStatus('captured B at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
-  updateTraceSummary();
-  draw();
-}
+function captureA() { captureSlot('A'); }
 
-function clearB() {
-  state.snapshotB = null;
-  $('phaseBLabel').hidden = true;
-  renderCaptureDelays();
-  renderBalance();
-  updateDelayAdvice();
-  updateCapturePolarity();
-  $('rdDeltaB').textContent = '—';
-  updateTraceSummary();
-  draw();
-}
+function clearA() { clearSlot('A'); }
+
+function captureB() { captureSlot('B'); }
+
+function clearB() { clearSlot('B'); }
 
 function armPeakHold() {
   state.peakHoldArmed = true;
@@ -1888,7 +1924,7 @@ function renderSaved() {
   const source = $('savedSource').value;
   const available = source === 'live'
     ? !!state.results
-    : !!(source === 'a' ? state.snapshot : state.snapshotB);
+    : !!heldSnapshot(source.toUpperCase());
   $('btnSaveCurrent').disabled = !available;
   $('saveHint').textContent = available
     ? 'A capture is saved with its magnitude, phase, coherence, delay, settings and note in this browser.'
@@ -2066,7 +2102,7 @@ function suggestedCaptureName(source) {
 
 function saveCurrent() {
   const source = $('savedSource').value;
-  const held = source === 'a' ? state.snapshot : source === 'b' ? state.snapshotB : null;
+  const held = source === 'live' ? null : heldSnapshot(source.toUpperCase());
   const res = held || state.results;
   if (!res) {
     setStatus('Nothing to save from that source', 'err');
@@ -3048,6 +3084,7 @@ function drawNow() {
     showCoh: $('chkCoh').checked,
     snapshot: state.snapshot,
     secondSnapshot: state.snapshotB,
+    extraSnapshots: extraSnapshots(),
     peakHold: state.peakHoldArmed ? state.peakHold : null,
     average: state.average,
     averageCount: state.averageCaptures,
@@ -3395,6 +3432,13 @@ function updateReadouts(res) {
   $('rdDeltaB').textContent = state.snapshotB
     ? (totalMs - state.snapshotB.delayMs).toFixed(2) + ' ms'
     : '—';
+  for (const letter of ['C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(letter);
+    const el = $('rdDelta' + letter);
+    if (el) el.textContent = trace
+      ? (totalMs - trace.delayMs).toFixed(2) + ' ms'
+      : '—';
+  }
 
   updateDelayAdvice();
   updateCapturePolarity();
@@ -3437,8 +3481,10 @@ function updateCursorReadout() {
   }
 
   const comparisons = [];
-  if (state.snapshot) comparisons.push('Δ phase vs A ' + phaseDifference(res, state.snapshot, freq));
-  if (state.snapshotB) comparisons.push('Δ phase vs B ' + phaseDifference(res, state.snapshotB, freq));
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(letter);
+    if (trace) comparisons.push('Δ phase vs ' + letter + ' ' + phaseDifference(res, trace, freq));
+  }
   if (comparisons.length) text += '\n' + comparisons.join(' · ');
 
   readout.textContent = text;
@@ -5980,6 +6026,15 @@ $('targetFile').addEventListener('change', async (event) => {
   }
   event.target.value = '';
 });
+
+$('selPhaseSpeed').addEventListener('change', (event) => {
+  const value = Number(event.target.value);
+  if (!Number.isFinite(value) || value <= 0) return;
+  state.phaseEase = value;
+  tfChart.phaseEase = value;
+  try { window.localStorage.setItem('align.phaseEase', String(value)); } catch (err) { /* storage unavailable */ }
+});
+$('selPhaseSpeed').value = String(state.phaseEase);
 
 $('btnExportLibrary').addEventListener('click', exportLibrary);
 $('btnImportLibrary').addEventListener('click', chooseLibraryFile);
