@@ -586,6 +586,14 @@
   <div class="row"><label for="savedName">Name</label><input id="savedName" type="text" maxlength="80" placeholder="Capture name" autocomplete="off" /></div>
   <div class="row"><label for="savedNote">Note <span class="hint">optional</span></label><input id="savedNote" type="text" maxlength="160" placeholder="Speaker, microphone position, room" autocomplete="off" /></div>
   <div class="row"><label for="savedSearch">Search</label><input id="savedSearch" type="search" placeholder="Name or note" /></div>
+  <div class="row">
+    <label for="savedSort">Sort by</label>
+    <select id="savedSort">
+      <option value="newest" selected>Newest</option>
+      <option value="oldest">Oldest</option>
+      <option value="name">Name</option>
+    </select>
+  </div>
   <ul class="saved-list" id="savedList"></ul>
   <div class="sheet-foot">
     <button id="btnClearSavedOverlays" class="btn" type="button">Clear all overlays</button>
@@ -612,6 +620,14 @@
     </div>
     <input type="range" id="spRange" min="0" max="50" step="1" value="50" />
     <div class="range-labels"><span>0 ms</span><span>50 ms</span></div>
+  </div>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label for="spAmp">Amplitude</label>
+      <span class="value-box" id="spAmpValue">100%</span>
+    </div>
+    <input type="range" id="spAmp" min="0" max="200" step="5" value="100" />
+    <div class="range-labels"><span>0%</span><span>200%</span></div>
   </div>
   <p class="sheet-foot-note">Each row is a window past the impulse peak; brighter is louder.</p>
 </section>

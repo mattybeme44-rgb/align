@@ -116,6 +116,7 @@ const state = {
   averageCaptures: 0,
   saved: [],
   overlaidSavedIds: [],
+  savedSort: 'newest',
   presets: [],
   appliedPresetId: null,
   groupDelayOpen: false,
@@ -143,6 +144,7 @@ const state = {
   roomDecay: null,
   spectrogramOpen: false,
   spectrogramRangeMs: 50,
+  spectrogramAmplitude: 100,
   spectrogram: null,
   // The visible span of each chart, null meaning the whole axis.
   tfZoom: null,
@@ -1887,7 +1889,21 @@ function renderSaved() {
     return;
   }
 
-  matches.forEach((item) => {
+  const sorted = matches
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const tie = left.index - right.index;
+      if (state.savedSort === 'oldest') {
+        return (new Date(left.item.date) - new Date(right.item.date)) || tie;
+      }
+      if (state.savedSort === 'name') {
+        return left.item.name.localeCompare(right.item.name) || tie;
+      }
+      return (new Date(right.item.date) - new Date(left.item.date)) || tie;
+    })
+    .map((entry) => entry.item);
+
+  sorted.forEach((item) => {
     const row = document.createElement('li');
     const button = document.createElement('button');
     button.type = 'button';
@@ -1922,7 +1938,8 @@ function renderSaved() {
     const meta = document.createElement('div'); meta.className = 'saved-meta';
     meta.textContent = item.imported
       ? (item.sourceName ? 'From ' + item.sourceName : 'Imported curve')
-      : 'Coherence ' + Math.round(item.coherence * 100) + '% · ' +
+      : (item.polarity && item.polarity !== 'unknown' ? 'Polarity ' + item.polarity + ' · ' : '') +
+        'Coherence ' + Math.round(item.coherence * 100) + '% · ' +
         (item.phase ? 'magnitude + phase' : 'magnitude only');
 
     const settings = document.createElement('div'); settings.className = 'saved-meta';
@@ -2008,6 +2025,10 @@ function renderSaved() {
       draw();
     });
 
+    if (!item.imported) {
+      action('Restore settings', () => restoreSavedSettings(item));
+    }
+
     if (selection >= 0 && Array.isArray(item.phase) && Array.isArray(item.phaseCoherence)) {
       actions.appendChild(buildPreviewDelayControl(item));
     }
@@ -2085,11 +2106,89 @@ function openSaved() {
   nameField.value = suggestion;
   nameField.dataset.suggestion = suggestion;
   $('savedNote').value = '';
+  state.savedSort = 'newest';
+  $('savedSort').value = 'newest';
   setLibraryError('');
   libraryMessage('', false);
   renderSaved();
   $('savedSheet').hidden = false;
   updateSheetLock();
+}
+
+/** "1/6 oct" back to 1/6; "None" to 0; null when it cannot be read. */
+function smoothingFromLabel(label) {
+  const text = String(label || '').trim().toLocaleLowerCase();
+  if (text === 'none') return 0;
+  const match = text.match(/^1\/(\d+)/);
+  if (!match) return null;
+  const divisor = Number(match[1]);
+  return divisor > 0 ? 1 / divisor : null;
+}
+
+/**
+ * Put the settings a saved capture was taken with back on the measurement:
+ * FFT size, smoothing and reference. The overlays and the stored capture are
+ * left exactly as they are, and the browser cannot change the interface's
+ * sample rate, so that is reported rather than faked.
+ */
+function restoreSavedSettings(item) {
+  if (!item || item.imported) {
+    setLibraryError('That entry is an imported curve — it carries no measurement settings.');
+    return;
+  }
+
+  const fft = Number(item.fftSize);
+  if (![8192, 16384, 32768, 65536].includes(fft)) {
+    setLibraryError('That capture’s FFT size cannot be restored.');
+    return;
+  }
+  const smoothing = smoothingFromLabel(item.smoothing);
+  if (smoothing === null) {
+    setLibraryError('That capture’s smoothing cannot be restored.');
+    return;
+  }
+
+  const previousFfT = state.fftSize;
+  state.fftSize = fft;
+  $('selFft').value = String(fft);
+
+  state.smoothing = smoothing;
+  $('selSmooth').value = smoothing > 0 ? String(Math.round(1 / smoothing)) : '0';
+
+  const reference = /loopback|input 2/i.test(item.reference || '') ? 'loopback' : 'generated';
+  state.refMode = reference;
+  $('selRef').value = reference;
+  state.delayEstimate = 0;
+  state.delayLockedAt = 0;
+  state.delayProbedAt = 0;
+  state.delayAuto = true;
+  $('numDelay').value = '0.00';
+
+  if (state.running && previousFfT !== fft) {
+    buildAnalyser();
+  } else if (analyser) {
+    analyser.updateRate = averagingRate();
+    analyser.reset();
+  }
+
+  if (state.spectrogramOpen) {
+    refreshSpectrogram(true);
+    drawSpectrogram();
+  }
+
+  setLibraryError('');
+  const smoothingText = smoothing > 0
+    ? '1/' + Math.round(1 / smoothing) + ' oct'
+    : 'no smoothing';
+  const rateText = item.sampleRate
+    ? ' · captured at ' + (item.sampleRate / 1000).toFixed(1) +
+      ' kHz (the sample rate comes from the interface)'
+    : '';
+  const message = 'restored FFT ' + fft + ' · ' + smoothingText + ' · ' +
+    reference + ' reference' + rateText + '; overlays untouched';
+  libraryMessage(message, false);
+  setStatus(message, 'ok');
+  renderSaved();
 }
 
 /* ---------- measurement presets ---------- */
@@ -2554,6 +2653,7 @@ function invalidateRoomInsights() {
 function updateSpectrogramLabels() {
   const range = Math.round(state.spectrogramRangeMs);
   $('spRangeValue').textContent = range + ' ms';
+  $('spAmpValue').textContent = Math.round(state.spectrogramAmplitude) + '%';
   $('spSubtitle').textContent = 'impulse decay · 0–' + range + ' ms';
 }
 
@@ -2584,6 +2684,7 @@ function refreshSpectrogram(force) {
 function drawSpectrogram() {
   spectrogramChart.draw(state.spectrogram, {
     rangeMs: state.spectrogramRangeMs,
+    amplitude: state.spectrogramAmplitude,
     gate: state.gate,
   });
 }
@@ -4997,6 +5098,10 @@ $('btnSaved').addEventListener('click', openSaved);
 $('btnCloseSaved').addEventListener('click', () => closeSheet('savedSheet'));
 $('btnSaveCurrent').addEventListener('click', saveCurrent);
 $('savedSearch').addEventListener('input', renderSaved);
+$('savedSort').addEventListener('change', () => {
+  state.savedSort = $('savedSort').value;
+  renderSaved();
+});
 $('savedSource').addEventListener('change', () => {
   const field = $('savedName');
   const suggestion = suggestedCaptureName($('savedSource').value);
@@ -5464,6 +5569,14 @@ $('spRange').addEventListener('input', (event) => {
   state.spectrogramRangeMs = Math.max(0, Math.min(50, value));
   updateSpectrogramLabels();
   scheduleSpectrogramRebuild();
+});
+
+$('spAmp').addEventListener('input', (event) => {
+  const value = Number(event.target.value);
+  if (!Number.isFinite(value)) return;
+  state.spectrogramAmplitude = Math.max(0, Math.min(200, value));
+  updateSpectrogramLabels();
+  drawSpectrogram();
 });
 
 $('wfAmp').addEventListener('input', (event) => {

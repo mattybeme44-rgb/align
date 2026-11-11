@@ -198,13 +198,14 @@ function formatFrequency(frequency) {
 /* How many bitmap pixels stand in for each grid cell. */
 const HEAT_SCALE = 3;
 
-/* One bitmap per build, kept so moving the gate or resizing is free. */
+/* One bitmap per build and brightness, kept so resizing is free. */
 const heatCache = new WeakMap();
 
 /* The map as a bitmap, interpolated between grid cells rather than blocky. */
-function heatImage(data) {
-  const cached = heatCache.get(data);
-  if (cached) return cached;
+function heatImage(data, amplitude) {
+  const gain = Math.max(0, Math.min(200, Number(amplitude) || 100)) / 100;
+  let perData = heatCache.get(data);
+  if (perData && perData.has(gain)) return perData.get(gain);
 
   const rows = data.db.length;
   const columns = data.db[0].length;
@@ -235,7 +236,7 @@ function heatImage(data) {
       const top = rowA[x0] + (rowA[x1] - rowA[x0]) * fx;
       const bottom = rowB[x0] + (rowB[x1] - rowB[x0]) * fx;
       const value = top + (bottom - top) * fy;
-      const [red, green, blue] = heatColour((value + 60) / 60);
+      const [red, green, blue] = heatColour((value + 60) / 60 * gain);
 
       const index = (y * width + x) * 4;
       pixels[index] = red;
@@ -246,7 +247,11 @@ function heatImage(data) {
   }
 
   ctx.putImageData(image, 0, 0);
-  heatCache.set(data, canvas);
+  if (!perData) {
+    perData = new Map();
+    heatCache.set(data, perData);
+  }
+  perData.set(gain, canvas);
   return canvas;
 }
 
@@ -329,7 +334,7 @@ export class SpectrogramChart {
 
     // The map, drawn from a bitmap interpolated between the grid cells so the
     // decay reads as smooth bands rather than as a block of cells.
-    const heat = heatImage(data);
+    const heat = heatImage(data, opts.amplitude);
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
