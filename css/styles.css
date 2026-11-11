@@ -2201,3 +2201,38 @@ a.btn.btn-power.services-link:hover {
   height: 100%;
   display: block;
 }
+
+
+/* A published build the page is not running yet — an installed copy resumes
+   its old document, so it says so rather than looking out of date. */
+.update-banner {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px 11px 14px;
+  border: 1px solid rgba(201, 255, 112, 0.42);
+  border-radius: 16px;
+  background: #16211a;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+  color: #f1f0eb;
+  font: 14px -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+.update-banner[hidden] {
+  display: none;
+}
+
+.update-banner p {
+  margin: 0;
+  flex: 1;
+}
+
+.update-banner .btn {
+  flex: none;
+  padding: 8px 16px;
+}

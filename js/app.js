@@ -6381,3 +6381,43 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
   if (document.readyState === 'complete') registerWorker();
   else window.addEventListener('load', registerWorker);
 }
+
+
+/* ---------- published build check ---------- */
+
+// Bumped with every published build; version.json carries the same string.
+const BUILD = '2026-11-11-4';
+let updateCheckedAt = 0;
+
+/**
+ * An installed Home Screen copy resumes its old document instead of fetching
+ * the page again, so it can run an old build for days. Asking for a tiny
+ * version file says when the published one has moved on.
+ */
+async function checkForUpdate(force) {
+  const now = Date.now();
+  if (!force && now - updateCheckedAt < 5 * 60 * 1000) return;
+  updateCheckedAt = now;
+
+  try {
+    const response = await fetch('version.json', { cache: 'no-store' });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (!data || !data.build || data.build === BUILD) return;
+    const banner = $('updateBanner');
+    if (banner) banner.hidden = false;
+  } catch (err) {
+    /* no network means no update to find; the check is a courtesy */
+  }
+}
+
+const reloadUpdateButton = $('btnReloadUpdate');
+if (reloadUpdateButton) {
+  reloadUpdateButton.addEventListener('click', () => location.reload());
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkForUpdate(true);
+});
+
+checkForUpdate(true);
