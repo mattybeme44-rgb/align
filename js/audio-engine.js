@@ -104,6 +104,8 @@ export class AudioEngine {
     this.refOffset = 0;
     this.refAligned = false;
     this.refSamples = [];
+    this.interrupted = '';
+    this.trackIssue = '';
   }
 
   get sampleRate() {
@@ -137,6 +139,16 @@ export class AudioEngine {
     this.releaseGraph();
     if (oldCtx && oldCtx !== ctx) oldCtx.close().catch(() => {});
     this.ctx = ctx;
+
+    // A call, the lock screen or another app can take the context away; the
+    // meters then freeze with no other sign of why.
+    this.interrupted = '';
+    if (ctx.addEventListener) {
+      ctx.addEventListener('statechange', () => {
+        if (this.ctx !== ctx) return;
+        this.interrupted = ctx.state === 'running' ? '' : ctx.state;
+      });
+    }
 
     if (ctx.state === 'suspended') {
       try {
@@ -215,6 +227,19 @@ export class AudioEngine {
     const track = stream.getAudioTracks()[0];
     if (!track) throw new Error('the audio input did not provide a track');
 
+    this.trackIssue = '';
+    if (track.addEventListener) {
+      track.addEventListener('ended', () => {
+        this.trackIssue = 'the microphone stream ended';
+      });
+      track.addEventListener('mute', () => {
+        this.trackIssue = 'the system muted the microphone';
+      });
+      track.addEventListener('unmute', () => {
+        this.trackIssue = '';
+      });
+    }
+
     const settings = track.getSettings ? track.getSettings() : {};
     this.deviceLabel = track.label || 'audio input';
     this.builtInInput = looksBuiltIn(this.deviceLabel);
@@ -243,7 +268,12 @@ export class AudioEngine {
 
       // ScriptProcessor rather than AudioWorklet: iOS Safari is stable with it,
       // and a fault inside a worklet takes the whole browser down with it.
-      this.captureNode = ctx.createScriptProcessor(4096, 2, 1);
+      //
+      // The input channel count has to match what the device actually gives us:
+      // Safari on the iPhone can hand a mono microphone to a stereo-input
+      // processor and then deliver nothing but silence.
+      const inputChannels = this.channels >= 2 ? 2 : 1;
+      this.captureNode = ctx.createScriptProcessor(4096, inputChannels, 1);
       this.captureNode.onaudioprocess = (event) => {
         const input = event.inputBuffer;
         if (!input || input.numberOfChannels === 0) return;
@@ -271,9 +301,10 @@ export class AudioEngine {
         }
       };
 
-      // A muted sink keeps the capture node pulled by the graph.
+      // A near-muted sink keeps the capture node pulled by the graph. Exact
+      // zero is what some iOS builds treat as "nothing to render" and skip.
       this.sinkNode = ctx.createGain();
-      this.sinkNode.gain.value = 0;
+      this.sinkNode.gain.value = 0.0001;
       source.connect(this.captureNode);
       this.captureNode.connect(this.sinkNode);
       this.sinkNode.connect(ctx.destination);

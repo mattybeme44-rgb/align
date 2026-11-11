@@ -108,6 +108,10 @@ let eqTick = 0;
 let starting = false;
 let allowStartHere = false;
 let jitterWarned = false;
+let silentSince = 0;
+let silentWarned = false;
+let unrelatedSince = 0;
+let unrelatedWarned = false;
 let irDrag = null;
 let tfDrag = null;
 let lastIrRefresh = 0;
@@ -1216,6 +1220,103 @@ function reportInput() {
     return;
   }
   setStatus(engine.deviceLabel + ' · ' + engine.deviceChannels + ' inputs', 'ok');
+}
+
+/* ---------- input health ---------- */
+
+// A dead microphone or a signal that has nothing to do with the app's own
+// reference is the commonest "nothing is happening" report, and both look
+// identical on screen: a flat meter and an empty chart. Say which it is.
+
+function hideInputAdvice() {
+  const el = $('inputAdvice');
+  if (el) el.hidden = true;
+}
+
+function showInputAdvice(text, withRta) {
+  const el = $('inputAdvice');
+  const message = $('inputAdviceText');
+  const rta = $('btnInputAdviceRta');
+  if (!el || !message) return;
+  message.textContent = text;
+  if (rta) rta.hidden = !withRta;
+  el.hidden = false;
+}
+
+function resetInputHealth() {
+  silentSince = 0;
+  silentWarned = false;
+  unrelatedSince = 0;
+  unrelatedWarned = false;
+  hideInputAdvice();
+}
+
+function checkInputHealth(res, coherence) {
+  if (state.demo || state.checkingNoise || !state.running) return;
+
+  const now = performance.now();
+  const level = engine.channelLevel[state.micChannel] || 0;
+  const dbfs = level > 0 ? 20 * Math.log10(level) : -Infinity;
+  const inputName = engine.deviceLabel || 'the selected input';
+
+  if (engine.interrupted) {
+    if (!silentWarned) {
+      silentWarned = true;
+      showInputAdvice(
+        'Audio was ' + engine.interrupted + ' — a call, the lock screen or another app can take ' +
+          'the microphone from Safari. Tap Restart audio.',
+        false,
+      );
+    }
+    return;
+  }
+
+  // Nothing at all for a few seconds: the microphone is not delivering audio.
+  if (!(dbfs > -70)) {
+    unrelatedSince = 0;
+    unrelatedWarned = false;
+    if (!silentSince) silentSince = now;
+    if (!silentWarned && now - silentSince > 3000) {
+      silentWarned = true;
+      const reason = engine.trackIssue ? engine.trackIssue + '. ' : '';
+      showInputAdvice(
+        reason + 'No signal is reaching ' + inputName + '. On an iPhone, check that Settings → ' +
+          'Safari → Microphone is allowed for this site, that no call or other app is using the ' +
+          'microphone, and that the phone is not face down or covered. Tap Restart audio after ' +
+          'fixing anything.',
+        false,
+      );
+    }
+    return;
+  }
+
+  silentSince = 0;
+  if (silentWarned) {
+    silentWarned = false;
+    hideInputAdvice();
+  }
+
+  // Sound is arriving but none of it matches the app's own stimulus — which is
+  // exactly what an external noise source looks like to a transfer function.
+  if (state.signal !== 'silent' && res.frames > 60 && coherence < 0.05) {
+    if (!unrelatedSince) unrelatedSince = now;
+    if (!unrelatedWarned && now - unrelatedSince > 6000) {
+      unrelatedWarned = true;
+      showInputAdvice(
+        'The microphone is picking up sound, but none of it matches the noise the app is ' +
+          'playing. White noise from another source cannot be measured as a transfer function — ' +
+          'that needs the app signal coming out of the speaker, or a loopback reference from a ' +
+          'two-input interface. To read that noise on its own, open the RTA.',
+        true,
+      );
+    }
+  } else if (coherence >= 0.2) {
+    unrelatedSince = 0;
+    if (unrelatedWarned) {
+      unrelatedWarned = false;
+      hideInputAdvice();
+    }
+  }
 }
 
 function buildAnalyser() {
@@ -3424,6 +3525,7 @@ function updateReadouts(res) {
 
   $('rdLevel').textContent = levelReadout();
   updateLargeMeter();
+  checkInputHealth(res, coherence);
   $('rdRate').textContent = (res.sampleRate / 1000).toFixed(1) + 'k · ' + res.df.toFixed(1) + ' Hz';
 
   $('rdDelta').textContent = state.snapshot
@@ -5181,6 +5283,7 @@ async function startAll() {
   state.noiseHeadroomDb = null;
   updateNoiseReadout();
   jitterWarned = false;
+  resetInputHealth();
   $('numDelay').value = '0.00';
   resetTraces();
   if (state.showSpectrograph) liveSpectrograph.clear();
@@ -5227,6 +5330,7 @@ function stopAll() {
   state.delayLockedAt = 0;
   state.delayProbedAt = 0;
   jitterWarned = false;
+  resetInputHealth();
   $('btnWaterfall').disabled = false;
   $('btnExportCsv').disabled = true;
   $('btnShareChart').disabled = true;
@@ -5490,6 +5594,16 @@ $('selIrRefresh').addEventListener('change', (event) => {
 });
 $('btnFindDelay').addEventListener('click', findDelay);
 $('btnCheckNoise').addEventListener('click', checkNoise);
+
+$('btnInputAdviceDismiss').addEventListener('click', hideInputAdvice);
+$('btnInputAdviceRestart').addEventListener('click', () => {
+  if (state.running) stopAll();
+  startAll();
+});
+$('btnInputAdviceRta').addEventListener('click', () => {
+  hideInputAdvice();
+  openRTA();
+});
 
 $('selTarget').addEventListener('change', (event) => {
   state.target = event.target.value || null;
@@ -6386,7 +6500,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-4';
+const BUILD = '2026-11-11-5';
 let updateCheckedAt = 0;
 
 /**
