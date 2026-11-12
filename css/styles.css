@@ -2320,3 +2320,38 @@ a.btn.btn-power.services-link:hover {
 .guide-status.blocked {
   color: #d9a26c;
 }
+
+
+/* The transfer chart at full size, for reading a crossover properly. */
+body.tf-full {
+  overflow: hidden;
+}
+
+body.tf-full #transferCard {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #0b0f0c;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+body.tf-full #transferCard .chart-wrap.tf {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 60vh;
+}
+
+body.tf-full #transferCard .chart-wrap.tf canvas {
+  height: 100%;
+}
+
+body.tf-full #transferCard .source-hint {
+  display: none;
+}

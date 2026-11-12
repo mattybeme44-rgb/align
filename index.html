@@ -180,12 +180,13 @@
     <p class="source-hint" id="spectrographNote">Frequency across, time down. This is the selected input, not the impulse-decay spectrogram.</p>
   </section>
 
-  <section class="card">
+  <section id="transferCard" class="card">
     <div class="card-head">
       <h2>Transfer function</h2>
       <span class="head-meta">
         <button id="btnCalBadge" class="badge cal-badge" type="button" hidden title="Microphone calibration">cal</button>
         <span class="badge" id="gateBadge" hidden>GATED</span>
+        <button id="btnTfExpand" class="link-btn" type="button" aria-label="Expand the transfer chart">Expand</button>
       </span>
     </div>
     <p class="cursor-readout" id="readout">tap the plot</p>

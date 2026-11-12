@@ -5635,6 +5635,19 @@ $('chkPhase').addEventListener('change', () => {
 });
 $('chkCoh').addEventListener('change', () => draw());
 $('btnTfReset').addEventListener('click', resetTfZoom);
+$('btnTfExpand').addEventListener('click', () => {
+  const full = document.body.classList.toggle('tf-full');
+  $('btnTfExpand').textContent = full ? 'Close' : 'Expand';
+  requestAnimationFrame(() => {
+    tfChart.resize();
+    draw();
+  });
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && document.body.classList.contains('tf-full')) {
+    $('btnTfExpand').click();
+  }
+});
 $('btnIrReset').addEventListener('click', resetIrZoom);
 $('btnIrHold').addEventListener('click', toggleIrHold);
 $('selIrRefresh').addEventListener('change', (event) => {
@@ -6551,7 +6564,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-8';
+const BUILD = '2026-11-11-9';
 let updateCheckedAt = 0;
 
 /**
