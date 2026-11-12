@@ -159,6 +159,154 @@ function fitDecayRT60(envelope, sampleRate) {
   return rt60;
 }
 
+/** The envelope's own noise floor, taken from the last tenth of the window. */
+export function envelopeNoiseFloor(envelope) {
+  if (!envelope || envelope.length <= 32) return null;
+
+  const tail = Math.max(8, Math.floor(envelope.length / 10));
+  let sum = 0;
+  let count = 0;
+  for (let i = envelope.length - tail; i < envelope.length; i++) {
+    const value = envelope[i];
+    if (!Number.isFinite(value)) continue;
+    sum += Math.pow(10, value / 10);
+    count += 1;
+  }
+  if (!count || !(sum > 0)) return null;
+  return 10 * Math.log10(sum / count);
+}
+
+/** Schroeder backward integral: the energy still to come, in dB from 0. */
+export function schroederDecay(envelope, noiseDb) {
+  if (!envelope || !envelope.length) return null;
+
+  const noise = Number.isFinite(noiseDb) ? Math.pow(10, noiseDb / 10) : 0;
+  const power = new Float64Array(envelope.length);
+
+  for (let i = 0; i < envelope.length; i++) {
+    const value = envelope[i];
+    const linear = Number.isFinite(value) ? Math.pow(10, value / 10) : 0;
+    power[i] = Math.max(0, linear - noise);
+  }
+
+  let total = 0;
+  const decay = new Float64Array(envelope.length);
+  for (let i = envelope.length - 1; i >= 0; i--) {
+    total += power[i];
+    decay[i] = 10 * Math.log10(Math.max(total, 1e-20));
+  }
+
+  if (Number.isFinite(decay[0])) {
+    for (let i = 0; i < decay.length; i++) decay[i] -= decay[0];
+  }
+  return decay;
+}
+
+/** Fit a straight line between two levels of a Schroeder curve. */
+export function fitSchroeder(decay, sampleRate, startDb, endDb) {
+  if (!decay || !(sampleRate > 0) || decay.length <= 16) return null;
+
+  let first = -1;
+  for (let i = 1; i < decay.length; i++) {
+    const value = decay[i];
+    if (!Number.isFinite(value)) continue;
+    if (first < 0 && value <= startDb) first = i;
+    if (first >= 0 && value <= endDb) break;
+  }
+  if (first < 0) return null;
+
+  let last = first;
+  for (let i = first; i < decay.length; i++) {
+    if (!Number.isFinite(decay[i])) continue;
+    last = i;
+    if (decay[i] <= endDb) break;
+  }
+  if (!(last > first + 8)) return null;
+
+  const span = decay[first] - decay[last];
+  if (!(span >= 8)) return null;
+
+  let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0, count = 0;
+  for (let i = first; i <= last; i++) {
+    const value = decay[i];
+    if (!Number.isFinite(value)) continue;
+    const x = i / sampleRate;
+    sumX += x;
+    sumY += value;
+    sumXX += x * x;
+    sumXY += x * value;
+    count += 1;
+  }
+  if (count < 8) return null;
+
+  const denominator = count * sumXX - sumX * sumX;
+  if (!(Math.abs(denominator) > 1e-18)) return null;
+
+  const slope = (count * sumXY - sumX * sumY) / denominator;
+  if (!(slope < -0.5) || !Number.isFinite(slope)) return null;
+
+  const intercept = (sumY - slope * sumX) / count;
+  let ssRes = 0;
+  let ssTot = 0;
+  const meanY = sumY / count;
+  for (let i = first; i <= last; i++) {
+    const value = decay[i];
+    if (!Number.isFinite(value)) continue;
+    const x = i / sampleRate;
+    const predicted = intercept + slope * x;
+    ssRes += (value - predicted) ** 2;
+    ssTot += (value - meanY) ** 2;
+  }
+
+  const r2 = ssTot > 1e-18 ? Math.max(0, Math.min(1, 1 - ssRes / ssTot)) : 0;
+  const rt60 = 60 / -slope;
+  if (!(rt60 >= 0.05) || rt60 > 30) return null;
+
+  return { rt60, r2 };
+}
+
+/** T20, T30 and EDT from one decay window, with the fit quality and noise floor. */
+export function analyseDecay(envelope, sampleRate) {
+  const noiseDb = envelopeNoiseFloor(envelope);
+  const decay = schroederDecay(envelope, noiseDb);
+
+  if (!decay) {
+    return { t20: null, t30: null, edt: null, confidence: 0, noiseDb, decay: null };
+  }
+
+  const t20 = fitSchroeder(decay, sampleRate, -5, -25);
+  const t30 = fitSchroeder(decay, sampleRate, -5, -35);
+  const edt = fitSchroeder(decay, sampleRate, 0, -10);
+
+  return {
+    t20: t20 ? t20.rt60 : null,
+    t30: t30 ? t30.rt60 : null,
+    edt: edt ? edt.rt60 : null,
+    confidence: Math.max(t30 ? t30.r2 : 0, t20 ? t20.r2 : 0),
+    noiseDb,
+    decay,
+  };
+}
+
+/** C50 and C80 straight from the Schroeder curve. */
+function clarityFromDecay(decay, sampleRate) {
+  if (!decay) return null;
+
+  const clarity = (seconds) => {
+    const index = Math.min(decay.length - 1, Math.max(1, Math.round(seconds * sampleRate)));
+    const total = Math.pow(10, decay[0] / 10);
+    const late = Math.pow(10, decay[index] / 10);
+    const early = total - late;
+    if (!(early > 0) || !(late > 1e-12)) return null;
+    return 10 * Math.log10(early / late);
+  };
+
+  const c50 = clarity(0.05);
+  const c80 = clarity(0.08);
+  if (c50 === null || c80 === null) return null;
+  return { c50, c80 };
+}
+
 /** C50 and C80 from an energy envelope that starts at the impulse peak. */
 export function decayClarity(envelope, sampleRate) {
   if (!envelope || envelope.length <= 8 || !(sampleRate > 0)) return null;
@@ -242,8 +390,9 @@ export function buildRoomDecay(res, gate) {
   }
 
   const envelope = decayEnvelope(spectrumRe, spectrumIm, length, sampleRate);
-  const overall = fitDecayRT60(envelope, sampleRate);
-  const clarity = decayClarity(envelope, sampleRate);
+  const reading = analyseDecay(envelope, sampleRate);
+  const overall = reading.t30 !== null ? reading.t30 : reading.t20;
+  const clarity = clarityFromDecay(reading.decay, sampleRate) || decayClarity(envelope, sampleRate);
 
   const fft = fftFor(n);
   fft.forward(spectrumRe, spectrumIm);
@@ -268,9 +417,20 @@ export function buildRoomDecay(res, gate) {
     fft.inverse(bandRe, bandIm);
 
     const bandEnvelope = decayEnvelope(bandRe, bandIm, length, sampleRate);
-    const rt60 = fitDecayRT60(bandEnvelope, sampleRate);
-    if (rt60 !== null) bands.push({ frequency: centre, rt60 });
+    const bandReading = analyseDecay(bandEnvelope, sampleRate);
+    const rt60 = bandReading.t30 !== null ? bandReading.t30 : bandReading.t20;
+    if (rt60 !== null && rt60 !== undefined) bands.push({ frequency: centre, rt60 });
   }
 
-  return { overall, bands, gated, clarity };
+  return {
+    overall,
+    bands,
+    gated,
+    clarity,
+    t20: reading.t20,
+    t30: reading.t30,
+    edt: reading.edt,
+    confidence: reading.confidence,
+    noiseDb: reading.noiseDb,
+  };
 }

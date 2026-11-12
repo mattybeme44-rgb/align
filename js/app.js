@@ -3638,6 +3638,113 @@ function updateReadouts(res) {
   $('btnSaveCurrent').disabled = false;
 
   updateCursorReadout();
+  renderQuality();
+}
+
+/** Whether the current curve can be believed, and why not when it cannot. */
+function renderQuality() {
+  const metrics = $('qualityMetrics');
+  const headline = $('qualityHeadline');
+  const verdict = $('qualityVerdict');
+  const decayLine = $('qualityDecay');
+  if (!metrics || !headline || !verdict) return;
+
+  const res = state.results;
+  const reset = (message) => {
+    headline.textContent = '—';
+    metrics.textContent = '';
+    verdict.textContent = message;
+    if (decayLine) decayLine.hidden = true;
+  };
+
+  if (!res) {
+    reset('Start the measurement to judge it.');
+    return;
+  }
+
+  const coherence = meanCoherence(res);
+  const jitter = (res.delayJitterSamples || 0) / res.sampleRate * 1000;
+  const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
+  const inputDb = level > 0 ? 20 * Math.log10(level) : null;
+  const snr = inputDb !== null && Number.isFinite(state.noiseFloorDb)
+    ? inputDb - state.noiseFloorDb
+    : null;
+
+  let repeat = null;
+  const capture = state.snapshot;
+  if (capture && capture.magDb && capture.coh) {
+    const df = res.sampleRate / res.fftSize;
+    const n = Math.min(res.bins, capture.bins, res.magDb.length, capture.magDb.length,
+      res.coh.length, capture.coh.length);
+    let sum = 0;
+    let count = 0;
+    for (let k = 1; k < n; k++) {
+      const frequency = k * df;
+      if (frequency < 100 || frequency > 10000) continue;
+      if (res.coh[k] < 0.5 || capture.coh[k] < 0.5) continue;
+      const delta = res.magDb[k] - capture.magDb[k];
+      sum += delta * delta;
+      count += 1;
+    }
+    if (count > 8) repeat = Math.sqrt(sum / count);
+  }
+
+  let ripple = null;
+  if (state.refMode === 'loopback') {
+    const df = res.sampleRate / res.fftSize;
+    const values = [];
+    for (let k = 1; k < res.bins; k++) {
+      const frequency = k * df;
+      if (frequency < 100 || frequency > 10000) continue;
+      if (res.coh[k] < 0.7) continue;
+      values.push(res.magDb[k]);
+    }
+    if (values.length > 8) {
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      ripple = Math.max(...values.map((value) => Math.abs(value - mean)));
+    }
+  }
+
+  headline.textContent = snr !== null && snr < 20 ? 'Low headroom'
+    : coherence < 0.5 ? 'Poor coherence'
+      : jitter > 0.2 ? 'Unsteady delay'
+        : repeat !== null && repeat > 1 ? 'Not repeatable'
+          : 'Good';
+
+  verdict.textContent = snr !== null && snr < 20
+    ? 'The signal is only ' + snr.toFixed(0) + ' dB above the noise floor. Raise the level or quiet the room before trusting a detail.'
+    : coherence < 0.5
+      ? 'Mean coherence is ' + (coherence * 100).toFixed(0) + '%. The curve is not repeating between averages — check the routing and keep the mic still.'
+      : jitter > 0.2
+        ? 'The arrival moves by ' + jitter.toFixed(2) + ' ms. That is a wandering path: use a cable or lower the level.'
+        : repeat !== null && repeat > 1
+          ? 'The live curve differs from Capture A by ' + repeat.toFixed(1) + ' dB RMS. Something changed since that capture.'
+          : 'Solid: ' + (coherence * 100).toFixed(0) + '% coherence, ' + jitter.toFixed(2) + ' ms delay variation' +
+            (snr !== null ? ', ' + snr.toFixed(0) + ' dB above the noise floor' : '') + '.';
+
+  const cells = [
+    ['SNR', snr !== null ? snr.toFixed(0) + ' dB' : '—'],
+    ['Coherence', (coherence * 100).toFixed(0) + '%'],
+    ['Jitter', jitter.toFixed(2) + ' ms'],
+    ['vs A', repeat !== null ? repeat.toFixed(1) + ' dB' : '—'],
+  ];
+  metrics.innerHTML = cells.map(([key, value]) =>
+    '<div class="metric"><span class="k">' + key + '</span><span class="v">' + value + '</span></div>').join('');
+
+  if (decayLine) {
+    const decay = state.roomDecay;
+    if (decay && (decay.t30 !== null && decay.t30 !== undefined
+      || decay.t20 !== null && decay.t20 !== undefined)) {
+      decayLine.hidden = false;
+      decayLine.textContent = 'Decay: T30 ' + (decay.t30 != null ? decay.t30.toFixed(2) + ' s' : '—') +
+        ' · T20 ' + (decay.t20 != null ? decay.t20.toFixed(2) + ' s' : '—') +
+        ' · EDT ' + (decay.edt != null ? decay.edt.toFixed(2) + ' s' : '—') +
+        ' · fit ' + ((decay.confidence || 0) * 100).toFixed(0) + '%' +
+        (ripple !== null ? ' · loopback ripple ' + ripple.toFixed(2) + ' dB' : '');
+    } else {
+      decayLine.hidden = true;
+    }
+  }
 }
 
 function updateCursorReadout() {
@@ -6640,7 +6747,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-10';
+const BUILD = '2026-11-11-11';
 let updateCheckedAt = 0;
 
 /**
