@@ -6551,7 +6551,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-7';
+const BUILD = '2026-11-11-8';
 let updateCheckedAt = 0;
 
 /**

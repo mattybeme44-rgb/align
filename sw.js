@@ -6,7 +6,7 @@
  * back by an old copy. The cache is what lets the app start from the Home Screen
  * in a room with no usable signal.
  */
-const CACHE = 'align-shell-v15';
+const CACHE = 'align-shell-v16';
 
 const SHELL = [
   './',
