@@ -47,7 +47,7 @@
 <main>
   <section id="safariBanner" class="card help-banner" hidden>
     <h2 class="sheet-title">This browser can't use the microphone</h2>
-    <p>
+    <p id="bannerHelp">
       It is hosted inside another app, and iOS closes it the moment a page asks for audio — which is why
       the screen jumps back to the Home Screen. Safari can, so open the address there.
     </p>
@@ -75,11 +75,12 @@
       <h2>Open from the Home Screen</h2>
       <button id="btnHideInstall" class="btn" type="button">Dismiss</button>
     </div>
-    <p>
+    <p id="installSteps">
       Tap the <strong>Share</strong> button in Safari, then <strong>Add to Home Screen</strong>.
       Align then opens from its own icon, full screen, with no address bar — and keeps a copy of
       itself so it starts in a room with no signal.
     </p>
+    <button id="btnInstallApp" class="btn btn-power" type="button" hidden>Install Align</button>
     <p>
       To give Align to somebody else, use <strong>Share</strong> at the top of this page: it opens
       the same sheet with the link ready to go into Messages, Mail or WhatsApp.
@@ -151,7 +152,7 @@
     </p>
     <div id="audioHelp" class="help-banner" hidden>
       <p id="audioHelpText">Audio could not start in this browser.</p>
-      <p class="muted">
+      <p class="muted" id="audioHelpSteps">
         Browsers inside other apps usually cannot open the microphone. Open this page in
         <strong>Safari</strong> — tap the share icon and choose <strong>Open in Safari</strong> — then press
         Start again. The message above names the step that failed.

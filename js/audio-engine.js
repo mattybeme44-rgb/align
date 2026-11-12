@@ -65,7 +65,7 @@ function permissionDenied(err) {
 // Labels that identify the device's own microphone instead of a connected
 // interface: iOS reports "iPhone Microphone", a Mac "MacBook Pro Microphone".
 function looksBuiltIn(label) {
-  return /iphone|ipad|ipod|built[- ]?in|internal|macbook|imac|display/i.test(label || '');
+  return /iphone|ipad|ipod|built[- ]?in|internal|macbook|imac|display|android|pixel|galaxy|phone/i.test(label || '');
 }
 
 function rmsOf(channel) {

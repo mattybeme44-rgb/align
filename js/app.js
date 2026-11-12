@@ -560,6 +560,18 @@ function showAudioHelp(message) {
   const text = $('audioHelpText');
   if (!banner || !text) return;
   text.textContent = message;
+
+  const steps = $('audioHelpSteps');
+  if (steps) {
+    steps.innerHTML = isAndroid()
+      ? 'Browsers inside other apps usually cannot open the microphone. Open this page in ' +
+        '<strong>Chrome</strong> and allow the microphone when it asks, then press Start again. ' +
+        'The message above names the step that failed.'
+      : 'Browsers inside other apps usually cannot open the microphone. Open this page in ' +
+        '<strong>Safari</strong> — tap the share icon and choose <strong>Open in Safari</strong> — ' +
+        'then press Start again. The message above names the step that failed.';
+  }
+
   banner.hidden = false;
 }
 
@@ -587,6 +599,17 @@ function closeSheet(id) {
 function showSafariBanner() {
   const banner = $('safariBanner');
   if (!banner) return;
+
+  const help = $('bannerHelp');
+  if (help) {
+    help.innerHTML = isAndroid()
+      ? 'It was opened inside another app, and an embedded Android browser blocks the ' +
+        'microphone. Open this page in <strong>Chrome</strong> and allow the microphone.'
+      : 'It is hosted inside another app, and iOS closes it the moment a page asks for audio — ' +
+        'which is why the screen jumps back to the Home Screen. Safari can, so open the ' +
+        'address there.';
+  }
+
   const address = publicAddress();
   const field = $('safariUrl');
   if (field) field.value = address;
@@ -619,6 +642,11 @@ function isIOS() {
   );
 }
 
+/** Android and Google phones run the same web edition in Chrome. */
+function isAndroid() {
+  return /Android/i.test(navigator.userAgent || '');
+}
+
 /** Launched from a Home Screen icon rather than opened as a browser tab. */
 function isStandalone() {
   if (navigator.standalone === true) return true;
@@ -626,8 +654,17 @@ function isStandalone() {
 }
 
 function isLikelyInAppBrowser() {
-  if (!isIOS() || isStandalone()) return false;
+  if (isStandalone()) return false;
   const ua = navigator.userAgent || '';
+
+  if (isAndroid()) {
+    // Chrome, Firefox, Edge, Opera and Samsung Internet all capture audio;
+    // an embedded WebView ("; wv)") or a social app's browser does not.
+    if (/; wv\)/.test(ua)) return true;
+    return !/Chrome\/|Firefox\/|EdgA\/|OPR\/|SamsungBrowser/.test(ua);
+  }
+
+  if (!isIOS()) return false;
   if (/Safari\//.test(ua) || /CriOS|FxiOS|EdgiOS|OPiOS/.test(ua)) return false;
   return true;
 }
@@ -961,6 +998,18 @@ function showInstallHint() {
   const card = $('installCard');
   if (!card) return;
 
+  const steps = $('installSteps');
+  if (steps) {
+    steps.innerHTML = isAndroid()
+      ? 'Open the <strong>⋮</strong> menu in Chrome and choose <strong>Install app</strong> ' +
+        '(or <strong>Add to Home screen</strong>). Align then opens from its own icon, full ' +
+        'screen, with no address bar — and keeps a copy of itself so it starts where there is ' +
+        'no signal.'
+      : 'Tap the <strong>Share</strong> button in Safari, then <strong>Add to Home Screen</strong>. ' +
+        'Align then opens from its own icon, full screen, with no address bar — and keeps a copy ' +
+        'of itself so it starts in a room with no signal.';
+  }
+
   let dismissed = false;
   try {
     dismissed = window.localStorage.getItem(INSTALL_HINT_KEY) === '1';
@@ -969,6 +1018,16 @@ function showInstallHint() {
   }
   if (!dismissed) card.hidden = false;
 }
+
+// Chrome offers its own install prompt; use it when the browser provides one.
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  const button = $('btnInstallApp');
+  if (button) button.hidden = false;
+});
 
 /* ---------- demo measurement ---------- */
 
@@ -6394,6 +6453,23 @@ $('btnHideInstall').addEventListener('click', () => {
   }
 });
 
+$('btnInstallApp').addEventListener('click', async () => {
+  const button = $('btnInstallApp');
+  if (!deferredInstallPrompt) {
+    if (button) button.hidden = true;
+    return;
+  }
+  const prompt = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  prompt.prompt();
+  try {
+    await prompt.userChoice;
+  } catch (err) {
+    /* the sheet was dismissed */
+  }
+  if (button) button.hidden = true;
+});
+
 if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
   navigator.mediaDevices.addEventListener('devicechange', () => {
     listDevices();
@@ -6542,13 +6618,13 @@ if (inAppBrowser) {
     showPreviewNote();
     setStatus('preview link is private — publish the app first', 'err');
   } else {
-    setStatus('open this page in Safari to measure', 'err');
+    setStatus(isAndroid() ? 'open this page in Chrome to measure' : 'open this page in Safari to measure', 'err');
   }
 } else if (!canCapture) {
   setStatus('this browser cannot capture audio', 'err');
   showAudioHelp('This browser has no microphone access. Open the page in Safari to measure.');
   $('btnPower').disabled = true;
-} else if (isIOS() && !standalone) {
+} else if ((isIOS() || isAndroid()) && !standalone) {
   showInstallHint();
 }
 
@@ -6564,7 +6640,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-9';
+const BUILD = '2026-11-11-10';
 let updateCheckedAt = 0;
 
 /**
