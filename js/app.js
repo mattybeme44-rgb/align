@@ -113,6 +113,7 @@ let silentSince = 0;
 let silentWarned = false;
 let unrelatedSince = 0;
 let unrelatedWarned = false;
+let referenceWarned = false;
 let irDrag = null;
 let tfDrag = null;
 let lastIrRefresh = 0;
@@ -1252,6 +1253,7 @@ function resetInputHealth() {
   silentWarned = false;
   unrelatedSince = 0;
   unrelatedWarned = false;
+  referenceWarned = false;
   hideInputAdvice();
 }
 
@@ -1298,6 +1300,24 @@ function checkInputHealth(res, coherence) {
   if (silentWarned) {
     silentWarned = false;
     hideInputAdvice();
+  }
+
+  // Loopback needs a second channel with signal on it; a stereo-capable
+  // interface that the browser opened as mono leaves it dead silent.
+  if (state.refMode === 'loopback' && state.micChannel !== state.refChannel) {
+    const referenceLevel = engine.channelLevel[state.refChannel] || 0;
+    if (referenceLevel < 1e-6 && res.frames > 25 && !referenceWarned) {
+      referenceWarned = true;
+      showInputAdvice(
+        'Input ' + (state.refChannel + 1) + ' is silent while the reference is set to loopback. ' +
+          'Check that the interface feeds its loopback output into that input, and that the ' +
+          'browser opened two channels — replug the interface and tap Restart audio if the ' +
+          'second meter stays blank.',
+        false,
+      );
+    }
+  } else if (referenceWarned) {
+    referenceWarned = false;
   }
 
   // Sound is arriving but none of it matches the app's own stimulus — which is
@@ -3636,6 +3656,7 @@ function meterPercent(rms) {
 }
 
 function updateInterfaceInfo() {
+  updateChannelLevels();
   updateLargeMeter();
   refreshSpectrographLabels();
   const deviceEl = $('rdDevice');
@@ -3668,6 +3689,24 @@ function updateInterfaceInfo() {
   countEl.textContent = count + ' ch';
   meter1.style.width = meterPercent(engine.channelLevel[0]) + '%';
   meter2.style.width = meterPercent(engine.channelLevel[1]) + '%';
+}
+
+/** Both input levels in the displayed unit, so a mic and a loopback can be matched. */
+function updateChannelLevels() {
+  const el = $('channelLevels');
+  if (!el) return;
+
+  const unit = state.showSpl ? 'dB SPL' : 'dBFS';
+  const offset = state.showSpl ? state.calibrationDb || 0 : 0;
+  const text = (index) => {
+    const raw = state.demo
+      ? (index === 0 ? demoLevel : 0)
+      : engine.channelLevel[index] || 0;
+    if (!(raw > 0)) return '—';
+    return (20 * Math.log10(raw) + offset).toFixed(1);
+  };
+
+  el.textContent = 'Input 1 ' + text(0) + ' ' + unit + ' · Input 2 ' + text(1) + ' ' + unit;
 }
 
 function updateEq(res) {
@@ -5269,6 +5308,12 @@ async function startAll() {
   if (mono && state.refMode === 'loopback') {
     state.refMode = 'internal';
     $('selRef').value = 'internal';
+    showInputAdvice(
+      'The browser opened only one input channel, so loopback is not available — using the ' +
+        'generated reference instead. Replug the interface and tap Restart audio to try for ' +
+        'two channels again.',
+      false,
+    );
   }
   if (mono && state.micChannel !== 0) state.micChannel = 0;
 
@@ -6506,7 +6551,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-6';
+const BUILD = '2026-11-11-7';
 let updateCheckedAt = 0;
 
 /**

@@ -240,13 +240,42 @@ export class AudioEngine {
       });
     }
 
-    const settings = track.getSettings ? track.getSettings() : {};
+    let settings = track.getSettings ? track.getSettings() : {};
     this.deviceLabel = track.label || 'audio input';
     this.builtInInput = looksBuiltIn(this.deviceLabel);
-    // The built-in microphone is single-channel even when a channelCount
-    // request makes Safari report two, so it always takes the generated
-    // reference on input 1.
-    this.channels = this.builtInInput ? 1 : settings.channelCount || 1;
+
+    // A two-input interface can open with one channel if the browser ignores
+    // the ideal channelCount — and then the loopback reference has nothing to
+    // read. Ask once more for exactly two before accepting a mono stream.
+    if (!this.builtInInput && (settings.channelCount || 0) < 2) {
+      try {
+        const stereo = await this.openStream({
+          channelCount: { exact: 2 },
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        });
+        const stereoSettings = stereo.getAudioTracks()[0] && stereo.getAudioTracks()[0].getSettings
+          ? stereo.getAudioTracks()[0].getSettings()
+          : {};
+        if ((stereoSettings.channelCount || 0) >= 2) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = stereo;
+          this.stream = stream;
+          settings = stereoSettings;
+        } else {
+          stereo.getTracks().forEach((t) => t.stop());
+        }
+      } catch (err) {
+        /* the device or the browser will not give two channels */
+      }
+    }
+
+    const source = ctx.createMediaStreamSource(stream);
+    const streamChannels = Math.max(settings.channelCount || 0, source.channelCount || 0, 1);
+    // The built-in microphone is single-channel whatever the browser reports,
+    // so it always takes the generated reference on input 1.
+    this.channels = this.builtInInput ? 1 : streamChannels;
     this.deviceChannels = this.channels;
     this.deviceIdUsed = settings.deviceId || '';
     this.inputMode = mode;
@@ -262,7 +291,6 @@ export class AudioEngine {
     progress('starting audio');
 
     try {
-      const source = ctx.createMediaStreamSource(stream);
       const micRing = this.micRing;
       const refRing = this.refRing;
 
