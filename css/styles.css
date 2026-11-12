@@ -2236,3 +2236,87 @@ a.btn.btn-power.services-link:hover {
   flex: none;
   padding: 8px 16px;
 }
+
+
+/* A − B difference and the alignment guide. */
+.chart-wrap.diff {
+  height: 150px;
+}
+
+.chart-wrap.diff canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.guide-steps {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 12px;
+}
+
+.guide-step {
+  flex: 1;
+  padding: 7px 4px;
+  border: 1px solid rgba(201, 255, 112, 0.18);
+  border-radius: 10px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+  color: #a8b6a3;
+}
+
+.guide-step.done {
+  border-color: rgba(201, 255, 112, 0.4);
+  color: #c9ff70;
+}
+
+.guide-step.current {
+  background: rgba(201, 255, 112, 0.12);
+  border-color: rgba(201, 255, 112, 0.6);
+  color: #f1f0eb;
+}
+
+.guide-eyebrow {
+  margin: 0 0 4px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #78c8c1;
+}
+
+.guide-title {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.guide-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #b7c2b1;
+}
+
+.guide-list li {
+  margin: 3px 0;
+}
+
+.guide-metrics {
+  margin-bottom: 10px;
+}
+
+.guide-action {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.guide-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #78c8c1;
+}
+
+.guide-status.blocked {
+  color: #d9a26c;
+}

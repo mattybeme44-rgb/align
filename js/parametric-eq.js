@@ -211,3 +211,97 @@ export function persistEqFilters(filters) {
     return false;
   }
 }
+
+
+/** Normalised biquad coefficients (a0 divided out) for one filter. */
+export function biquadCoefficients(filter, sampleRate) {
+  const fsInput = Number(sampleRate);
+  const fs = Math.max(Number.isFinite(fsInput) && fsInput > 0 ? fsInput : 48000, 8000);
+  const f0 = Math.min(Math.max(Number(filter.frequency) > 0 ? Number(filter.frequency) : 20, 10),
+    fs / 2 * 0.98);
+  const w0 = 2 * Math.PI * f0 / fs;
+  const cosW = Math.cos(w0);
+  const sinW = Math.sin(w0);
+  const gainDb = Number(filter.gainDb) || 0;
+  const amplitude = Math.pow(10, gainDb / 40);
+  const quality = Math.min(Math.max(Number(filter.q) || 0, 0.1), 10);
+  const kind = eqFilterKind(filter.kind).id;
+
+  let b0 = 1, b1 = 0, b2 = 0;
+  let a0 = 1, a1 = 0, a2 = 0;
+
+  if (kind === 'peaking') {
+    const alpha = sinW / (2 * quality);
+    b0 = 1 + alpha * amplitude;
+    b1 = -2 * cosW;
+    b2 = 1 - alpha * amplitude;
+    a0 = 1 + alpha / amplitude;
+    a1 = -2 * cosW;
+    a2 = 1 - alpha / amplitude;
+  } else if (kind === 'lowShelf' || kind === 'highShelf') {
+    const slope = Math.min(Math.max(quality, 0.1), 2);
+    const root = Math.max(0.01, (amplitude + 1 / amplitude) * (1 / slope - 1) + 2);
+    const alpha = sinW / 2 * Math.sqrt(root);
+    const twoSqrtAAlpha = 2 * Math.sqrt(amplitude) * alpha;
+
+    if (kind === 'lowShelf') {
+      b0 = amplitude * ((amplitude + 1) - (amplitude - 1) * cosW + twoSqrtAAlpha);
+      b1 = 2 * amplitude * ((amplitude - 1) - (amplitude + 1) * cosW);
+      b2 = amplitude * ((amplitude + 1) - (amplitude - 1) * cosW - twoSqrtAAlpha);
+      a0 = (amplitude + 1) + (amplitude - 1) * cosW + twoSqrtAAlpha;
+      a1 = -2 * ((amplitude - 1) + (amplitude + 1) * cosW);
+      a2 = (amplitude + 1) + (amplitude - 1) * cosW - twoSqrtAAlpha;
+    } else {
+      b0 = amplitude * ((amplitude + 1) + (amplitude - 1) * cosW + twoSqrtAAlpha);
+      b1 = -2 * amplitude * ((amplitude - 1) + (amplitude + 1) * cosW);
+      b2 = amplitude * ((amplitude + 1) + (amplitude - 1) * cosW - twoSqrtAAlpha);
+      a0 = (amplitude + 1) - (amplitude - 1) * cosW + twoSqrtAAlpha;
+      a1 = 2 * ((amplitude - 1) - (amplitude + 1) * cosW);
+      a2 = (amplitude + 1) - (amplitude - 1) * cosW - twoSqrtAAlpha;
+    }
+  } else {
+    const alpha = sinW / (2 * quality);
+    b0 = (1 + cosW) / 2;
+    b1 = -(1 + cosW);
+    b2 = (1 + cosW) / 2;
+    a0 = 1 + alpha;
+    a1 = -2 * cosW;
+    a2 = 1 - alpha;
+  }
+
+  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+}
+
+const EQ_EXPORT_TYPES = { peaking: 'PK', lowShelf: 'LS', highShelf: 'HS', highPass: 'HP' };
+
+/**
+ * The filter set as one text file: a REW-style list that most room-correction and
+ * DSP tools import, then the same filters as miniDSP-style biquads. Empty when
+ * there is nothing enabled to write.
+ */
+export function eqExportText(filters, sampleRate) {
+  const enabled = (filters || []).filter((filter) => filter && filter.enabled !== false);
+  if (!enabled.length) return '';
+
+  const fs = Math.round(Number(sampleRate) || 48000);
+  const lines = ['Align EQ export', 'sample rate ' + fs + ' Hz', '', 'REW style'];
+
+  enabled.forEach((filter, index) => {
+    const kind = eqFilterKind(filter.kind);
+    const type = EQ_EXPORT_TYPES[kind.id] || 'PK';
+    const gain = kind.allowsGain ? Number(filter.gainDb).toFixed(1) : '0.0';
+    lines.push('Filter ' + (index + 1) + ': ON ' + type +
+      ' Fc ' + Number(filter.frequency).toFixed(0) + ' Hz' +
+      ' Gain ' + gain + ' dB' +
+      ' Q ' + Number(filter.q).toFixed(2));
+  });
+
+  lines.push('', 'miniDSP biquads', 'b0,b1,b2,a1,a2');
+  for (const filter of enabled) {
+    const c = biquadCoefficients(filter, fs);
+    lines.push([c.b0, c.b1, c.b2, c.a1, c.a2].map((value) => value.toFixed(6)).join(','));
+  }
+
+  lines.push('', 'Measured suggestion only: check every change against the microphone.');
+  return lines.join('\n');
+}

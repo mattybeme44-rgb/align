@@ -384,6 +384,13 @@
       <label for="numCalibration">Level calibration <span class="hint">dB</span></label>
       <input type="number" id="numCalibration" value="0" step="0.1" />
     </div>
+    <div class="row btns">
+      <button id="btnCalFromMeter" class="btn" type="button">Set from meter</button>
+    </div>
+    <p class="source-hint" id="calFromMeterNote">
+      Plays pink noise, waits for the input to settle, then asks what your SPL meter reads and fills
+      the offset above from it.
+    </p>
     <label class="chk">
       <input type="checkbox" id="chkSpl" /> Show input level as dB SPL
     </label>
@@ -487,6 +494,10 @@
       <button id="btnSaved" class="btn" type="button">Capture library</button>
       <button id="btnSumPreview" class="btn" type="button">Sum preview</button>
     </div>
+    <div class="row btns">
+      <button id="btnGuide" class="btn" type="button">Alignment guide</button>
+      <label class="chk"><input type="checkbox" id="chkDiff" /> Show A − B difference</label>
+    </div>
     <p class="source-hint">
       Captures A through F each keep the current magnitude trace behind the live one, so several
       positions or two settings can be compared with it at once — with the delay difference to each.
@@ -495,6 +506,22 @@
       only that held phase, so a proposed sub delay can be previewed before anything is applied.
       Peak hold pins the highest magnitude at each frequency since it was armed. The average is a power
       average of the curves captured into it, drawn in pink and labelled with how many it holds.
+    </p>
+  </section>
+
+  <section id="diffCard" class="card" hidden>
+    <div class="card-head">
+      <h2>Difference A − B</h2>
+      <span class="card-detail" id="diffDetail">level difference by frequency</span>
+    </div>
+    <div class="chart-wrap diff">
+      <canvas id="diffChart" aria-label="Level difference between Capture A and Capture B"></canvas>
+    </div>
+    <p id="diffSummary" class="balance-summary">Hold Capture A and Capture B to compare them.</p>
+    <p class="source-hint">
+      Above the line means Capture A is louder at that frequency, below it means B is. Only bins where
+      both captures have usable coherence are drawn; the captures, the measurement and the gate are
+      untouched.
     </p>
   </section>
 
@@ -812,6 +839,8 @@
   <div class="card">
     <div class="card-head"><h2>Take it with you</h2></div>
     <button id="btnCopyEq" class="btn btn-power eq-copy-btn" type="button">Copy filter list</button>
+    <button id="btnExportEqFilters" class="btn eq-copy-btn" type="button">Export filters</button>
+    <p class="source-hint" id="eqExportNote" hidden></p>
     <p class="source-hint" id="eqCopyNote">
       The filters are kept between sessions, so a correction can be finished over more than one.
       Copy puts them on the clipboard as text for a DSP or a notes app.
@@ -1013,6 +1042,32 @@
   <p class="sheet-foot-note">
     The curve is smooth between the points and held flat beyond the outermost ones. Saved curves
     appear in the target picker beside Flat, the tilt and the room curve, and are kept between sessions.
+  </p>
+</section>
+
+<section id="guideSheet" class="sheet guide-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Alignment guide</h2>
+      <p class="sheet-sub" id="guideSub">main + sub · 5 steps</p>
+    </div>
+    <button id="btnCloseGuide" class="btn" type="button">Done</button>
+  </div>
+  <div class="guide-steps" id="guideSteps"></div>
+  <div class="card guide-card">
+    <p class="guide-eyebrow" id="guideEyebrow">STEP 1 OF 5</p>
+    <h3 class="guide-title" id="guideTitle">Set up</h3>
+    <ul class="guide-list" id="guideList"></ul>
+    <div class="metrics guide-metrics" id="guideMetrics"></div>
+    <p id="guideStatusText" class="guide-status">Start the measurement to begin.</p>
+  </div>
+  <div class="row btns">
+    <button id="btnGuideBack" class="btn" type="button">Back</button>
+    <button id="btnGuideNext" class="btn btn-power" type="button">Next</button>
+  </div>
+  <p class="sheet-foot-note">
+    The guide only reads what is already measured. Every change to delay, gain or EQ goes in your
+    speaker processor — nothing is sent to the speaker from here.
   </p>
 </section>
 

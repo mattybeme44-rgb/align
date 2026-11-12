@@ -44,6 +44,7 @@ import {
   filterBankText,
   eqFilterKind,
   newFilter as newEqFilter,
+  eqExportText,
 } from './parametric-eq.js';
 import { parseLibrary, mergeLibrary, serializeLibrary } from './library.js';
 import { EqDesignerChart, TargetEditorChart } from './editors.js';
@@ -184,6 +185,9 @@ const state = {
   appliedEqSetId: null,
   eqDirty: false,
   cursorFreq: null,
+  showDiff: false,
+  guideOpen: false,
+  guideStep: 0,
   inputSource: 'auto',
   waterfallOpen: false,
   waterfallRangeMs: 20,
@@ -569,7 +573,7 @@ function updateSheetLock() {
     !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
     !$('sumSheet').hidden || !$('levelLogSheet').hidden ||
-    !$('rtaSheet').hidden || !$('distortionSheet').hidden;
+    !$('rtaSheet').hidden || !$('distortionSheet').hidden || !$('guideSheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -3214,6 +3218,8 @@ function drawNow() {
     updateEQMetrics();
   }
   if (state.targetOpen) drawTargetChart();
+  if (state.showDiff) renderDifference();
+  if (state.guideOpen) renderGuide();
 }
 
 function meanCoherence(res) {
@@ -6500,7 +6506,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-5';
+const BUILD = '2026-11-11-6';
 let updateCheckedAt = 0;
 
 /**
@@ -6535,3 +6541,527 @@ document.addEventListener('visibilitychange', () => {
 });
 
 checkForUpdate(true);
+
+
+/* ---------- A − B difference ---------- */
+
+function differenceCurve() {
+  const a = state.snapshot;
+  const b = state.snapshotB;
+  if (!a || !b) return null;
+
+  const n = Math.min(
+    a.bins, b.bins,
+    a.magDb ? a.magDb.length : 0,
+    b.magDb ? b.magDb.length : 0,
+  );
+  if (n < 4) return null;
+
+  const values = new Float32Array(n);
+  for (let k = 1; k < n; k++) {
+    const usableA = a.coh && Number.isFinite(a.coh[k]) && a.coh[k] >= 0.35;
+    const usableB = b.coh && Number.isFinite(b.coh[k]) && b.coh[k] >= 0.35;
+    values[k] = usableA && usableB ? a.magDb[k] - b.magDb[k] : NaN;
+  }
+
+  return {
+    values,
+    bins: n,
+    df: a.sampleRate / a.fftSize,
+    sampleRate: a.sampleRate,
+    fftSize: a.fftSize,
+  };
+}
+
+function differenceSummary(curve) {
+  if (!curve) return 'Hold Capture A and Capture B to compare them.';
+
+  let peakDb = 0;
+  let peakFrequency = 0;
+  let within = 0;
+  let counted = 0;
+
+  for (let k = 1; k < curve.bins; k++) {
+    const value = curve.values[k];
+    if (!Number.isFinite(value)) continue;
+    const frequency = k * curve.df;
+    if (Math.abs(value) > Math.abs(peakDb)) {
+      peakDb = value;
+      peakFrequency = frequency;
+    }
+    if (frequency >= 250 && frequency <= 4000) {
+      counted += 1;
+      if (Math.abs(value) <= 2) within += 1;
+    }
+  }
+
+  if (!counted) return 'No bins in 250 Hz – 4 kHz have usable coherence in both captures.';
+
+  const percent = Math.round((within / counted) * 100);
+  const label = peakFrequency >= 1000
+    ? (peakFrequency / 1000).toFixed(2) + ' kHz'
+    : Math.round(peakFrequency) + ' Hz';
+  const louder = peakDb >= 0 ? 'A' : 'B';
+  return louder + ' is ' + Math.abs(peakDb).toFixed(1) + ' dB louder at ' + label +
+    ' · ' + percent + '% of 250 Hz – 4 kHz within 2 dB.';
+}
+
+function drawDiffChart(curve) {
+  const canvas = $('diffChart');
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const padLeft = 38, padRight = 8, padTop = 8, padBottom = 16;
+  const plot = {
+    x: padLeft,
+    y: padTop,
+    w: Math.max(10, rect.width - padLeft - padRight),
+    h: Math.max(10, rect.height - padTop - padBottom),
+  };
+
+  ctx.fillStyle = '#101510';
+  ctx.fillRect(plot.x, plot.y, plot.w, plot.h);
+
+  const range = 12;
+  const y = (db) => plot.y + plot.h / 2 - (Math.max(-range, Math.min(range, db)) / range) * (plot.h / 2);
+  const x = (frequency) => {
+    const t = (Math.log(frequency) - Math.log(20)) / (Math.log(20000) - Math.log(20));
+    return plot.x + Math.min(1, Math.max(0, t)) * plot.w;
+  };
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  for (const db of [12, 6, 0, -6, -12]) {
+    const py = y(db);
+    ctx.fillStyle = db === 0 ? 'rgba(176,186,164,0.55)' : 'rgba(176,186,164,0.16)';
+    ctx.fillRect(plot.x, py, plot.w, 1);
+    ctx.fillStyle = 'rgba(176,186,164,0.75)';
+    ctx.fillText((db > 0 ? '+' : '') + db, plot.x - 4, py + 3);
+  }
+
+  ctx.textAlign = 'center';
+  for (const [frequency, label] of [[20, '20'], [100, '100'], [1000, '1k'], [10000, '10k'], [20000, '20k']]) {
+    ctx.fillText(label, x(frequency), rect.height - 4);
+  }
+
+  if (!curve) {
+    ctx.fillStyle = 'rgba(176,186,164,0.72)';
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Hold Capture A and Capture B to compare them.',
+      plot.x + plot.w / 2, plot.y + plot.h / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    return;
+  }
+
+  ctx.beginPath();
+  let drawing = false;
+  for (let k = 1; k < curve.bins; k++) {
+    const value = curve.values[k];
+    const frequency = k * curve.df;
+    if (frequency < 20 || frequency > 20000 || !Number.isFinite(value)) {
+      drawing = false;
+      continue;
+    }
+    const px = x(frequency);
+    const py = y(value);
+    if (!drawing) {
+      ctx.moveTo(px, py);
+      drawing = true;
+    } else {
+      ctx.lineTo(px, py);
+    }
+  }
+  ctx.strokeStyle = '#d9a26c';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+}
+
+function renderDifference() {
+  const card = $('diffCard');
+  if (!card) return;
+  card.hidden = !state.showDiff;
+  if (!state.showDiff) return;
+
+  const curve = differenceCurve();
+  $('diffDetail').textContent = curve
+    ? 'A − B · ' + (curve.df).toFixed(1) + ' Hz bins'
+    : 'level difference by frequency';
+  $('diffSummary').textContent = differenceSummary(curve);
+  drawDiffChart(curve);
+}
+
+/* ---------- alignment guide ---------- */
+
+function guideInputDbfs() {
+  const level = state.demo ? demoLevel : engine.channelLevel[state.micChannel] || 0;
+  return level > 0 ? 20 * Math.log10(level) : -Infinity;
+}
+
+function guideSteps() {
+  const dbfs = guideInputDbfs();
+  const coherence = state.results ? meanCoherence(state.results) : 0;
+  const live = state.running || state.demo;
+  const hasA = !!state.snapshot;
+  const hasB = !!state.snapshotB;
+  const diff = hasA && hasB ? state.snapshot.delayMs - state.snapshotB.delayMs : null;
+  const aligned = diff !== null && Math.abs(diff) <= 0.05;
+
+  const dbText = Number.isFinite(dbfs) ? dbfs.toFixed(1) + ' dBFS' : '—';
+  const cohText = (coherence * 100).toFixed(0) + '%';
+  const delayText = state.totalDelayMs ? state.totalDelayMs.toFixed(2) + ' ms' : '—';
+  const liveHint = coherence < 0.6
+    ? 'Coherence is low — wait for the curve to settle before capturing.'
+    : 'Ready to capture.';
+
+  return [
+    {
+      title: 'Set up the measurement',
+      list: [
+        'Put the microphone where you will listen, and keep it still.',
+        'In Analysis, turn Compensate delay off before capturing either speaker.',
+        'Check the input meter moves when the main plays.',
+      ],
+      metrics: [
+        { k: 'Input', v: dbText },
+        { k: 'Coherence', v: cohText },
+      ],
+      done: live && dbfs > -60,
+      status: !live
+        ? 'Press Start, then check the mic is picking up sound.'
+        : dbfs > -60
+          ? 'Input is live — carry on.'
+          : 'No signal yet: check the input and the microphone permission.',
+      action: null,
+    },
+    {
+      title: 'Capture the main speaker',
+      list: [
+        'Play only the main speaker.',
+        'Wait for the coherence to settle above 60%.',
+        'Capture A.',
+      ],
+      metrics: [
+        { k: 'Coherence', v: cohText },
+        { k: 'Delay', v: delayText },
+      ],
+      done: hasA,
+      status: hasA ? 'Capture A is held.' : !live ? 'Start the measurement first.' : liveHint,
+      action: { label: 'Capture A', id: 'btnCapture' },
+    },
+    {
+      title: 'Capture the subwoofer',
+      list: [
+        'Play only the subwoofer, without moving the mic.',
+        'Do not change the reference or the routing.',
+        'Capture B.',
+      ],
+      metrics: [
+        { k: 'Coherence', v: cohText },
+        { k: 'Delay', v: delayText },
+      ],
+      done: hasB,
+      status: hasB ? 'Capture B is held.' : !live ? 'Start the measurement first.' : liveHint,
+      action: { label: 'Capture B', id: 'btnCaptureB' },
+    },
+    {
+      title: 'Align the arrivals',
+      list: [
+        'Read the recommendation in the metrics row.',
+        'Make that delay change in your speaker processor.',
+        'Tap Apply so the analysis offset matches it.',
+      ],
+      metrics: [
+        { k: 'A', v: hasA ? state.snapshot.delayMs.toFixed(2) + ' ms' : '—' },
+        { k: 'B', v: hasB ? state.snapshotB.delayMs.toFixed(2) + ' ms' : '—' },
+        { k: 'Δ', v: diff === null ? '—' : Math.abs(diff).toFixed(2) + ' ms' },
+      ],
+      done: aligned,
+      status: diff === null
+        ? 'Both captures are needed before the pair can be compared.'
+        : aligned
+          ? 'The two arrivals are within 0.05 ms — aligned.'
+          : (diff > 0
+            ? 'The sub (B) arrives ' + diff.toFixed(2) + ' ms later'
+            : 'The main (A) arrives ' + (-diff).toFixed(2) + ' ms later') +
+            ' — delay the earlier one by that much.',
+      action: { label: 'Apply recommendation', id: 'btnApplyDelay' },
+    },
+    {
+      title: 'Verify with both playing',
+      list: [
+        'Play main and sub together.',
+        'Watch the delay and coherence settle, and check the delay holds steady.',
+        'Sum preview can predict the crossover sum before you change anything.',
+      ],
+      metrics: [
+        { k: 'Delay', v: delayText },
+        { k: 'Coherence', v: cohText },
+      ],
+      done: live,
+      status: live
+        ? 'Listening to both — the numbers above are live.'
+        : 'Start the measurement to verify.',
+      action: null,
+    },
+  ];
+}
+
+function guideActionButton() {
+  let button = $('btnGuideAction');
+  if (button) return button;
+
+  button = document.createElement('button');
+  button.id = 'btnGuideAction';
+  button.type = 'button';
+  button.className = 'btn btn-power guide-action';
+  const metrics = $('guideMetrics');
+  if (metrics && metrics.parentNode) metrics.parentNode.insertBefore(button, metrics.nextSibling);
+  return button;
+}
+
+function renderGuide() {
+  if (!state.guideOpen) return;
+
+  const steps = guideSteps();
+  const index = Math.min(Math.max(state.guideStep, 0), steps.length - 1);
+  const step = steps[index];
+
+  const strip = $('guideSteps');
+  if (strip) {
+    strip.textContent = '';
+    steps.forEach((entry, i) => {
+      const pill = document.createElement('span');
+      pill.className = 'guide-step' +
+        (i < index ? ' done' : '') +
+        (i === index ? ' current' : '');
+      pill.textContent = (i + 1) + ' ' + entry.title.split(' ')[0];
+      strip.appendChild(pill);
+    });
+  }
+
+  $('guideEyebrow').textContent = 'STEP ' + (index + 1) + ' OF ' + steps.length;
+  $('guideTitle').textContent = step.title;
+
+  const list = $('guideList');
+  list.textContent = '';
+  step.list.forEach((line) => {
+    const item = document.createElement('li');
+    item.textContent = line;
+    list.appendChild(item);
+  });
+
+  const metrics = $('guideMetrics');
+  metrics.textContent = '';
+  step.metrics.forEach((metric) => {
+    const cell = document.createElement('div');
+    cell.className = 'metric';
+    const key = document.createElement('span');
+    key.className = 'k';
+    key.textContent = metric.k;
+    const value = document.createElement('span');
+    value.className = 'v';
+    value.textContent = metric.v;
+    cell.append(key, value);
+    metrics.appendChild(cell);
+  });
+
+  const status = $('guideStatusText');
+  status.textContent = step.status;
+  status.classList.toggle('blocked', !step.done);
+
+  const action = guideActionButton();
+  if (step.action) {
+    action.hidden = false;
+    action.textContent = step.action.label;
+    action.onclick = () => {
+      const target = $(step.action.id);
+      if (target) target.click();
+      renderGuide();
+    };
+  } else {
+    action.hidden = true;
+    action.onclick = null;
+  }
+
+  $('btnGuideBack').disabled = index === 0;
+  const next = $('btnGuideNext');
+  next.textContent = index === steps.length - 1 ? 'Done' : 'Next';
+  next.disabled = index === steps.length - 1 ? false : !step.done;
+}
+
+function openGuide() {
+  state.guideOpen = true;
+  state.guideStep = 0;
+  $('guideSheet').hidden = false;
+  updateSheetLock();
+  renderGuide();
+}
+
+function closeGuide() {
+  state.guideOpen = false;
+  closeSheet('guideSheet');
+}
+
+$('btnGuideBack').addEventListener('click', () => {
+  state.guideStep = Math.max(0, state.guideStep - 1);
+  renderGuide();
+});
+
+$('btnGuideNext').addEventListener('click', () => {
+  if (state.guideStep >= guideSteps().length - 1) {
+    closeGuide();
+    return;
+  }
+  state.guideStep += 1;
+  renderGuide();
+});
+
+/* ---------- level calibration from a meter ---------- */
+
+async function calibrateFromMeter() {
+  if (!state.running || state.demo) {
+    setStatus('Start a real microphone measurement first', 'err');
+    return;
+  }
+
+  const button = $('btnCalFromMeter');
+  const note = $('calFromMeterNote');
+  button.disabled = true;
+  button.textContent = 'Measuring…';
+  if (note) {
+    note.textContent = 'Playing pink noise and listening…';
+    note.hidden = false;
+  }
+
+  const signal = state.signal;
+  const channel = state.micChannel;
+  const context = engine.ctx;
+  const samples = [];
+  let interrupted = false;
+
+  try {
+    engine.setSignal('pink');
+    for (let i = 0; i < 25; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!engine.running || engine.ctx !== context || state.demo) {
+        interrupted = true;
+        break;
+      }
+      if (i >= 8) samples.push(engine.channelLevel[channel] || 0);
+    }
+  } finally {
+    if (!interrupted && engine.running && engine.ctx === context && !state.demo) {
+      engine.setSignal(signal);
+      if (state.refMode === 'internal' && analyser) analyser.reset();
+    }
+    button.disabled = false;
+    button.textContent = 'Set from meter';
+  }
+
+  if (interrupted || !samples.length) {
+    setStatus('Could not finish the calibration', 'err');
+    return;
+  }
+
+  const power = samples.reduce((sum, value) => sum + value * value, 0) / samples.length;
+  if (!(power > 0)) {
+    setStatus('Input stayed silent — nothing to calibrate against', 'err');
+    return;
+  }
+
+  const dbfs = 10 * Math.log10(power);
+  const answer = window.prompt('What does your SPL meter read, in dB SPL?', '');
+  if (answer === null) {
+    setStatus('calibration cancelled — nothing changed', 'ok');
+    if (note) note.hidden = true;
+    return;
+  }
+
+  const spl = Number(String(answer).trim().replace(',', '.'));
+  if (!Number.isFinite(spl) || spl <= 0 || spl > 200) {
+    setStatus('That is not a dB SPL figure — nothing changed', 'err');
+    if (note) note.hidden = true;
+    return;
+  }
+
+  state.calibrationDb = spl - dbfs;
+  write(STORAGE.calibration, state.calibrationDb);
+  $('numCalibration').value = state.calibrationDb.toFixed(1);
+
+  state.showSpl = true;
+  $('chkSpl').checked = true;
+  $('chkMeterSpl').checked = true;
+  write(STORAGE.spl, '1');
+
+  $('rdLevel').textContent = levelReadout();
+  updateNoiseReadout();
+  updateLargeMeter();
+
+  if (note) {
+    note.textContent = 'Set ' + state.calibrationDb.toFixed(1) + ' dB for ' + spl.toFixed(1) +
+      ' dB SPL at ' + dbfs.toFixed(1) + ' dBFS.';
+    note.hidden = false;
+  }
+  setStatus('calibrated at ' + spl.toFixed(1) + ' dB SPL', 'ok');
+}
+
+/* ---------- EQ filter file ---------- */
+
+async function exportEqFilters() {
+  const enabled = (state.eqFilters || []).filter((filter) => filter.enabled !== false);
+  const note = $('eqExportNote');
+
+  if (!enabled.length) {
+    if (note) {
+      note.textContent = 'No enabled filters — there is nothing to export yet.';
+      note.hidden = false;
+    }
+    setStatus('no filters to export', 'err');
+    return;
+  }
+
+  const rate = state.demo ? DEMO_RATE : engine.sampleRate;
+  const text = eqExportText(state.eqFilters, rate);
+
+  try {
+    const blob = new Blob([text], { type: 'text/plain' });
+    const result = await shareOrDownload(blob, 'align-eq-filters.txt', 'Align EQ filters');
+    const message = result === 'downloaded'
+      ? 'Exported ' + enabled.length + ' filter' + (enabled.length === 1 ? '' : 's') +
+        ' — check Files or your downloads.'
+      : result === 'shared'
+        ? 'Exported ' + enabled.length + ' filter' + (enabled.length === 1 ? '' : 's') + '.'
+        : 'The filter file is ready.';
+    if (note) {
+      note.textContent = message;
+      note.hidden = false;
+    }
+    setStatus('filter file exported', 'ok');
+  } catch (err) {
+    if (note) {
+      note.textContent = 'Could not export the filters' +
+        (err && err.message ? ': ' + err.message : '.');
+      note.hidden = false;
+    }
+    setStatus('could not export the filters', 'err');
+  }
+}
+
+$('btnGuide').addEventListener('click', openGuide);
+$('btnCloseGuide').addEventListener('click', closeGuide);
+$('chkDiff').addEventListener('change', (event) => {
+  state.showDiff = event.target.checked;
+  renderDifference();
+});
+$('btnCalFromMeter').addEventListener('click', calibrateFromMeter);
+$('btnExportEqFilters').addEventListener('click', exportEqFilters);
