@@ -282,8 +282,7 @@
       it, or drag elsewhere to zoom.
     </p>
     <div class="row btns">
-      <button id="btnWaterfall" class="btn" type="button">Waterfall view</button>
-      <button id="btnSpectrogram" class="btn" type="button">Spectrogram</button>
+      <button id="btnSpectrogram" class="btn" type="button">Decay view</button>
     </div>
   </section>
 
@@ -689,11 +688,19 @@
 <section id="spectrogramSheet" class="sheet spectrogram-sheet" hidden>
   <div class="sheet-head">
     <div>
-      <h2 class="sheet-title">Spectrogram</h2>
+      <h2 class="sheet-title">Decay</h2>
       <p class="sheet-sub" id="spSubtitle">impulse decay · 0–50 ms</p>
     </div>
     <button id="btnCloseSpectrogram" class="btn" type="button">Done</button>
   </div>
+  <div class="row">
+    <label for="selDecayMode">Reading</label>
+    <select id="selDecayMode">
+      <option value="heat" selected>Heat map</option>
+      <option value="stack">Stacked</option>
+    </select>
+  </div>
+  <div id="heatBlock">
   <div class="chart-wrap sp">
     <canvas id="spectrogramChart" aria-label="Heat map of the impulse decay"></canvas>
   </div>
@@ -713,7 +720,33 @@
     <input type="range" id="spAmp" min="0" max="200" step="5" value="100" />
     <div class="range-labels"><span>0%</span><span>200%</span></div>
   </div>
-  <p class="sheet-foot-note">Each row is a window past the impulse peak; brighter is louder.</p>
+  <p class="sheet-foot-note">Each row is a window past the impulse peak; brighter is louder. The gate lines show what the magnitude curve uses.</p>
+  </div>
+  <div id="wfBlock" hidden>
+  <div class="chart-wrap wf">
+    <canvas id="wfChart"></canvas>
+  </div>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label for="wfRange">Time range</label>
+      <span class="value-box" id="wfRangeValue">20 ms</span>
+    </div>
+    <input type="range" id="wfRange" min="0" max="50" step="1" value="20" />
+    <div class="range-labels"><span>0 ms</span><span>50 ms</span></div>
+  </div>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label for="wfAmp">Amplitude</label>
+      <span class="value-box" id="wfAmpValue">100%</span>
+    </div>
+    <input type="range" id="wfAmp" min="0" max="200" step="5" value="100" />
+    <div class="range-labels"><span>0%</span><span>200%</span></div>
+  </div>
+  <p class="sheet-foot-note">
+    Each slice is one window further past the impulse peak. Ringing that lasts is what the gate is
+    there to remove.
+  </p>
+  </div>
 </section>
 
 <section id="presetsSheet" class="sheet presets-sheet" hidden>
@@ -752,38 +785,7 @@
   <p class="sheet-foot-note">A changing delay across bands can point to a crossover or resonance.</p>
 </section>
 
-<section id="waterfallSheet" class="sheet waterfall-sheet" hidden>
-  <div class="sheet-head">
-    <div>
-      <h2 class="sheet-title">Waterfall</h2>
-      <p class="sheet-sub" id="wfSubtitle">impulse decay · 0–20 ms</p>
-    </div>
-    <button id="btnCloseWaterfall" class="btn" type="button">Done</button>
-  </div>
-  <div class="chart-wrap wf">
-    <canvas id="wfChart"></canvas>
-  </div>
-  <div class="card wf-card">
-    <div class="row wf-row">
-      <label for="wfRange">Time range</label>
-      <span class="value-box" id="wfRangeValue">20 ms</span>
-    </div>
-    <input type="range" id="wfRange" min="0" max="50" step="1" value="20" />
-    <div class="range-labels"><span>0 ms</span><span>50 ms</span></div>
-  </div>
-  <div class="card wf-card">
-    <div class="row wf-row">
-      <label for="wfAmp">Amplitude</label>
-      <span class="value-box" id="wfAmpValue">100%</span>
-    </div>
-    <input type="range" id="wfAmp" min="0" max="200" step="5" value="100" />
-    <div class="range-labels"><span>0%</span><span>200%</span></div>
-  </div>
-  <p class="sheet-foot-note">
-    Each slice is one window further past the impulse peak. Ringing that lasts is what the gate is
-    there to remove.
-  </p>
-</section>
+<!-- The stacked reading now lives inside the Decay screen, beside the heat map. -->
 
 <section id="eqSheet" class="sheet eq-sheet" hidden>
   <div class="sheet-head">

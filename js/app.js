@@ -197,6 +197,7 @@ const state = {
   reflections: [],
   roomDecay: null,
   spectrogramOpen: false,
+  decayMode: 'heat',
   spectrogramRangeMs: 50,
   spectrogramAmplitude: 100,
   spectrogram: null,
@@ -581,7 +582,7 @@ function hideAudioHelp() {
 }
 
 function updateSheetLock() {
-  const open = !$('savedSheet').hidden || !$('waterfallSheet').hidden ||
+  const open = !$('savedSheet').hidden ||
     !$('meterSheet').hidden || !$('spectrogramSheet').hidden ||
     !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
@@ -1237,7 +1238,7 @@ function stopDemo() {
   $('rdLevel').textContent = '—';
   $('rdRate').textContent = '—';
   $('irReadout').textContent = '—';
-  $('btnWaterfall').disabled = false;
+  if ($('btnSpectrogram')) $('btnSpectrogram').disabled = false;
   $('btnExportCsv').disabled = true;
   $('btnShareChart').disabled = true;
   $('btnShareReport').disabled = true;
@@ -2740,26 +2741,10 @@ function drawWaterfall() {
 function updateWaterfallLabels() {
   $('wfRangeValue').textContent = state.waterfallRangeMs.toFixed(0) + ' ms';
   $('wfAmpValue').textContent = state.waterfallAmplitude.toFixed(0) + '%';
-  $('wfSubtitle').textContent = 'impulse decay · 0–' + state.waterfallRangeMs.toFixed(0) + ' ms';
-}
-
-function openWaterfall() {
-  state.waterfallOpen = true;
-  $('waterfallSheet').hidden = false;
-  updateSheetLock();
-  updateWaterfallLabels();
-  wfChart.resize();
-  refreshWaterfall(true);
-  drawWaterfall();
-  requestAnimationFrame(() => {
-    wfChart.resize();
-    drawWaterfall();
-  });
-}
-
-function closeWaterfall() {
-  state.waterfallOpen = false;
-  closeSheet('waterfallSheet');
+  const subtitle = $('spSubtitle');
+  if (subtitle && state.decayMode === 'stack') {
+    subtitle.textContent = 'impulse decay · 0–' + state.waterfallRangeMs.toFixed(0) + ' ms';
+  }
 }
 
 /* ---------- reflections, room decay and the decay spectrogram ---------- */
@@ -2944,21 +2929,50 @@ function drawSpectrogram() {
 }
 
 function openSpectrogram() {
-  state.spectrogramOpen = true;
   $('spectrogramSheet').hidden = false;
   updateSheetLock();
   updateSpectrogramLabels();
-  spectrogramChart.resize();
-  refreshSpectrogram(true);
-  drawSpectrogram();
-  requestAnimationFrame(() => {
-    spectrogramChart.resize();
-    drawSpectrogram();
-  });
+  setDecayMode(state.decayMode);
+  requestAnimationFrame(() => setDecayMode(state.decayMode));
 }
+
+/** One sheet, two readings of the same decay slices. */
+function setDecayMode(mode) {
+  state.decayMode = mode === 'stack' ? 'stack' : 'heat';
+  const heat = state.decayMode === 'heat';
+
+  const heatBlock = $('heatBlock');
+  const wfBlock = $('wfBlock');
+  if (heatBlock) heatBlock.hidden = !heat;
+  if (wfBlock) wfBlock.hidden = heat;
+
+  state.spectrogramOpen = heat;
+  state.waterfallOpen = !heat;
+
+  const subtitle = $('spSubtitle');
+  if (subtitle) {
+    const range = heat ? state.spectrogramRangeMs : state.waterfallRangeMs;
+    subtitle.textContent = 'impulse decay · 0–' + range.toFixed(0) + ' ms';
+  }
+
+  if (heat) {
+    spectrogramChart.resize();
+    refreshSpectrogram(true);
+    drawSpectrogram();
+  } else {
+    wfChart.resize();
+    refreshWaterfall(true);
+    drawWaterfall();
+  }
+}
+
+$('selDecayMode').addEventListener('change', (event) => {
+  setDecayMode(event.target.value);
+});
 
 function closeSpectrogram() {
   state.spectrogramOpen = false;
+  state.waterfallOpen = false;
   closeSheet('spectrogramSheet');
 }
 
@@ -3631,7 +3645,7 @@ function updateReadouts(res) {
   updateCapturePolarity();
 
   $('irReadout').textContent = 'delay ' + totalMs.toFixed(2) + ' ms';
-  $('btnWaterfall').disabled = false;
+  if ($('btnSpectrogram')) $('btnSpectrogram').disabled = false;
   $('btnExportCsv').disabled = false;
   $('btnShareChart').disabled = false;
   $('btnShareReport').disabled = false;
@@ -5548,7 +5562,7 @@ function stopAll() {
   state.delayProbedAt = 0;
   jitterWarned = false;
   resetInputHealth();
-  $('btnWaterfall').disabled = false;
+  if ($('btnSpectrogram')) $('btnSpectrogram').disabled = false;
   $('btnExportCsv').disabled = true;
   $('btnShareChart').disabled = true;
   $('btnShareReport').disabled = true;
@@ -5934,8 +5948,7 @@ $('btnClearSavedOverlays').addEventListener('click', () => {
 $('chkPhaseA').addEventListener('change', draw);
 $('chkPhaseB').addEventListener('change', draw);
 $('btnExportCsv').addEventListener('click', exportCSV);
-$('btnWaterfall').addEventListener('click', openWaterfall);
-$('btnCloseWaterfall').addEventListener('click', closeWaterfall);
+// The stacked reading lives inside the Decay screen now.
 $('btnSpectrogram').addEventListener('click', openSpectrogram);
 $('btnCloseSpectrogram').addEventListener('click', closeSpectrogram);
 $('btnBands').addEventListener('click', openBands);
@@ -6747,7 +6760,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-11';
+const BUILD = '2026-11-11-12';
 let updateCheckedAt = 0;
 
 /**
