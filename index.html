@@ -203,6 +203,23 @@
       <label class="toggle-pill coh"><input type="checkbox" id="chkCoh" checked /><i></i>Coherence</label>
       <span class="trace-note" id="traceSummary">no captures yet</span>
     </div>
+    <div class="phase-delay" id="phaseDelayBar" hidden>
+      <div class="row">
+        <span class="pd-label">Phase delay</span>
+        <div class="pd-chips" id="phaseDelayChips"></div>
+        <span class="pd-value" id="phaseDelayValue">+0.00 ms</span>
+      </div>
+      <div class="row">
+        <button id="btnPdDown" class="btn" type="button" aria-label="Subtract 0.1 milliseconds">−0.1</button>
+        <input type="range" id="phaseDelaySlider" min="-20" max="20" step="0.05" value="0" aria-label="Preview delay of the selected capture" />
+        <button id="btnPdUp" class="btn" type="button" aria-label="Add 0.1 milliseconds">+0.1</button>
+        <button id="btnPdReset" class="link-btn" type="button">Reset</button>
+      </div>
+      <div class="row pd-reading">
+        <span class="source-hint" id="phaseDelayReading">tap the plot to read the phase there</span>
+        <button id="btnPdMatch" class="btn" type="button" hidden>Match</button>
+      </div>
+    </div>
     <div class="row">
       <label for="selPhaseSpeed">Phase trace</label>
       <select id="selPhaseSpeed">

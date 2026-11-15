@@ -169,6 +169,8 @@ const state = {
   snapshotD: null,
   snapshotE: null,
   snapshotF: null,
+  /** The capture the delay bar under the chart is nudging. */
+  phaseDelaySlot: 'A',
   peakHold: null,
   peakHoldArmed: false,
   average: null,
@@ -1544,6 +1546,175 @@ function renderCaptureDelays() {
       card.appendChild(warning);
     }
   }
+  renderPhaseDelayBar();
+}
+
+/* ---------- phase delay bar under the chart ---------- */
+
+const PD_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
+
+/** The held capture the bar is nudging: the selection, else the first one held. */
+function phaseDelaySlot() {
+  const held = PD_LETTERS.filter((letter) => heldSnapshot(letter));
+  if (!held.length) return null;
+  return held.includes(state.phaseDelaySlot) ? state.phaseDelaySlot : held[0];
+}
+
+function currentPhaseDelayTrace() {
+  const letter = phaseDelaySlot();
+  return letter ? heldSnapshot(letter) : null;
+}
+
+function currentCapturePreviewDelay() {
+  const trace = currentPhaseDelayTrace();
+  return trace ? (Number(trace.previewDelayMs) || 0) : null;
+}
+
+/**
+ * The phase the chart draws for a held capture: its own, moved by its preview
+ * delay and by a polarity flip. The anchor every trace is read against cancels
+ * in a difference, so it is not taken here.
+ */
+function previewedHeldPhase(trace, measured, frequency) {
+  return measured - 360 * frequency * (trace.previewDelayMs || 0) / 1000 +
+    (trace.showInverted ? 180 : 0);
+}
+
+/**
+ * The preview delay that puts the capture's phase onto the live phase here, as
+ * the smallest move that does it. A delay is only defined to within one period
+ * at the frequency it is matched at, so whole turns are folded in.
+ */
+function matchPreviewDelay(trace, livePhase, heldPhase, frequency) {
+  if (!(frequency > 0)) return null;
+  const current = wrapDegrees(livePhase - previewedHeldPhase(trace, heldPhase, frequency));
+  const period = 1000 / frequency;
+  let delay = -current * 1000 / (360 * frequency);
+  delay -= Math.round(delay / period) * period;
+  if (!Number.isFinite(delay) || Math.abs(delay) > 20) return null;
+  return Math.round(delay * 20) / 20;
+}
+
+/** Moving a capture's delay is only worth doing with its phase on the plot. */
+function enableCapturePhase(letter) {
+  const phase = $('chkPhase');
+  if (phase && !phase.checked) phase.checked = true;
+  const chk = $('chkPhase' + letter);
+  if (chk && !chk.checked) chk.checked = true;
+  updatePhaseToggleState();
+}
+
+function setPhaseDelay(ms) {
+  const letter = phaseDelaySlot();
+  const trace = letter ? heldSnapshot(letter) : null;
+  if (!trace) return;
+
+  trace.previewDelayMs = clampPreviewDelay(ms);
+  enableCapturePhase(letter);
+
+  const slider = $('phaseDelaySlider');
+  if (slider) slider.value = String(trace.previewDelayMs);
+  updatePhaseDelayReadout();
+  updateCursorReadout();
+  updateTraceSummary();
+  draw();
+}
+
+function renderPhaseDelayBar() {
+  const bar = $('phaseDelayBar');
+  if (!bar) return;
+
+  const letter = phaseDelaySlot();
+  if (!letter) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  state.phaseDelaySlot = letter;
+
+  const chips = $('phaseDelayChips');
+  if (chips) {
+    chips.replaceChildren();
+    for (const item of PD_LETTERS.filter((slot) => heldSnapshot(slot))) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'pd-chip';
+      chip.textContent = item;
+      chip.setAttribute('aria-pressed', item === letter ? 'true' : 'false');
+      chip.setAttribute('aria-label', 'Preview the delay of capture ' + item);
+      chip.addEventListener('click', () => {
+        state.phaseDelaySlot = item;
+        renderPhaseDelayBar();
+        enableCapturePhase(item);
+        draw();
+      });
+      chips.appendChild(chip);
+    }
+  }
+
+  const slider = $('phaseDelaySlider');
+  const trace = heldSnapshot(letter);
+  if (slider && trace) slider.value = String(Number(trace.previewDelayMs) || 0);
+  updatePhaseDelayReadout();
+}
+
+function updatePhaseDelayReadout() {
+  const letter = phaseDelaySlot();
+  const trace = letter ? heldSnapshot(letter) : null;
+  const value = $('phaseDelayValue');
+  const reading = $('phaseDelayReading');
+  const match = $('btnPdMatch');
+  if (!trace || !value || !reading || !match) return;
+
+  const delay = Number(trace.previewDelayMs) || 0;
+  setText(value, (delay >= 0 ? '+' : '') + delay.toFixed(2) + ' ms');
+
+  const res = state.results;
+  const frequency = state.cursorFreq;
+  if (!res) {
+    setText(reading, 'start a measurement to watch a capture\u2019s phase move');
+    match.hidden = true;
+    return;
+  }
+  if (!frequency) {
+    setText(reading, 'tap the plot to read the phase there');
+    match.hidden = true;
+    return;
+  }
+
+  const label = frequency >= 1000 ? (frequency / 1000).toFixed(2) + ' kHz' : frequency.toFixed(0) + ' Hz';
+  const livePhase = coherentPhaseAt(res, frequency);
+  const heldPhase = coherentPhaseAt(trace, frequency);
+  if (livePhase === null || heldPhase === null) {
+    setText(reading, 'no usable phase at ' + label + ' — pick another point');
+    match.hidden = true;
+    return;
+  }
+
+  const difference = wrapDegrees(livePhase - previewedHeldPhase(trace, heldPhase, frequency));
+  setText(reading, 'Δ ' + (difference >= 0 ? '+' : '') + difference.toFixed(0) + '° vs live at ' + label);
+
+  const target = matchPreviewDelay(trace, livePhase, heldPhase, frequency);
+  if (target === null) {
+    match.hidden = true;
+    return;
+  }
+  match.hidden = false;
+  match.dataset.delay = String(target);
+  match.textContent = 'Match ' + (target >= 0 ? '+' : '') + target.toFixed(2) + ' ms';
+}
+
+function applyPhaseDelayMatch() {
+  const letter = phaseDelaySlot();
+  const trace = letter ? heldSnapshot(letter) : null;
+  const button = $('btnPdMatch');
+  const delay = button ? Number(button.dataset.delay) : NaN;
+  if (!trace || !Number.isFinite(delay)) return;
+
+  setPhaseDelay(delay);
+  renderCaptureDelays();
+  setStatus('capture ' + letter + ' preview delay ' + (delay >= 0 ? '+' : '') + delay.toFixed(2) +
+    ' ms — its phase meets the live trace (preview only)', '');
 }
 
 function activeCapture() {
@@ -3826,6 +3997,7 @@ function updateCursorReadout() {
 
   if (!res || !freq) {
     readout.textContent = 'tap the plot';
+    updatePhaseDelayReadout();
     return;
   }
 
@@ -3854,6 +4026,7 @@ function updateCursorReadout() {
   if (comparisons.length) text += '\n' + comparisons.join(' · ');
 
   readout.textContent = text;
+  updatePhaseDelayReadout();
 }
 
 /**
@@ -6021,6 +6194,13 @@ $('btnClearSavedOverlays').addEventListener('click', () => {
 });
 $('chkPhaseA').addEventListener('change', draw);
 $('chkPhaseB').addEventListener('change', draw);
+$('phaseDelaySlider').addEventListener('input', () => setPhaseDelay(Number($('phaseDelaySlider').value)));
+$('phaseDelaySlider').addEventListener('change', renderCaptureDelays);
+$('btnPdDown').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) - 0.1));
+$('btnPdUp').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) + 0.1));
+$('btnPdReset').addEventListener('click', () => setPhaseDelay(0));
+$('btnPdMatch').addEventListener('click', applyPhaseDelayMatch);
+renderPhaseDelayBar();
 $('btnExportCsv').addEventListener('click', exportCSV);
 // The stacked reading lives inside the Decay screen now.
 $('btnSpectrogram').addEventListener('click', openSpectrogram);
@@ -6834,7 +7014,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-12-02';
+const BUILD = '2026-11-12-03';
 let updateCheckedAt = 0;
 
 /**

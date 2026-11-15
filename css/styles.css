@@ -1238,6 +1238,20 @@ body.sheet-open {
 .capture-delay .row { border: 0; padding: 5px 0; }
 .capture-delay input[type="range"] { flex: 1; min-width: 65px; }
 .capture-delay .btn { font-size: 11px; padding: 7px; }
+
+/* The delay a held capture would need, right under the chart it moves. */
+.phase-delay { padding: 9px 10px; margin: 8px 0 2px; border-radius: 12px; background: var(--bg-soft); border: 1px solid var(--line); }
+.phase-delay .row { border: 0; padding: 3px 0; gap: 8px; align-items: center; }
+.phase-delay .pd-label { font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.phase-delay .pd-chips { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.phase-delay .pd-chip { font: inherit; font-size: 11px; font-weight: 600; min-height: 22px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; color: var(--dim); }
+.phase-delay .pd-chip[aria-pressed="true"] { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.phase-delay .pd-value { min-width: 74px; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--phase); }
+.phase-delay input[type="range"] { flex: 1 1 auto; min-width: 70px; }
+.phase-delay .btn { font-size: 11px; padding: 7px; }
+.phase-delay .pd-reading { justify-content: space-between; }
+.phase-delay .pd-reading .source-hint { margin: 0; flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--dim); }
+.phase-delay #btnPdMatch { font-size: 11px; padding: 6px 10px; white-space: nowrap; }
 #savedName,
 #savedNote,
 #savedSearch,
