@@ -13,20 +13,22 @@ const COL = {
   text: 'rgba(176,186,164,0.80)',
   textDim: 'rgba(160,172,150,0.52)',
   trace: '#c9ff70',
-  phase: '#77c8c1',
+  phase: '#6fe0d6',
   coh: '#d9a26c',
-  ghost: 'rgba(226,235,214,0.55)',
-  ghostB: 'rgba(143,199,250,0.65)',
-  ghostC: 'rgba(197,163,247,0.62)',
-  ghostD: 'rgba(251,184,107,0.66)',
-  ghostE: 'rgba(107,216,248,0.62)',
-  ghostF: 'rgba(250,133,184,0.66)',
+  ghost: 'rgba(226,235,214,0.85)',
+  ghostB: 'rgba(143,199,250,0.90)',
+  ghostC: 'rgba(197,163,247,0.88)',
+  ghostD: 'rgba(251,184,107,0.90)',
+  ghostE: 'rgba(107,216,248,0.88)',
+  ghostF: 'rgba(250,133,184,0.90)',
   peak: 'rgba(201,255,112,0.32)',
   average: '#eeaac4',
   overlay: '#b4a7f7',
   savedColors: ['#b4a7f7', '#fbb679', '#72c7f2', '#eea4b3', '#a8df9b', '#f7d47b', '#86d5ca', '#d8a691'],
   target: 'rgba(214,222,206,0.45)',
   cursor: 'rgba(255,140,120,0.55)',
+  // Laid under every trace so two overlays crossing stay two lines.
+  halo: 'rgba(9,13,10,0.92)',
 };
 
 const FONT_AXIS = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -107,6 +109,37 @@ function smoothColumns(values) {
   return out;
 }
 
+/**
+ * Strokes the path already in the context over a dark halo of its own, so two
+ * overlays crossing on the one plot stay two lines instead of one smudge. The
+ * live trace adds a faint tinted glow.
+ */
+function strokeSeparated(ctx, color, width, dash, glow) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  ctx.strokeStyle = COL.halo;
+  ctx.lineWidth = width + 2.6;
+  ctx.setLineDash(dash || []);
+  ctx.stroke();
+
+  if (glow) {
+    ctx.globalAlpha = 0.22;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width + 3.2;
+    ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.setLineDash(dash || []);
+  ctx.stroke();
+  ctx.restore();
+}
+
 export class TransferChart {
   constructor(canvas) {
     this.canvas = canvas;
@@ -124,7 +157,7 @@ export class TransferChart {
     this.phaseValues = null;
     this.phaseStamp = -1;
     /** How quickly the drawn phase follows: lower is slower. */
-    this.phaseEase = 0.01;
+    this.phaseEase = 0.004;
     this.resize();
   }
 
@@ -212,7 +245,7 @@ export class TransferChart {
     const gap = 12;
 
     const cohH = showCoh ? Math.max(18, Math.round(p.h * 0.15)) : 0;
-    const phaseH = showPhase ? Math.max(32, Math.round(p.h * 0.26)) : 0;
+    const phaseH = showPhase ? Math.max(36, Math.round(p.h * 0.34)) : 0;
     const gaps = (showPhase ? gap : 0) + (showCoh ? gap : 0);
     const magH = Math.max(24, p.h - phaseH - cohH - gaps);
 
@@ -306,7 +339,10 @@ export class TransferChart {
     this.pad.top = Math.max(40, 48 + (options.savedCurves || []).length * 12);
     paintPanel(ctx, this.w, this.h);
     this.updateRange(res, options);
-    if (res) this.updatePhase(res);
+    // Called even without a result, so a stopped measurement drops the eased
+    // phase and the next one starts from its own curve instead of crawling
+    // across from the last one — which Very slow would otherwise take minutes over.
+    this.updatePhase(res);
 
     const panes = this.layout(options);
     const bottom = this.panesBottom(panes);
@@ -324,6 +360,15 @@ export class TransferChart {
     });
     if (options.peakHold) this.drawPeakHold(panes.mag, options.peakHold);
     if (options.average) this.drawAverage(panes.mag, options.average);
+
+    // Recalled speakers' phase goes on before the live traces, so the curve
+    // that is moving stays the one on top.
+    if (panes.phase) {
+      const anchor = res ? this.phaseAnchor(res) : 0;
+      (options.savedCurves || []).forEach((item, index) => {
+        this.drawSavedPhase(panes.phase, item, anchor, COL.savedColors[index % COL.savedColors.length]);
+      });
+    }
 
     if (res) {
       for (const extra of options.extraSnapshots || []) {
@@ -361,12 +406,6 @@ export class TransferChart {
         }
         this.drawPhase(panes.phase, res);
       }
-    }
-    if (panes.phase) {
-      const anchor = res ? this.phaseAnchor(res) : 0;
-      (options.savedCurves || []).forEach((item, index) => {
-        this.drawSavedPhase(panes.phase, item, anchor, COL.savedColors[index % COL.savedColors.length]);
-      });
     }
 
     if (options.cursorFreq) this.drawCursor(panes, bottom, options.cursorFreq, res);
@@ -509,30 +548,34 @@ export class TransferChart {
     const ctx = this.ctx;
     const p = this.plotRect();
     const short = p.w < 430;
-    const items = [[short ? 'Mag' : 'Magnitude', COL.trace]];
-    if (panes.phase) items.push(['Phase', COL.phase]);
-    if (panes.coh) items.push([short ? 'Coh' : 'Coherence', COL.coh]);
-    if (options.target) items.push(['Target', COL.target]);
+    // [label, colour, dashed]: only the stored overlays are dashed, so the
+    // swatch says which lines on the plot are which.
+    const items = [[short ? 'Mag' : 'Magnitude', COL.trace, false]];
+    if (panes.phase) items.push(['Phase', COL.phase, false]);
+    if (panes.coh) items.push([short ? 'Coh' : 'Coherence', COL.coh, false]);
+    if (options.target) items.push(['Target', COL.target, true]);
     (options.savedCurves || []).forEach((item, index) => items.push([
-      (item.name || 'Saved').slice(0, short ? 12 : 24), COL.savedColors[index % COL.savedColors.length],
+      (item.name || 'Saved').slice(0, short ? 12 : 24),
+      COL.savedColors[index % COL.savedColors.length],
+      false,
     ]));
     if (panes.phase && options.showCaptureAPhase && options.snapshot) {
-      items.push(['Phase A' + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost]);
+      items.push(['Phase A' + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost, false]);
     }
     if (panes.phase && options.showCaptureBPhase && options.secondSnapshot) {
-      items.push(['Phase B' + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB]);
+      items.push(['Phase B' + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB, false]);
     }
-    if (options.peakHold) items.push(['Peak', COL.peak]);
-    if (options.average) items.push(['Avg ' + (options.averageCount || 0), COL.average]);
+    if (options.peakHold) items.push(['Peak', COL.peak, false]);
+    if (options.average) items.push(['Avg ' + (options.averageCount || 0), COL.average, true]);
     if (options.snapshot) {
-      items.push([(short ? 'A' : 'Capture A') + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost]);
+      items.push([(short ? 'A' : 'Capture A') + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost, false]);
     }
     if (options.secondSnapshot) {
-      items.push([(short ? 'B' : 'Capture B') + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB]);
+      items.push([(short ? 'B' : 'Capture B') + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB, false]);
     }
     for (const extra of options.extraSnapshots || []) {
-      items.push([short ? extra.label : 'Capture ' + extra.label, extra.color]);
-      if (panes.phase && extra.showPhase) items.push(['Phase ' + extra.label, extra.color]);
+      items.push([short ? extra.label : 'Capture ' + extra.label, extra.color, false]);
+      if (panes.phase && extra.showPhase) items.push(['Phase ' + extra.label, extra.color, false]);
     }
 
     let x = p.x;
@@ -556,10 +599,12 @@ export class TransferChart {
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 2.4;
+      ctx.setLineDash(items[i][2] ? [3, 2] : []);
       ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.lineTo(x + 11, y);
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.fillStyle = COL.text;
       ctx.fillText(label, x + 16, y);
       x += width + (short ? 11 : 16);
@@ -625,11 +670,7 @@ export class TransferChart {
     ctx.lineCap = 'round';
 
     if (ghost) {
-      ctx.strokeStyle = COL.ghost;
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([4, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      strokeSeparated(ctx, COL.ghost, 1.8);
     } else {
       // A wide, faint pass underneath makes the crisp trace glow a little.
       ctx.strokeStyle = 'rgba(201,255,112,0.14)';
@@ -653,13 +694,7 @@ export class TransferChart {
     ctx.beginPath();
     ctx.moveTo(x0, this.dbToY(values[0], pane));
     for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.setLineDash([4, 4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    strokeSeparated(ctx, color, 2, [], true);
     ctx.restore();
   }
 
@@ -673,11 +708,7 @@ export class TransferChart {
     ctx.beginPath();
     ctx.moveTo(x0, this.dbToY(values[0], pane));
     for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
-    ctx.strokeStyle = COL.peak;
-    ctx.lineWidth = 1;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.stroke();
+    strokeSeparated(ctx, COL.peak, 1);
     ctx.restore();
   }
 
@@ -691,13 +722,7 @@ export class TransferChart {
     ctx.beginPath();
     ctx.moveTo(x0, this.dbToY(values[0], pane));
     for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
-    ctx.strokeStyle = COL.average;
-    ctx.lineWidth = 1.4;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.setLineDash([5, 3]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    strokeSeparated(ctx, COL.average, 1.8, [5, 3], true);
     ctx.restore();
   }
 
@@ -730,13 +755,7 @@ export class TransferChart {
       }
     }
 
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.4;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.setLineDash([5, 4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    strokeSeparated(ctx, color, 1.8, [], true);
     ctx.restore();
   }
 
@@ -744,9 +763,8 @@ export class TransferChart {
     if (!Array.isArray(item.phase) || !Array.isArray(item.phaseCoherence) || item.phase.length < 2) return;
     const ctx = this.ctx;
     const count = Math.ceil(pane.w);
-    ctx.save();
-    ctx.beginPath();
-    let started = false;
+    const strong = [];
+    const faint = [];
     let previous = null;
     for (let i = 0; i < count; i++) {
       const freq = this.freqAtX(pane.x + i);
@@ -755,19 +773,50 @@ export class TransferChart {
       const high = Math.min(item.phase.length - 1, low + 1);
       const t = position - low;
       const coh = item.phaseCoherence[low] * (1 - t) + item.phaseCoherence[high] * t;
-      if (!(coh >= 0.35)) { started = false; previous = null; continue; }
       const raw = item.phase[low] * (1 - t) + item.phase[high] * t;
       const angle = wrapDegrees(raw - anchor - 360 * freq * (item.previewDelayMs || 0) / 1000);
-      if (!Number.isFinite(angle)) { started = false; previous = null; continue; }
-      if (previous !== null && Math.abs(angle - previous) > 180) started = false;
-      if (started) ctx.lineTo(pane.x + i, this.phaseToY(angle, pane));
-      else { ctx.moveTo(pane.x + i, this.phaseToY(angle, pane)); started = true; }
+      if (!Number.isFinite(angle)) {
+        strong.push(null);
+        faint.push(null);
+        previous = null;
+        continue;
+      }
+      if (previous !== null && Math.abs(angle - previous) > 180) {
+        strong.push(null);
+        faint.push(null);
+      }
+      const point = { x: pane.x + i, y: this.phaseToY(angle, pane) };
+      (coh >= 0.35 ? strong : faint).push(point);
       previous = angle;
     }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.setLineDash([3, 3]);
-    ctx.stroke();
+
+    if (faint.length) {
+      ctx.save();
+      ctx.globalAlpha = 0.30;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      let open = false;
+      for (const point of faint) {
+        if (!point) { open = false; continue; }
+        if (open) ctx.lineTo(point.x, point.y);
+        else { ctx.moveTo(point.x, point.y); open = true; }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    let open = false;
+    for (const point of strong) {
+      if (!point) { open = false; continue; }
+      if (open) ctx.lineTo(point.x, point.y);
+      else { ctx.moveTo(point.x, point.y); open = true; }
+    }
+    strokeSeparated(ctx, color, 2, [], true);
     ctx.restore();
   }
 
@@ -854,73 +903,162 @@ export class TransferChart {
     const values = opts.held
       ? this.relativePhase(res, opts.anchor, opts.inverted ? 180 : 0)
       : this.phaseValues && this.phaseValues.length === bins ? this.phaseValues : this.relativePhase(res);
+    const columns = this.phaseColumns(pane, res, values);
+    const smoothed = this.smoothPhaseColumns(columns);
+
+    // The whole band is drawn; where the measurement's coherence is too low to
+    // trust, the stretch is faded rather than left out, so a curve is always
+    // there to follow and to lay another speaker's over. Null marks a segment
+    // break where the phase crosses ±180°.
+    const strong = [];
+    const faint = [];
+    let previous = null;
+    for (let i = 0; i < columns.count; i++) {
+      const raw = smoothed[i];
+      if (!Number.isFinite(raw)) {
+        strong.push(null);
+        faint.push(null);
+        previous = null;
+        continue;
+      }
+      const value = wrapDegrees(raw);
+      if (previous !== null && Math.abs(value - previous) > 180) {
+        strong.push(null);
+        faint.push(null);
+      }
+      const point = { x: pane.x + i + 0.5, y: this.phaseToY(value, pane) };
+      (columns.readable[i] ? strong : faint).push(point);
+      previous = value;
+    }
+
+    const color = opts.color || (opts.held ? COL.ghost : COL.phase);
+
+    if (faint.length) {
+      ctx.save();
+      ctx.globalAlpha = 0.30;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = opts.held ? 1.4 : 1.6;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      let open = false;
+      for (const point of faint) {
+        if (!point) { open = false; continue; }
+        if (open) ctx.lineTo(point.x, point.y);
+        else { ctx.moveTo(point.x, point.y); open = true; }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Held captures are solid and as strong as the live curve, each with a glow
+    // of its own colour, so several overlapping traces read line by line.
+    ctx.save();
+    ctx.beginPath();
+    let open = false;
+    for (const point of strong) {
+      if (!point) { open = false; continue; }
+      if (open) ctx.lineTo(point.x, point.y);
+      else { ctx.moveTo(point.x, point.y); open = true; }
+    }
+    strokeSeparated(ctx, color, opts.held ? 2.2 : 2.4, [], true);
+    ctx.restore();
+  }
+
+  /**
+   * One phase value per pixel column. Phase is unwrapped across frequency, so
+   * the bins inside a column form a continuous run of degrees and are averaged
+   * as such, wrapped once at the end. Each bin is weighted by its own
+   * coherence, so a noisy bin inside an otherwise usable column cannot pull the
+   * curve off; a column whose mean coherence is below 0.35 stays unreadable,
+   * which is where the trace gaps.
+   */
+  phaseColumns(pane, res, values) {
+    const df = res.sampleRate / res.fftSize;
     const count = Math.max(2, Math.ceil(pane.w));
-    const continuous = new Float64Array(count);
+    const angles = new Float64Array(count);
+    angles.fill(NaN);
     const readable = new Uint8Array(count);
 
     for (let i = 0; i < count; i++) {
       const f1 = this.freqAtX(pane.x + i);
       const f2 = this.freqAtX(pane.x + i + 1);
       const k0 = Math.max(1, Math.floor(f1 / df));
-      const k1 = Math.min(bins - 1, Math.max(k0, Math.ceil(f2 / df)));
+      const k1 = Math.min(res.bins - 1, Math.max(k0, Math.ceil(f2 / df)));
+      if (k1 < k0) continue;
 
-      let sum = 0;
+      let weighted = 0;
+      let weight = 0;
       let coherence = 0;
       let n = 0;
       for (let k = k0; k <= k1; k++) {
-        const v = values[k];
-        if (!Number.isFinite(v)) continue;
-        sum += v;
-        coherence += res.coh[k];
+        const angle = values[k];
+        if (!Number.isFinite(angle)) continue;
+        const raw = Number.isFinite(res.coh[k]) ? res.coh[k] : 0;
+        const coh = Math.min(1, Math.max(0, raw));
+        // A bin the measurement has no confidence in says little about the
+        // phase there, so it is weighted out of the column.
+        const w = Math.max(0.02, coh);
+        weighted += angle * w;
+        weight += w;
+        coherence += coh;
         n += 1;
       }
-      if (n === 0) continue;
+      if (n === 0 || weight < 1e-9) continue;
 
-      continuous[i] = sum / n;
-      // Below this the phase is noise dressed as a curve.
+      angles[i] = weighted / weight;
       readable[i] = coherence / n >= 0.35 ? 1 : 0;
     }
 
-    // Three gentle passes, so column-to-column noise does not read as a saw.
-    const smoothed = smoothColumns(smoothColumns(smoothColumns(continuous)));
+    return { angles, readable, count };
+  }
 
-    ctx.save();
-    ctx.beginPath();
-    let started = false;
-    let previous = null;
+  /**
+   * Three gentle passes over the readable columns only: a gap left by a noisy
+   * band is not filled in with degrees from outside it, which would bend the
+   * curves either side of the gap towards each other.
+   */
+  smoothPhaseColumns(columns) {
+    const count = columns.count;
+    let current = columns.angles;
+    for (let pass = 0; pass < 3; pass++) {
+      const input = current;
+      // Carry the unreadable columns through untouched: they are still drawn,
+      // faded, and a zero would pull them to the middle of the pane.
+      const next = new Float64Array(input);
+      for (let i = 0; i < count; i++) {
+        if (!columns.readable[i]) continue;
+        let sum = 0;
+        let weight = 0;
+        for (let j = i - 1; j <= i + 1; j++) {
+          if (j < 0 || j >= count || !columns.readable[j]) continue;
+          const w = j === i ? 2 : 1;
+          sum += input[j] * w;
+          weight += w;
+        }
+        if (weight > 0) next[i] = sum / weight;
+      }
+      current = next;
+    }
 
+    // The stretches that cannot be trusted are still drawn, faded, so they get
+    // one light pass of their own: enough to follow the shape of the curve
+    // rather than the noise inside it.
+    const smoothed = current;
     for (let i = 0; i < count; i++) {
-      if (!readable[i]) {
-        started = false;
-        previous = null;
-        continue;
+      if (columns.readable[i]) continue;
+      let sum = 0;
+      let weight = 0;
+      for (let j = i - 1; j <= i + 1; j++) {
+        if (j < 0 || j >= count || !Number.isFinite(smoothed[j])) continue;
+        const w = j === i ? 2 : 1;
+        sum += smoothed[j] * w;
+        weight += w;
       }
-
-      const value = wrapDegrees(smoothed[i]);
-      if (previous !== null && Math.abs(value - previous) > 180) started = false;
-
-      const x = pane.x + i + 0.5;
-      const y = this.phaseToY(value, pane);
-      if (started) ctx.lineTo(x, y);
-      else {
-        ctx.moveTo(x, y);
-        started = true;
-      }
-      previous = value;
+      if (weight > 0) current[i] = sum / weight;
     }
 
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    if (!opts.held) {
-      ctx.strokeStyle = 'rgba(119,200,193,0.18)';
-      ctx.lineWidth = 4;
-      ctx.stroke();
-    }
-    ctx.strokeStyle = opts.color || COL.phase;
-    ctx.lineWidth = opts.held ? 1.2 : 1.6;
-    if (opts.held) ctx.setLineDash([4, 3]);
-    ctx.stroke();
-    ctx.restore();
+    return current;
   }
 
   drawCoherence(pane, res) {

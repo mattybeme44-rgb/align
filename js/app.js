@@ -105,6 +105,15 @@ let micWin = new Float32Array(0);
 let refWin = new Float32Array(0);
 let rafId = 0;
 let lastAnalysis = 0;
+/**
+ * How often the live measurement is re-analysed. The audio is captured with a
+ * ScriptProcessorNode, whose callback runs on the main thread, so every
+ * analysis frame and every chart redraw competes with the microphone: at 90 ms
+ * the analysis and the painting together were long enough to starve it, and
+ * the whole app stuttered. Four frames a second is what a transfer function
+ * needs and leaves the thread idle between them.
+ */
+const ANALYSIS_INTERVAL_MS = 250;
 let eqTick = 0;
 let starting = false;
 let allowStartHere = false;
@@ -124,6 +133,7 @@ let lastGroupDelayBuild = 0;
 let lastBandBuild = 0;
 let spectrogramRebuildTimer = 0;
 let drawRaf = 0;
+let irDrawKey = '';
 let spectrographKey = '';
 
 const STORAGE = {
@@ -383,7 +393,13 @@ state.showSpl = readString(STORAGE.spl, '0') === '1';
 // own calibration and the parametric filters being designed against the room.
 state.customTargets = loadCustomTargets();
 state.micCal = loadCalibration();
+// The phase trace speeds the picker offers; anything else stored by an older
+// build falls back to Slow rather than leaving the menu blank.
+const PHASE_EASE_VALUES = [0.01, 0.004, 0.0015, 0.0005];
 state.phaseEase = readNumber('align.phaseEase', 0.004);
+if (!PHASE_EASE_VALUES.some((value) => Math.abs(value - state.phaseEase) < 1e-9)) {
+  state.phaseEase = 0.004;
+}
 state.eqFilters = loadEqFilters();
 state.eqSets = loadEqSets();
 state.targetDraft = null;
@@ -548,6 +564,11 @@ function toggleIrHold() {
 }
 
 /* ---------- status and sharing ---------- */
+
+/** Write text only when it changed: a same-value write still costs a reflow. */
+function setText(node, text) {
+  if (node && node.textContent !== text) node.textContent = text;
+}
 
 function setStatus(text, kind) {
   const el = $('status');
@@ -1170,7 +1191,7 @@ function demoLoop(now) {
   }
   demoRaf = requestAnimationFrame(demoLoop);
   if (document.hidden) return;
-  const interval = state.fftSize >= 32768 ? 320 : 160;
+  const interval = state.fftSize >= 32768 ? ANALYSIS_INTERVAL_MS * 2 : ANALYSIS_INTERVAL_MS;
   if (now - demoLast < interval) return;
   demoLast = now;
   demoFrame();
@@ -1250,7 +1271,14 @@ function stopDemo() {
 }
 
 function averagingRate() {
-  return 0.02 + 0.45 * (state.avgSpeed / 100);
+  // The slider is a per-frame averaging weight, and the live frame rate is set
+  // by ANALYSIS_INTERVAL_MS. Convert the weight so that a setting settles in
+  // the same number of seconds it always did: without this every averaging
+  // choice would look as if it barely averaged at all at the lower rate.
+  const weight = 0.02 + 0.45 * (state.avgSpeed / 100);
+  const frames = ANALYSIS_INTERVAL_MS / 90;
+  if (!(frames > 1)) return weight;
+  return Math.min(0.95, 1 - Math.pow(1 - weight, frames));
 }
 
 function fineSearchRadius(fftSize) {
@@ -3272,6 +3300,35 @@ function draw() {
   });
 }
 
+/**
+ * The impulse chart only changes when its own snapshot does (it refreshes at
+ * state.irRefreshSeconds) or when the gate, the zoom or a drag moved. Painting
+ * its 16384-point trace on every analysis frame was pure heat, so the paint
+ * happens only when one of those actually changed.
+ */
+function drawImpulseIfNeeded() {
+  const impulse = state.displayedImpulse;
+  const gate = state.gate;
+  const zoom = state.irZoom;
+  const selection = irDrag && irDrag.mode === 'zoom'
+    ? irDrag.startX.toFixed(1) + '-' + irDrag.currentX.toFixed(1)
+    : '';
+
+  const key = [
+    impulse ? impulse.frames + ':' + impulse.fftSize + ':' + impulse.sampleRate + ':' + impulse.delayMs : 'none',
+    gate.enabled ? 'on' : 'off',
+    gate.startMs.toFixed(2),
+    gate.widthMs.toFixed(2),
+    zoom ? zoom.min.toFixed(3) + '-' + zoom.max.toFixed(3) : 'all',
+    selection,
+    irChart.w.toFixed(0) + 'x' + irChart.h.toFixed(0),
+  ].join('|');
+
+  if (key === irDrawKey) return;
+  irDrawKey = key;
+  irChart.draw(impulse, { gate });
+}
+
 function drawNow() {
   const tfRange = state.tfZoom || { min: 20, max: 20000 };
   tfChart.setRange(tfRange.min, tfRange.max);
@@ -3298,7 +3355,7 @@ function drawNow() {
   irChart.selection = irDrag && irDrag.mode === 'zoom'
     ? { x0: irDrag.startX, x1: irDrag.currentX }
     : null;
-  irChart.draw(state.displayedImpulse, { gate: state.gate });
+  drawImpulseIfNeeded();
   updateGateBadge();
   updateTraceSummary();
 
@@ -3578,7 +3635,7 @@ function levelReadout() {
 }
 
 function updateReadouts(res) {
-  const offsetMs = (state.delayEstimate / analyser.sampleRate) * 1000;
+  const offsetMs = (state.delayEstimate / res.sampleRate) * 1000;
   const totalMs = offsetMs + res.delayMs;
   state.totalDelayMs = totalMs;
 
@@ -3665,9 +3722,9 @@ function renderQuality() {
 
   const res = state.results;
   const reset = (message) => {
-    headline.textContent = '—';
-    metrics.textContent = '';
-    verdict.textContent = message;
+    setText(headline, '—');
+    setText(metrics, '');
+    setText(verdict, message);
     if (decayLine) decayLine.hidden = true;
   };
 
@@ -3719,13 +3776,13 @@ function renderQuality() {
     }
   }
 
-  headline.textContent = snr !== null && snr < 20 ? 'Low headroom'
+  setText(headline, snr !== null && snr < 20 ? 'Low headroom'
     : coherence < 0.5 ? 'Poor coherence'
       : jitter > 0.2 ? 'Unsteady delay'
         : repeat !== null && repeat > 1 ? 'Not repeatable'
-          : 'Good';
+          : 'Good');
 
-  verdict.textContent = snr !== null && snr < 20
+  setText(verdict, snr !== null && snr < 20
     ? 'The signal is only ' + snr.toFixed(0) + ' dB above the noise floor. Raise the level or quiet the room before trusting a detail.'
     : coherence < 0.5
       ? 'Mean coherence is ' + (coherence * 100).toFixed(0) + '%. The curve is not repeating between averages — check the routing and keep the mic still.'
@@ -3734,7 +3791,7 @@ function renderQuality() {
         : repeat !== null && repeat > 1
           ? 'The live curve differs from Capture A by ' + repeat.toFixed(1) + ' dB RMS. Something changed since that capture.'
           : 'Solid: ' + (coherence * 100).toFixed(0) + '% coherence, ' + jitter.toFixed(2) + ' ms delay variation' +
-            (snr !== null ? ', ' + snr.toFixed(0) + ' dB above the noise floor' : '') + '.';
+            (snr !== null ? ', ' + snr.toFixed(0) + ' dB above the noise floor' : '') + '.');
 
   const cells = [
     ['SNR', snr !== null ? snr.toFixed(0) + ' dB' : '—'],
@@ -3742,19 +3799,20 @@ function renderQuality() {
     ['Jitter', jitter.toFixed(2) + ' ms'],
     ['vs A', repeat !== null ? repeat.toFixed(1) + ' dB' : '—'],
   ];
-  metrics.innerHTML = cells.map(([key, value]) =>
+  const markup = cells.map(([key, value]) =>
     '<div class="metric"><span class="k">' + key + '</span><span class="v">' + value + '</span></div>').join('');
+  if (metrics.innerHTML !== markup) metrics.innerHTML = markup;
 
   if (decayLine) {
     const decay = state.roomDecay;
     if (decay && (decay.t30 !== null && decay.t30 !== undefined
       || decay.t20 !== null && decay.t20 !== undefined)) {
       decayLine.hidden = false;
-      decayLine.textContent = 'Decay: T30 ' + (decay.t30 != null ? decay.t30.toFixed(2) + ' s' : '—') +
+      setText(decayLine, 'Decay: T30 ' + (decay.t30 != null ? decay.t30.toFixed(2) + ' s' : '—') +
         ' · T20 ' + (decay.t20 != null ? decay.t20.toFixed(2) + ' s' : '—') +
         ' · EDT ' + (decay.edt != null ? decay.edt.toFixed(2) + ' s' : '—') +
         ' · fit ' + ((decay.confidence || 0) * 100).toFixed(0) + '%' +
-        (ripple !== null ? ' · loopback ripple ' + ripple.toFixed(2) + ' dB' : '');
+        (ripple !== null ? ' · loopback ripple ' + ripple.toFixed(2) + ' dB' : ''));
     } else {
       decayLine.hidden = true;
     }
@@ -5539,7 +5597,7 @@ function loop(now) {
   // The noise check silences the source; hold the analysis rather than feed
   // three seconds of silence into the running average.
   if (state.checkingNoise) return;
-  if (now - lastAnalysis < 90) return;
+  if (now - lastAnalysis < ANALYSIS_INTERVAL_MS) return;
   lastAnalysis = now;
   analyse();
 }
@@ -5616,7 +5674,14 @@ async function listDevices() {
 
 /* ---------- delay probe ---------- */
 
-const PROBE_SIZE = 131072;
+// The probe needs a window long enough that a whole-sample delay is
+// unambiguous, but not as long as it used to be: 1.4 s covers the arrival of
+// any loudspeaker, and a quarter of the old 131072 samples is a quarter of the
+// work — and this runs while the audio is playing.
+const PROBE_SIZE = 65536;
+let probeMic = new Float32Array(0);
+let probeRef = new Float32Array(0);
+let probeAnalyser = null;
 
 function probeDelay() {
   if (!engine.running) return null;
@@ -5627,20 +5692,29 @@ function probeDelay() {
   const start = written - 512 - PROBE_SIZE;
   if (start < 0 || start - offset < 0) return null;
 
-  const mic = new Float32Array(PROBE_SIZE);
-  const ref = new Float32Array(PROBE_SIZE);
-
-  engine.readChannel(mic, start, state.micChannel);
-  if (state.refMode === 'loopback') {
-    engine.readChannel(ref, start - offset, state.refChannel);
-  } else {
-    engine.readGeneratedRef(ref, start - offset);
+  // Reused windows and a reused analyser: building either one is itself a few
+  // hundred thousand operations on the thread the microphone needs.
+  if (probeMic.length !== PROBE_SIZE) {
+    probeMic = new Float32Array(PROBE_SIZE);
+    probeRef = new Float32Array(PROBE_SIZE);
   }
 
-  const probe = new Analyser(PROBE_SIZE, engine.sampleRate);
+  engine.readChannel(probeMic, start, state.micChannel);
+  if (state.refMode === 'loopback') {
+    engine.readChannel(probeRef, start - offset, state.refChannel);
+  } else {
+    engine.readGeneratedRef(probeRef, start - offset);
+  }
+
+  if (!probeAnalyser || probeAnalyser.fftSize !== PROBE_SIZE ||
+    probeAnalyser.sampleRate !== engine.sampleRate) {
+    probeAnalyser = new Analyser(PROBE_SIZE, engine.sampleRate);
+  }
+  const probe = probeAnalyser;
+  probe.reset();
   probe.updateRate = 1;
   probe.searchRadius = 0;
-  probe.accumulate(mic, ref);
+  probe.accumulate(probeMic, probeRef);
   const res = probe.results({ compensate: false, smoothing: 0, normalize: false });
 
   const ambiguous = Math.abs(probe.peakIndex) > PROBE_SIZE / 2 - 1024;
@@ -6760,7 +6834,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-11-12';
+const BUILD = '2026-11-12-02';
 let updateCheckedAt = 0;
 
 /**
@@ -6791,7 +6865,13 @@ if (reloadUpdateButton) {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) checkForUpdate(true);
+  if (!document.hidden) {
+    // iOS can throw a backgrounded page's canvas contents away, so the impulse
+    // chart has to be painted again even when its own data has not changed.
+    irDrawKey = '';
+    draw();
+    checkForUpdate(true);
+  }
 });
 
 checkForUpdate(true);

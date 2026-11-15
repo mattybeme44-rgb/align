@@ -301,7 +301,13 @@ export class AudioEngine {
       // Safari on the iPhone can hand a mono microphone to a stereo-input
       // processor and then deliver nothing but silence.
       const inputChannels = this.channels >= 2 ? 2 : 1;
-      this.captureNode = ctx.createScriptProcessor(4096, inputChannels, 1);
+      // 8192 frames is 170 ms of audio at 48 kHz: the callback is where the
+      // browser hands over the input, so a buffer that size absorbs a main
+      // thread stall instead of dropping the samples that were taken during it.
+      this.captureNode = ctx.createScriptProcessor(8192, inputChannels, 1);
+      // The empty second channel of a mono input, allocated once rather than
+      // on every audio callback.
+      let silence = null;
       this.captureNode.onaudioprocess = (event) => {
         const input = event.inputBuffer;
         if (!input || input.numberOfChannels === 0) return;
@@ -310,7 +316,12 @@ export class AudioEngine {
         if (!left || this.micRing !== micRing) return;
         const right = input.numberOfChannels > 1 ? input.getChannelData(1) : null;
         micRing.push(left);
-        refRing.push(right || new Float32Array(left.length));
+        if (right) {
+          refRing.push(right);
+        } else {
+          if (!silence || silence.length !== left.length) silence = new Float32Array(left.length);
+          refRing.push(silence);
+        }
 
         const leftRms = rmsOf(left);
         const rightRms = right ? rmsOf(right) : 0;

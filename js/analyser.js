@@ -4,12 +4,19 @@ import { FFT, hannWindow } from './fft.js';
  * Fractional-octave power smoothing over a linearly spaced spectrum.
  * `octaves` is the bandwidth in octaves (1/6 -> 0.1667).
  */
-export function smoothPower(power, df, octaves) {
+/**
+ * Fractional-octave power smoothing over a linearly spaced spectrum.
+ * `octaves` is the bandwidth in octaves (1/6 -> 0.1667). `out` and `cum` are
+ * optional scratch buffers of bins and bins + 1 entries, so a live measurement
+ * reuses them instead of allocating on every frame.
+ */
+export function smoothPower(power, df, octaves, out, cum) {
   const bins = power.length;
-  const cum = new Float64Array(bins + 1);
-  for (let k = 0; k < bins; k++) cum[k + 1] = cum[k] + power[k];
+  const sums = cum && cum.length === bins + 1 ? cum : new Float64Array(bins + 1);
+  sums[0] = 0;
+  for (let k = 0; k < bins; k++) sums[k + 1] = sums[k] + power[k];
 
-  const out = new Float64Array(bins);
+  const values = out && out.length === bins ? out : new Float64Array(bins);
   const ratio = Math.pow(2, octaves / 2);
 
   for (let k = 0; k < bins; k++) {
@@ -19,12 +26,12 @@ export function smoothPower(power, df, octaves) {
     if (k0 < 1) k0 = 1;
     if (k1 > bins - 1) k1 = bins - 1;
     if (k1 < k0) {
-      out[k] = power[k];
+      values[k] = power[k];
       continue;
     }
-    out[k] = (cum[k1 + 1] - cum[k0]) / (k1 - k0 + 1);
+    values[k] = (sums[k1 + 1] - sums[k0]) / (k1 - k0 + 1);
   }
-  return out;
+  return values;
 }
 
 function median(values) {
@@ -118,6 +125,24 @@ export class Analyser {
     // transform it back for a gated magnitude curve.
     this.irRe = new Float64Array(size);
     this.irIm = new Float64Array(size);
+    // Working buffers for one result set. A live measurement builds a result
+    // every frame, and a fresh couple of hundred kilobytes of Float64 each
+    // time is what used to keep the browser's collector running while the
+    // audio was playing; these are reused instead. Nothing here is handed to a
+    // caller, so they are safe to overwrite.
+    this.scratchPower = new Float64Array(this.bins);
+    this.scratchRawPhase = new Float64Array(this.bins);
+    this.scratchDb = new Float64Array(this.bins);
+    this.scratchUnwrapped = new Float64Array(this.bins);
+    this.scratchSmoothed = new Float64Array(this.bins);
+    this.scratchGatedPower = new Float64Array(this.bins);
+    this.scratchCumulative = new Float64Array(this.bins + 1);
+    this.gateRe = new Float64Array(size);
+    this.gateIm = new Float64Array(size);
+    // The cross spectrum after the delay rotation computeIR() applied, so the
+    // transfer function does not have to repeat that per-bin trigonometry.
+    this.rotRe = new Float64Array(this.bins);
+    this.rotIm = new Float64Array(this.bins);
     this.updateRate = 0.1;
     this.frames = 0;
     this.peakIndex = 0;
@@ -208,6 +233,8 @@ export class Analyser {
     im.fill(0);
     re[0] = this.sxyRe[0];
     im[0] = 0;
+    this.rotRe[0] = this.sxyRe[0];
+    this.rotIm[0] = 0;
 
     for (let k = 1; k < half; k++) {
       let rr = this.sxyRe[k];
@@ -225,9 +252,15 @@ export class Analyser {
       im[k] = ii;
       re[n - k] = rr;
       im[n - k] = -ii;
+      // Kept so results() can read the transfer function straight from the
+      // spectrum this rotation already produced.
+      this.rotRe[k] = rr;
+      this.rotIm[k] = ii;
     }
     re[half] = this.sxyRe[half];
     im[half] = 0;
+    this.rotRe[half] = this.sxyRe[half];
+    this.rotIm[half] = 0;
 
     this.fft.inverse(re, im);
 
@@ -368,8 +401,10 @@ export class Analyser {
     const width = Math.min(n, Math.max(16, Math.round((gate.widthMs / 1000) * this.sampleRate)));
     const taper = Math.min(Math.max(8, Math.floor(width / 10)), Math.floor(width / 2));
 
-    const re = new Float64Array(n);
-    const im = new Float64Array(n);
+    const re = this.gateRe;
+    const im = this.gateIm;
+    re.fill(0);
+    im.fill(0);
 
     for (let offset = 0; offset < width; offset++) {
       let index = (start + offset) % n;
@@ -388,7 +423,7 @@ export class Analyser {
 
     this.fft.forward(re, im);
 
-    const power = new Float64Array(bins);
+    const power = this.scratchGatedPower;
     for (let k = 0; k < bins; k++) {
       power[k] = re[k] * re[k] + im[k] * im[k];
     }
@@ -424,8 +459,12 @@ export class Analyser {
     if (compensate) this.computeIR(this.delayAvg, false);
 
     const shift = compensate ? this.delayAvg : 0;
-    const power = new Float64Array(bins);
-    const rawPhase = new Float64Array(bins);
+    // computeIR() above has already rotated the cross spectrum by exactly this
+    // shift, so the transfer function is read from that rotation instead of
+    // repeating the same per-bin trigonometry a second time.
+    const rotated = compensate && shift !== 0;
+    const power = this.scratchPower;
+    const rawPhase = this.scratchRawPhase;
     const coh = new Float32Array(bins);
 
     for (let k = 0; k < bins; k++) {
@@ -433,18 +472,13 @@ export class Analyser {
       let hr = 0;
       let hi = 0;
       if (sxx > 0) {
-        hr = this.sxyRe[k] / sxx;
-        hi = this.sxyIm[k] / sxx;
-      }
-
-      if (shift !== 0) {
-        const theta = (2 * Math.PI * k * shift) / n;
-        const c = Math.cos(theta);
-        const s = Math.sin(theta);
-        const nr = hr * c - hi * s;
-        const ni = hr * s + hi * c;
-        hr = nr;
-        hi = ni;
+        if (rotated) {
+          hr = this.rotRe[k] / sxx;
+          hi = this.rotIm[k] / sxx;
+        } else {
+          hr = this.sxyRe[k] / sxx;
+          hi = this.sxyIm[k] / sxx;
+        }
       }
 
       power[k] = hr * hr + hi * hi;
@@ -461,9 +495,11 @@ export class Analyser {
       if (windowed) spectrumPower = windowed;
     }
 
-    const smoothed = smoothing > 0 ? smoothPower(spectrumPower, this.df, smoothing) : spectrumPower;
+    const smoothed = smoothing > 0
+      ? smoothPower(spectrumPower, this.df, smoothing, this.scratchSmoothed, this.scratchCumulative)
+      : spectrumPower;
 
-    const db = new Float64Array(bins);
+    const db = this.scratchDb;
     for (let k = 0; k < bins; k++) {
       db[k] = 10 * Math.log10(Math.max(smoothed[k], 1e-24));
     }
@@ -489,7 +525,7 @@ export class Analyser {
     }
 
     // Unwrap the phase across frequency, then convert to degrees.
-    const unwrapped = new Float64Array(bins);
+    const unwrapped = this.scratchUnwrapped;
     const phaseDeg = new Float32Array(bins);
     unwrapped[0] = rawPhase[0];
     for (let k = 1; k < bins; k++) {
