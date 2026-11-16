@@ -6448,6 +6448,68 @@ $('selPhaseSmooth').addEventListener('change', () => {
   if (analyser) analyser.phaseSmoothing = state.phaseSmoothing;
   draw();
 });
+
+/* ---------- the session bar above the graph ---------- */
+
+function updateInstrumentBar() {
+  const start = $('btnInstrStart');
+  if (start) {
+    const running = !!(engine && engine.running) && !state.demo;
+    const label = running ? 'Stop' : 'Start';
+    if (start.textContent !== label) start.textContent = label;
+    start.classList.toggle('on', running);
+  }
+  const phase = $('btnInstrPhase');
+  if (phase) {
+    const label = state.phaseMode === 'unwrapped' ? 'Unwrapped' : 'Phase';
+    if (phase.textContent !== label) phase.textContent = label;
+    phase.classList.toggle('on', state.phaseMode === 'unwrapped');
+  }
+}
+
+$('btnInstrStart').addEventListener('click', () => $('btnPower').click());
+$('btnInstrCapture').addEventListener('click', () => {
+  captureSlot(state.selectedCapture || 'A');
+  renderPhaseDelayBar();
+});
+$('btnInstrOverlay').addEventListener('click', () => $('btnSaved').click());
+$('btnInstrDelay').addEventListener('click', () => {
+  const bar = $('phaseDelayBar');
+  if (bar) bar.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+$('btnInstrPhase').addEventListener('click', () => {
+  state.phaseMode = state.phaseMode === 'unwrapped' ? 'wrapped' : 'unwrapped';
+  if (tfChart) {
+    tfChart.phaseMode = state.phaseMode;
+    tfChart.phaseSpan = state.phaseMode === 'unwrapped' ? 360 : 180;
+  }
+  const select = $('selPhaseMode');
+  if (select) select.value = state.phaseMode;
+  updateInstrumentBar();
+  draw();
+});
+$('btnInstrPolarity').addEventListener('click', () => {
+  const letter = phaseDelaySlot();
+  const trace = letter ? heldSnapshot(letter) : null;
+  if (!trace) {
+    setStatus('capture a trace before comparing polarity', 'err');
+    return;
+  }
+  trace.showInverted = !trace.showInverted;
+  const chk = $('chkInvert' + letter);
+  if (chk) chk.checked = !!trace.showInverted;
+  setStatus('capture ' + letter + (trace.showInverted
+    ? ' drawn inverted — preview only, the measurement is unchanged'
+    : ' drawn with its measured polarity'), 'ok');
+  draw();
+});
+$('btnInstrClear').addEventListener('click', () => {
+  const letter = phaseDelaySlot();
+  if (!letter) return;
+  clearSlot(letter);
+  renderPhaseDelayBar();
+});
+setInterval(updateInstrumentBar, 500);
 renderPhaseDelayBar();
 $('btnExportCsv').addEventListener('click', exportCSV);
 // The stacked reading lives inside the Decay screen now.
@@ -7262,7 +7324,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-15-02';
+const BUILD = '2026-11-15-03';
 let updateCheckedAt = 0;
 
 /**
