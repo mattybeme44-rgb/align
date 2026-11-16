@@ -5,12 +5,12 @@ const F_MAX = 20000;
 const LOG_SPAN = Math.log(F_MAX / F_MIN);
 
 const COL = {
-  bg: '#0b0f0c',
-  border: 'rgba(160,190,150,0.10)',
-  gridMajor: 'rgba(160,190,150,0.14)',
-  gridMinor: 'rgba(160,190,150,0.06)',
-  gridZero: 'rgba(160,190,150,0.28)',
-  text: 'rgba(176,186,164,0.80)',
+  bg: '#12161a',
+  border: 'rgba(255,255,255,0.08)',
+  gridMajor: 'rgba(255,255,255,0.10)',
+  gridMinor: 'rgba(255,255,255,0.05)',
+  gridZero: 'rgba(255,255,255,0.22)',
+  text: 'rgba(214,220,226,0.80)',
   textDim: 'rgba(160,168,176,0.52)',
   trace: '#4ea8de',
   phase: '#6fe0d6',
@@ -78,7 +78,7 @@ function roundRect(ctx, x, y, w, h, r) {
 /** The flat, near-black panel every plot is drawn on. */
 function paintPanel(ctx, w, h) {
   roundRect(ctx, 0.5, 0.5, w - 1, h - 1, 4);
-  ctx.fillStyle = '#0a0d0b';
+  ctx.fillStyle = '#0f1316';
   ctx.fill();
   ctx.strokeStyle = COL.border;
   ctx.lineWidth = 1;

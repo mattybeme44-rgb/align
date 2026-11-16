@@ -1237,6 +1237,12 @@ function startDemo() {
   const button = $('btnDemo');
   if (button) button.textContent = 'Stop demo';
 
+  const power = $('btnPower');
+  if (power) {
+    power.textContent = 'Stop';
+    power.classList.add('on');
+  }
+
   updateInterfaceInfo();
   if (!demoRaf) demoRaf = requestAnimationFrame(demoLoop);
 }
@@ -6184,7 +6190,11 @@ function findDelay() {
 /* ---------- wiring ---------- */
 
 $('btnPower').addEventListener('click', () => {
-  if (state.running && !state.demo) {
+  if (state.demo) {
+    stopDemo();
+    return;
+  }
+  if (state.running) {
     stopAll();
     return;
   }
@@ -7328,7 +7338,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-18-01';
+const BUILD = '2026-11-18-02';
 let updateCheckedAt = 0;
 
 /**
