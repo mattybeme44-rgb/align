@@ -40,6 +40,59 @@ function median(values) {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
+/** The smallest turn that expresses an angle difference, in radians. */
+function turnsOnly(delta) {
+  let value = delta;
+  while (value > Math.PI) value -= 2 * Math.PI;
+  while (value < -Math.PI) value += 2 * Math.PI;
+  return value;
+}
+
+/**
+ * Vector-average a complex spectrum over fractional-octave bands.
+ *
+ * Phase is the argument of a complex quantity, so smoothing it by averaging
+ * wrapped angles folds across ±180° and lands the curve in the wrong place.
+ * Averaging the real and imaginary parts is the arithmetic that survives a wrap,
+ * and it is what a fractional-octave analyser shows. A band whose vector sum
+ * collapses keeps its own bin rather than snapping to a meaningless angle.
+ */
+export function smoothComplex(re, im, df, octaves, outRe, outIm) {
+  const bins = re.length;
+  if (!(bins > 2) || !(df > 0) || !(octaves > 0)) return { re, im };
+
+  const cumRe = new Float64Array(bins + 1);
+  const cumIm = new Float64Array(bins + 1);
+  for (let k = 0; k < bins; k++) {
+    cumRe[k + 1] = cumRe[k] + re[k];
+    cumIm[k + 1] = cumIm[k] + im[k];
+  }
+
+  const resultRe = outRe && outRe.length === bins ? outRe : new Float64Array(bins);
+  const resultIm = outIm && outIm.length === bins ? outIm : new Float64Array(bins);
+  resultRe.set(re);
+  resultIm.set(im);
+
+  const ratio = Math.pow(2, octaves / 2);
+  for (let k = 0; k < bins; k++) {
+    const f = Math.max(k * df, df);
+    let k0 = Math.floor(f / ratio / df);
+    let k1 = Math.ceil((f * ratio) / df);
+    if (k0 < 1) k0 = 1;
+    if (k1 > bins - 1) k1 = bins - 1;
+    if (k1 < k0) continue;
+
+    const count = k1 - k0 + 1;
+    const sumRe = cumRe[k1 + 1] - cumRe[k0];
+    const sumIm = cumIm[k1 + 1] - cumIm[k0];
+    if (Math.hypot(sumRe, sumIm) < 1e-30) continue;
+    resultRe[k] = sumRe / count;
+    resultIm[k] = sumIm / count;
+  }
+
+  return { re: resultRe, im: resultIm };
+}
+
 /**
  * Compare 1/3-octave bands against their local median and suggest corrections.
  * Returns [{ freq, gain }] sorted by absolute gain, biggest first.
@@ -143,6 +196,11 @@ export class Analyser {
     // transfer function does not have to repeat that per-bin trigonometry.
     this.rotRe = new Float64Array(this.bins);
     this.rotIm = new Float64Array(this.bins);
+    // The complex transfer function, and the buffers its phase smoothing writes into.
+    this.scratchHRe = new Float64Array(this.bins);
+    this.scratchHIm = new Float64Array(this.bins);
+    this.scratchHReOut = new Float64Array(this.bins);
+    this.scratchHImOut = new Float64Array(this.bins);
     this.updateRate = 0.1;
     this.frames = 0;
     this.peakIndex = 0;
@@ -439,6 +497,7 @@ export class Analyser {
     const options = opts || {};
     const compensate = options.compensate !== false;
     const smoothing = options.smoothing || 0;
+    const phaseSmoothing = options.phaseSmoothing || this.phaseSmoothing || 0;
     const normalize = options.normalize !== false;
     const gate = options.gate || null;
     const gated = !!(gate && gate.enabled);
@@ -467,6 +526,9 @@ export class Analyser {
     const rawPhase = this.scratchRawPhase;
     const coh = new Float32Array(bins);
 
+    let hRe = this.scratchHRe;
+    let hIm = this.scratchHIm;
+
     for (let k = 0; k < bins; k++) {
       const sxx = this.sxx[k];
       let hr = 0;
@@ -482,12 +544,26 @@ export class Analyser {
       }
 
       power[k] = hr * hr + hi * hi;
-      rawPhase[k] = Math.atan2(hi, hr);
+      hRe[k] = hr;
+      hIm[k] = hi;
 
       const cxy = this.sxyRe[k] * this.sxyRe[k] + this.sxyIm[k] * this.sxyIm[k];
       const denom = sxx * this.syy[k];
       coh[k] = denom > 0 ? Math.min(1, cxy / denom) : 0;
     }
+
+    // Phase-aware smoothing: the transfer function is complex, so the average is
+    // a vector sum of the real and imaginary parts, not an average of wrapped
+    // angles, which would fold across ±180° and move the curve somewhere the
+    // measurement never was.
+    if (phaseSmoothing > 0) {
+      const averaged = smoothComplex(hRe, hIm, this.df, phaseSmoothing,
+        this.scratchHReOut, this.scratchHImOut);
+      hRe = averaged.re;
+      hIm = averaged.im;
+    }
+
+    for (let k = 0; k < bins; k++) rawPhase[k] = Math.atan2(hIm[k], hRe[k]);
 
     let spectrumPower = power;
     if (gated) {
@@ -524,18 +600,23 @@ export class Analyser {
       magDb[k] = Math.max(-140, Math.min(40, db[k]));
     }
 
-    // Unwrap the phase across frequency, then convert to degrees.
+    // Unwrap outward from 1 kHz rather than up from DC. The lowest bins of a
+    // real room carry almost nothing, so one turn of noise down there used to
+    // shift every bin above it by 360° from one frame to the next, and the
+    // curve wandered while nothing had actually moved. Starting at the
+    // reference and walking out keeps that noise where it belongs.
     const unwrapped = this.scratchUnwrapped;
     const phaseDeg = new Float32Array(bins);
-    unwrapped[0] = rawPhase[0];
-    for (let k = 1; k < bins; k++) {
-      let delta = rawPhase[k] - rawPhase[k - 1];
-      while (delta > Math.PI) delta -= 2 * Math.PI;
-      while (delta < -Math.PI) delta += 2 * Math.PI;
-      unwrapped[k] = unwrapped[k - 1] + delta;
-    }
-    for (let k = 0; k < bins; k++) {
-      phaseDeg[k] = (unwrapped[k] * 180) / Math.PI;
+    if (bins > 0) {
+      const centre = Math.min(Math.max(1, Math.round(1000 / this.df)), bins - 1);
+      unwrapped[centre] = rawPhase[centre];
+      for (let k = centre + 1; k < bins; k++) {
+        unwrapped[k] = unwrapped[k - 1] + turnsOnly(rawPhase[k] - rawPhase[k - 1]);
+      }
+      for (let k = centre - 1; k >= 0; k--) {
+        unwrapped[k] = unwrapped[k + 1] - turnsOnly(rawPhase[k + 1] - rawPhase[k]);
+      }
+      for (let k = 0; k < bins; k++) phaseDeg[k] = (unwrapped[k] * 180) / Math.PI;
     }
 
     // Impulse response in dB relative to its own peak.

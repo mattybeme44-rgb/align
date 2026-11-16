@@ -27,6 +27,8 @@ const COL = {
   savedColors: ['#b4a7f7', '#fbb679', '#72c7f2', '#eea4b3', '#a8df9b', '#f7d47b', '#86d5ca', '#d8a691'],
   target: 'rgba(214,222,206,0.45)',
   cursor: 'rgba(255,140,120,0.55)',
+  // The predicted sum of two captures: a simulation, drawn dashed.
+  sumTrace: '#ffb15d',
   // Laid under every trace so two overlays crossing stay two lines.
   halo: 'rgba(9,13,10,0.92)',
 };
@@ -228,8 +230,9 @@ export class TransferChart {
   }
 
   phaseToY(deg, pane) {
-    const v = Math.min(180, Math.max(-180, deg));
-    return pane.y + (1 - (v + 180) / 360) * pane.h;
+    const span = Math.max(45, Number(this.phaseSpan) || 180);
+    const v = Math.min(span, Math.max(-span, deg));
+    return pane.y + (1 - (v + span) / (2 * span)) * pane.h;
   }
 
   cohToY(value, pane) {
@@ -336,6 +339,18 @@ export class TransferChart {
     ctx.clearRect(0, 0, this.w, this.h);
     if (this.w < 60 || this.h < 60) return;
 
+    this.phaseMode = options.phaseMode || this.phaseMode || 'wrapped';
+    this.phaseSpan = Number(options.phaseSpan) || this.phaseSpan || 180;
+    if (Number.isFinite(options.coherenceThreshold)) {
+      this.coherenceThreshold = options.coherenceThreshold;
+    } else if (!Number.isFinite(this.coherenceThreshold)) {
+      this.coherenceThreshold = 0.35;
+    }
+    const hidden = options.hiddenCaptures || this.hiddenCaptures || [];
+    const hiddenLabel = (label) => hidden.indexOf(label) >= 0;
+    const sumCurve = options.sumCurve !== undefined ? options.sumCurve : this.sumCurve;
+    this.hiddenCaptures = hidden;
+
     this.pad.top = Math.max(40, 48 + (options.savedCurves || []).length * 12);
     paintPanel(ctx, this.w, this.h);
     this.updateRange(res, options);
@@ -364,41 +379,46 @@ export class TransferChart {
     // Recalled speakers' phase goes on before the live traces, so the curve
     // that is moving stays the one on top.
     if (panes.phase) {
-      const anchor = res ? this.phaseAnchor(res) : 0;
       (options.savedCurves || []).forEach((item, index) => {
-        this.drawSavedPhase(panes.phase, item, anchor, COL.savedColors[index % COL.savedColors.length]);
+        this.drawSavedPhase(panes.phase, item, this.savedPhaseAnchor(item),
+          COL.savedColors[index % COL.savedColors.length]);
       });
     }
 
     if (res) {
       for (const extra of options.extraSnapshots || []) {
+        if (hiddenLabel(extra.label)) continue;
         this.drawGhost(panes.mag, extra.trace, extra.color);
       }
-      if (options.secondSnapshot) this.drawGhost(panes.mag, options.secondSnapshot, COL.ghostB);
-      if (options.snapshot) this.drawGhost(panes.mag, options.snapshot, COL.ghost);
+      if (options.secondSnapshot && !hiddenLabel('B')) {
+        this.drawGhost(panes.mag, options.secondSnapshot, COL.ghostB);
+      }
+      if (options.snapshot && !hiddenLabel('A')) {
+        this.drawGhost(panes.mag, options.snapshot, COL.ghost);
+      }
       this.drawMagnitude(panes.mag, res, false);
+      if (sumCurve) this.drawSumCurve(panes.mag, sumCurve);
       if (panes.coh) this.drawCoherence(panes.coh, res);
       if (panes.phase) {
-        const anchor = this.phaseAnchor(res);
+        // Every trace is read against its own 1 kHz reference. Sharing the live
+        // trace's reference made the captures ride up and down with the live
+        // curve's noise, which looked like movement that had not happened.
         for (const extra of options.extraSnapshots || []) {
-          if (!extra.showPhase) continue;
+          if (!extra.showPhase || hiddenLabel(extra.label)) continue;
           this.drawPhase(panes.phase, extra.trace, {
-            anchor,
             held: true,
             color: extra.color,
           });
         }
-        if (options.showCaptureAPhase && options.snapshot) {
+        if (options.showCaptureAPhase && options.snapshot && !hiddenLabel('A')) {
           this.drawPhase(panes.phase, options.snapshot, {
-            anchor,
             held: true,
             color: COL.ghost,
             inverted: options.snapshot.showInverted,
           });
         }
-        if (options.showCaptureBPhase && options.secondSnapshot) {
+        if (options.showCaptureBPhase && options.secondSnapshot && !hiddenLabel('B')) {
           this.drawPhase(panes.phase, options.secondSnapshot, {
-            anchor,
             held: true,
             color: COL.ghostB,
             inverted: options.secondSnapshot.showInverted,
@@ -499,12 +519,14 @@ export class TransferChart {
 
   drawPhaseAxis(pane) {
     const ctx = this.ctx;
+    const span = Math.max(45, Number(this.phaseSpan) || 180);
+    const step = span <= 180 ? 90 : span <= 360 ? 180 : 360;
     ctx.save();
     ctx.font = FONT_AXIS;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
 
-    for (let deg = 180; deg >= -180; deg -= 90) {
+    for (let deg = span; deg >= -span; deg -= step) {
       const y = this.phaseToY(deg, pane);
       rule(ctx, pane.x, y, pane.x + pane.w, y, deg === 0 ? COL.gridZero : COL.gridMinor);
       ctx.fillStyle = COL.textDim;
@@ -515,7 +537,7 @@ export class TransferChart {
     ctx.fillStyle = COL.textDim;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
-    ctx.fillText('°', pane.x + pane.w - 3, pane.y + 4);
+    ctx.fillText(this.phaseMode === 'unwrapped' ? '° unwrapped' : '°', pane.x + pane.w - 3, pane.y + 4);
     ctx.restore();
   }
 
@@ -566,6 +588,8 @@ export class TransferChart {
       items.push(['Phase B' + (options.secondSnapshot.showInverted ? ' inv' : ''), COL.ghostB, false]);
     }
     if (options.peakHold) items.push(['Peak', COL.peak, false]);
+    const sumShown = options.sumCurve !== undefined ? options.sumCurve : this.sumCurve;
+    if (sumShown) items.push(['Predicted A+B', COL.sumTrace, true]);
     if (options.average) items.push(['Avg ' + (options.averageCount || 0), COL.average, true]);
     if (options.snapshot) {
       items.push([(short ? 'A' : 'Capture A') + (options.snapshot.showInverted ? ' inv' : ''), COL.ghost, false]);
@@ -726,6 +750,27 @@ export class TransferChart {
     ctx.restore();
   }
 
+  /** The predicted sum of two captures: a dashed simulation over the measurement. */
+  drawSumCurve(pane, points) {
+    if (!Array.isArray(points) || points.length < 2) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    let open = false;
+    for (const point of points) {
+      if (!Number.isFinite(point.db) || point.freq < this.range.min || point.freq > this.range.max) {
+        open = false;
+        continue;
+      }
+      const x = this.xOf(point.freq);
+      const y = this.dbToY(point.db, pane);
+      if (open) ctx.lineTo(x, y);
+      else { ctx.moveTo(x, y); open = true; }
+    }
+    strokeSeparated(ctx, COL.sumTrace, 1.6, [6, 3], true);
+    ctx.restore();
+  }
+
   /** A saved measurement's curve, log-spaced from 20 Hz to 20 kHz. */
   drawSavedCurve(pane, curve, color = COL.overlay) {
     if (!curve || curve.length < 2) return;
@@ -774,19 +819,22 @@ export class TransferChart {
       const t = position - low;
       const coh = item.phaseCoherence[low] * (1 - t) + item.phaseCoherence[high] * t;
       const raw = item.phase[low] * (1 - t) + item.phase[high] * t;
-      const angle = wrapDegrees(raw - anchor - 360 * freq * (item.previewDelayMs || 0) / 1000);
+      const unwrapped = this.phaseMode === 'unwrapped';
+      const turned = raw - anchor - 360 * freq * (item.previewDelayMs || 0) / 1000;
+      const angle = unwrapped ? turned : wrapDegrees(turned);
       if (!Number.isFinite(angle)) {
         strong.push(null);
         faint.push(null);
         previous = null;
         continue;
       }
-      if (previous !== null && Math.abs(angle - previous) > 180) {
+      if (previous !== null && Math.abs(angle - previous) > (unwrapped ? 90 : 180)) {
         strong.push(null);
         faint.push(null);
       }
       const point = { x: pane.x + i, y: this.phaseToY(angle, pane) };
-      (coh >= 0.35 ? strong : faint).push(point);
+      const threshold = Number.isFinite(this.coherenceThreshold) ? this.coherenceThreshold : 0.35;
+      (coh >= threshold ? strong : faint).push(point);
       previous = angle;
     }
 
@@ -858,13 +906,53 @@ export class TransferChart {
     return n ? sum / n : 0;
   }
 
-  relativePhase(res, sharedAnchor, extraDeg) {
+  /** A stored curve's own 1 kHz reference, found on its own log axis. */
+  savedPhaseAnchor(item) {
+    const values = item && item.phase;
+    if (!Array.isArray(values) || values.length < 3) return 0;
+    const fraction = Math.log(1000 / F_MIN) / LOG_SPAN;
+    const centre = Math.min(Math.max(1, Math.round(fraction * (values.length - 1))),
+      values.length - 2);
+    let sum = 0;
+    let n = 0;
+    for (let i = Math.max(0, centre - 4); i <= Math.min(values.length - 1, centre + 4); i++) {
+      if (Number.isFinite(values[i])) { sum += values[i]; n++; }
+    }
+    return n ? sum / n : 0;
+  }
+
+  relativePhase(res, sharedAnchor, extraDeg, options) {
     const df = res.sampleRate / res.fftSize;
     const out = new Float32Array(res.bins);
     const anchor = sharedAnchor === undefined ? this.phaseAnchor(res) : sharedAnchor;
     const extra = Number(extraDeg) || 0;
+    // The live trace's own delay preview is put on when it is drawn, not while
+    // it is eased, so a delay change turns the whole trace at once.
+    const liveDelay = options && options.base ? 0 : Number(res.livePhaseDelayMs) || 0;
     for (let k = 0; k < res.bins; k++) {
-      out[k] = res.phaseDeg[k] - anchor - 360 * k * df * (res.previewDelayMs || 0) / 1000 + extra;
+      out[k] = res.phaseDeg[k] - anchor -
+        360 * k * df * ((res.previewDelayMs || 0) + liveDelay) / 1000 + extra;
+    }
+    return out;
+  }
+
+  /**
+   * The eased live phase, turned by the delay the arrival has moved since the
+   * phase was zeroed. The turn is applied here rather than eased in, so a delay
+   * change reads as the whole trace rotating at once while the measurement's own
+   * noise still settles.
+   */
+  livePhaseValues(res) {
+    const base = this.phaseValues && this.phaseValues.length === res.bins
+      ? this.phaseValues
+      : this.relativePhase(res, undefined, 0, { base: true });
+    const delayMs = Number(res.livePhaseDelayMs) || 0;
+    if (!delayMs) return base;
+
+    const df = res.sampleRate / res.fftSize;
+    const out = new Float32Array(base.length);
+    for (let k = 0; k < base.length; k++) {
+      out[k] = base[k] - 360 * k * df * delayMs / 1000;
     }
     return out;
   }
@@ -878,7 +966,7 @@ export class TransferChart {
     }
     if (this.phaseStamp === res.frames) return;
 
-    const relative = this.relativePhase(res);
+    const relative = this.relativePhase(res, undefined, 0, { base: true });
     if (!this.phaseValues || this.phaseValues.length !== relative.length) {
       this.phaseValues = relative;
     } else {
@@ -902,7 +990,7 @@ export class TransferChart {
     const bins = res.bins;
     const values = opts.held
       ? this.relativePhase(res, opts.anchor, opts.inverted ? 180 : 0)
-      : this.phaseValues && this.phaseValues.length === bins ? this.phaseValues : this.relativePhase(res);
+      : this.livePhaseValues(res);
     const columns = this.phaseColumns(pane, res, values);
     const smoothed = this.smoothPhaseColumns(columns);
 
@@ -912,6 +1000,7 @@ export class TransferChart {
     // break where the phase crosses ±180°.
     const strong = [];
     const faint = [];
+    const unwrapped = this.phaseMode === 'unwrapped';
     let previous = null;
     for (let i = 0; i < columns.count; i++) {
       const raw = smoothed[i];
@@ -921,8 +1010,8 @@ export class TransferChart {
         previous = null;
         continue;
       }
-      const value = wrapDegrees(raw);
-      if (previous !== null && Math.abs(value - previous) > 180) {
+      const value = unwrapped ? raw : wrapDegrees(raw);
+      if (previous !== null && Math.abs(value - previous) > (unwrapped ? 90 : 180)) {
         strong.push(null);
         faint.push(null);
       }
@@ -1007,7 +1096,8 @@ export class TransferChart {
       if (n === 0 || weight < 1e-9) continue;
 
       angles[i] = weighted / weight;
-      readable[i] = coherence / n >= 0.35 ? 1 : 0;
+      const threshold = Number.isFinite(this.coherenceThreshold) ? this.coherenceThreshold : 0.35;
+      readable[i] = coherence / n >= threshold ? 1 : 0;
     }
 
     return { angles, readable, count };

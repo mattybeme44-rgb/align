@@ -203,21 +203,53 @@
       <label class="toggle-pill coh"><input type="checkbox" id="chkCoh" checked /><i></i>Coherence</label>
       <span class="trace-note" id="traceSummary">no captures yet</span>
     </div>
-    <div class="phase-delay" id="phaseDelayBar" hidden>
+    <div class="phase-delay" id="phaseDelayBar">
       <div class="row">
-        <span class="pd-label">Phase delay</span>
+        <span class="pd-label">Captures</span>
         <div class="pd-chips" id="phaseDelayChips"></div>
-        <span class="pd-value" id="phaseDelayValue">+0.00 ms</span>
+      </div>
+      <div class="row pd-actions" id="captureActions" hidden>
+        <button id="btnCapShow" class="link-btn" type="button">Hide trace</button>
+        <button id="btnCapReplace" class="link-btn" type="button">Replace</button>
+        <button id="btnCapClear" class="link-btn" type="button">Clear</button>
       </div>
       <div class="row">
+        <span class="pd-label">Phase delay</span>
+        <button id="phaseDelayValue" class="pd-value" type="button" title="Enter a delay">+0.00 ms</button>
+        <button id="btnPdDown01" class="link-btn" type="button" aria-label="Subtract 0.01 milliseconds">−0.01</button>
         <button id="btnPdDown" class="btn" type="button" aria-label="Subtract 0.1 milliseconds">−0.1</button>
-        <input type="range" id="phaseDelaySlider" min="-20" max="20" step="0.05" value="0" aria-label="Preview delay of the selected capture" />
+        <input type="range" id="phaseDelaySlider" min="-20" max="20" step="0.01" value="0" aria-label="Preview delay of the selected capture" />
         <button id="btnPdUp" class="btn" type="button" aria-label="Add 0.1 milliseconds">+0.1</button>
+        <button id="btnPdUp01" class="link-btn" type="button" aria-label="Add 0.01 milliseconds">+0.01</button>
         <button id="btnPdReset" class="link-btn" type="button">Reset</button>
       </div>
       <div class="row pd-reading">
         <span class="source-hint" id="phaseDelayReading">tap the plot to read the phase there</span>
         <button id="btnPdMatch" class="btn" type="button" hidden>Match</button>
+      </div>
+      <div class="row pd-display">
+        <label class="chk"><input type="checkbox" id="chkSumTrace" /> Predicted sum A+B</label>
+        <label for="selPhaseMode">Phase</label>
+        <select id="selPhaseMode">
+          <option value="wrapped" selected>Wrapped</option>
+          <option value="unwrapped">Unwrapped</option>
+        </select>
+        <label for="selCohGate">Coherence ≥</label>
+        <select id="selCohGate">
+          <option value="0.35" selected>35%</option>
+          <option value="0.5">50%</option>
+          <option value="0.7">70%</option>
+          <option value="0.8">80%</option>
+          <option value="0.9">90%</option>
+        </select>
+        <label for="selPhaseSmooth">Phase smooth</label>
+        <select id="selPhaseSmooth">
+          <option value="0">None</option>
+          <option value="0.020833">1/48</option>
+          <option value="0.041667" selected>1/24</option>
+          <option value="0.083333">1/12</option>
+          <option value="0.166667">1/6</option>
+        </select>
       </div>
     </div>
     <div class="row">
@@ -411,6 +443,17 @@
       <label class="chk"><input type="checkbox" id="chkNormalize" checked /> Normalize</label>
       <label class="chk"><input type="checkbox" id="chkCompensate" checked /> Compensate delay</label>
     </div>
+    <p class="source-hint" id="phaseZeroNote">
+      Phase is read against the arrival it was zeroed at — adding delay turns the trace.
+    </p>
+    <div class="row btns">
+      <button id="btnZeroPhase" class="btn" type="button">Zero phase</button>
+    </div>
+    <p class="source-hint">
+      The phase is read against the arrival it was zeroed at, not against whatever the
+      measurement is doing now, so a delay you add in your processor or below turns the trace
+      and can be watched into alignment. Zero phase calls the present arrival zero.
+    </p>
     <div class="row">
       <label for="numCalibration">Level calibration <span class="hint">dB</span></label>
       <input type="number" id="numCalibration" value="0" step="0.1" />

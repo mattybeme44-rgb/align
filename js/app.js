@@ -156,6 +156,12 @@ const state = {
   avgSpeed: 45,
   smoothing: 1 / 6,
   phaseEase: 0.004,
+  phaseMode: 'wrapped',
+  coherenceThreshold: 0.35,
+  phaseSmoothing: 0.041667,
+  hiddenCaptures: [],
+  showSumTrace: false,
+  selectedCapture: 'A',
   normalize: true,
   compensate: true,
   delayEstimate: 0,
@@ -163,6 +169,7 @@ const state = {
   delayProbedAt: 0,
   delayAuto: true,
   totalDelayMs: 0,
+  phaseZeroMs: null,
   snapshot: null,
   snapshotB: null,
   snapshotC: null,
@@ -1250,6 +1257,8 @@ function stopDemo() {
   state.results = null;
   state.rawResults = null;
   state.totalDelayMs = 0;
+  state.phaseZeroMs = null;
+  updatePhaseZeroNote();
   state.delayLockedAt = 0;
   state.delayProbedAt = 0;
   state.waterfall = null;
@@ -1463,6 +1472,8 @@ function overlaidCurves() {
 }
 
 function resetTraces() {
+  state.phaseZeroMs = null;
+  updatePhaseZeroNote();
   state.snapshot = null;
   state.snapshotB = null;
   state.snapshotC = null;
@@ -1557,7 +1568,7 @@ const PD_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
 function phaseDelaySlot() {
   const held = PD_LETTERS.filter((letter) => heldSnapshot(letter));
   if (!held.length) return null;
-  return held.includes(state.phaseDelaySlot) ? state.phaseDelaySlot : held[0];
+  return held.includes(state.selectedCapture) ? state.selectedCapture : held[0];
 }
 
 function currentPhaseDelayTrace() {
@@ -1615,6 +1626,7 @@ function setPhaseDelay(ms) {
   const slider = $('phaseDelaySlider');
   if (slider) slider.value = String(trace.previewDelayMs);
   updatePhaseDelayReadout();
+  updateSumTrace();
   updateCursorReadout();
   updateTraceSummary();
   draw();
@@ -1623,39 +1635,56 @@ function setPhaseDelay(ms) {
 function renderPhaseDelayBar() {
   const bar = $('phaseDelayBar');
   if (!bar) return;
-
-  const letter = phaseDelaySlot();
-  if (!letter) {
-    bar.hidden = true;
-    return;
-  }
   bar.hidden = false;
-  state.phaseDelaySlot = letter;
+  if (!Array.isArray(state.hiddenCaptures)) state.hiddenCaptures = [];
 
+  const selected = phaseDelaySlot();
   const chips = $('phaseDelayChips');
   if (chips) {
     chips.replaceChildren();
-    for (const item of PD_LETTERS.filter((slot) => heldSnapshot(slot))) {
+    for (const item of PD_LETTERS) {
+      const trace = heldSnapshot(item);
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'pd-chip';
-      chip.textContent = item;
-      chip.setAttribute('aria-pressed', item === letter ? 'true' : 'false');
-      chip.setAttribute('aria-label', 'Preview the delay of capture ' + item);
+      chip.textContent = trace ? item : '+';
+      chip.setAttribute('aria-pressed', trace && item === selected ? 'true' : 'false');
+      chip.setAttribute('aria-label', trace ? 'Select capture ' + item : 'Capture into slot ' + item);
+      if (!trace) chip.classList.add('empty');
+      if (trace && state.hiddenCaptures.indexOf(item) >= 0) chip.classList.add('muted');
       chip.addEventListener('click', () => {
-        state.phaseDelaySlot = item;
-        renderPhaseDelayBar();
-        enableCapturePhase(item);
-        draw();
+        if (!trace) {
+          captureSlot(item);
+        } else {
+          state.selectedCapture = item;
+          enableCapturePhase(item);
+          renderPhaseDelayBar();
+          draw();
+        }
       });
       chips.appendChild(chip);
     }
   }
 
+  const actions = $('captureActions');
+  if (actions) {
+    actions.hidden = !selected;
+    if (selected) {
+      const hideButton = $('btnCapShow');
+      if (hideButton) {
+        hideButton.textContent = state.hiddenCaptures.indexOf(selected) >= 0 ? 'Show trace' : 'Hide trace';
+      }
+    }
+  }
+
   const slider = $('phaseDelaySlider');
-  const trace = heldSnapshot(letter);
-  if (slider && trace) slider.value = String(Number(trace.previewDelayMs) || 0);
+  const trace = selected ? heldSnapshot(selected) : null;
+  if (slider) {
+    slider.disabled = !trace;
+    if (trace) slider.value = String(Number(trace.previewDelayMs) || 0);
+  }
   updatePhaseDelayReadout();
+  updateSumTrace();
 }
 
 function updatePhaseDelayReadout() {
@@ -1664,7 +1693,13 @@ function updatePhaseDelayReadout() {
   const value = $('phaseDelayValue');
   const reading = $('phaseDelayReading');
   const match = $('btnPdMatch');
-  if (!trace || !value || !reading || !match) return;
+  if (!value || !reading || !match) return;
+  if (!trace) {
+    setText(value, '—');
+    setText(reading, 'tap a capture slot to select it');
+    match.hidden = true;
+    return;
+  }
 
   const delay = Number(trace.previewDelayMs) || 0;
   setText(value, (delay >= 0 ? '+' : '') + delay.toFixed(2) + ' ms');
@@ -1691,10 +1726,13 @@ function updatePhaseDelayReadout() {
     return;
   }
 
-  const difference = wrapDegrees(livePhase - previewedHeldPhase(trace, heldPhase, frequency));
+  // The chart turns the live trace by its own delay preview; these figures have
+  // to turn with it, or they describe a line that is not on screen.
+  const liveTurn = 360 * frequency * (Number(res.livePhaseDelayMs) || 0) / 1000;
+  const difference = wrapDegrees(livePhase - liveTurn - previewedHeldPhase(trace, heldPhase, frequency));
   setText(reading, 'Δ ' + (difference >= 0 ? '+' : '') + difference.toFixed(0) + '° vs live at ' + label);
 
-  const target = matchPreviewDelay(trace, livePhase, heldPhase, frequency);
+  const target = matchPreviewDelay(trace, livePhase - liveTurn, heldPhase, frequency);
   if (target === null) {
     match.hidden = true;
     return;
@@ -1702,6 +1740,67 @@ function updatePhaseDelayReadout() {
   match.hidden = false;
   match.dataset.delay = String(target);
   match.textContent = 'Match ' + (target >= 0 ? '+' : '') + target.toFixed(2) + ' ms';
+}
+
+/**
+ * The predicted sum of Capture A and Capture B with each capture's own preview
+ * delay applied, on a log axis from 20 Hz to the lower Nyquist. Complex
+ * addition, so relative level and phase are both kept. A simulation from the
+ * stored captures, never a measured result.
+ */
+function combinedCurve(a, b) {
+  if (!a || !b || !(a.bins > 2) || !(b.bins > 2)) return null;
+  const count = 240;
+  const highest = Math.min(20000, Math.min(a.sampleRate, b.sampleRate) / 2);
+  if (!(highest > 40)) return null;
+  const logLow = Math.log10(20);
+  const logHigh = Math.log10(highest);
+
+  const sample = (trace, f) => {
+    const df = trace.sampleRate / trace.fftSize;
+    if (!(df > 0)) return { re: 0, im: 0 };
+    const position = Math.min(trace.bins - 1, Math.max(0, f / df));
+    const low = Math.floor(position);
+    const high = Math.min(trace.bins - 1, low + 1);
+    const fraction = position - low;
+
+    const lowDb = Number(trace.magDb[low]);
+    const highDb = Number(trace.magDb[high]);
+    const db = Number.isFinite(lowDb) && Number.isFinite(highDb)
+      ? lowDb * (1 - fraction) + highDb * fraction
+      : (Number.isFinite(lowDb) ? lowDb : -120);
+
+    const lowPhase = Number(trace.phaseDeg[low]);
+    const highPhase = Number(trace.phaseDeg[high]);
+    const phase = Number.isFinite(lowPhase) && Number.isFinite(highPhase)
+      ? lowPhase * (1 - fraction) + highPhase * fraction
+      : (Number.isFinite(lowPhase) ? lowPhase : 0);
+
+    const magnitude = Math.pow(10, db / 20);
+    const radians = ((phase - 360 * f * (trace.previewDelayMs || 0) / 1000) * Math.PI) / 180;
+    return { re: magnitude * Math.cos(radians), im: magnitude * Math.sin(radians) };
+  };
+
+  const points = [];
+  for (let i = 0; i < count; i++) {
+    const f = Math.pow(10, logLow + (logHigh - logLow) * (i / (count - 1)));
+    const A = sample(a, f);
+    const B = sample(b, f);
+    const db = 20 * Math.log10(Math.max(Math.hypot(A.re + B.re, A.im + B.im), 1e-9));
+    if (!Number.isFinite(db)) continue;
+    points.push({ freq: f, db });
+  }
+  return points.length > 1 ? points : null;
+}
+
+/** Hand the predicted sum to the chart, or take it away. */
+function updateSumTrace() {
+  if (!tfChart) return;
+  if (!state.showSumTrace) {
+    tfChart.sumCurve = null;
+    return;
+  }
+  tfChart.sumCurve = combinedCurve(state.snapshot, state.snapshotB);
 }
 
 function applyPhaseDelayMatch() {
@@ -1961,6 +2060,10 @@ function mergePeakHold(held, res) {
 function captureSlot(label) {
   const res = state.results;
   if (!res) return;
+  if (heldSnapshot(label)) {
+    setStatus('capture ' + label + ' already holds a measurement — use Replace or Clear', 'err');
+    return;
+  }
   const slot = { A: 'snapshot', B: 'snapshotB', C: 'snapshotC', D: 'snapshotD', E: 'snapshotE', F: 'snapshotF' }[label];
   state[slot] = Object.assign(captureTrace(res), {
     delayMs: state.totalDelayMs, previewDelayMs: 0, showInverted: false,
@@ -3805,7 +3908,58 @@ function levelReadout() {
   return value.toFixed(1) + ' ' + unit;
 }
 
+/**
+ * Zero the live phase once the arrival is steady, then leave the reference
+ * alone so a delay change turns the trace instead of being compensated away on
+ * the next frame.
+ */
+function applyPhaseZero(res) {
+  if (!res) return;
+
+  if (state.phaseZeroMs === null && state.compensate &&
+      res.frames >= 6 && meanCoherence(res) > 0.45 &&
+      Math.abs(res.delayJitterSamples) / Math.max(res.sampleRate, 1) * 1000 < 0.2) {
+    state.phaseZeroMs = res.delayMs;
+    updatePhaseZeroNote();
+  }
+
+  const zero = state.phaseZeroMs;
+  res.livePhaseDelayMs = state.compensate && Number.isFinite(zero)
+    ? Math.max(-20, Math.min(20, res.delayMs - zero))
+    : 0;
+}
+
+function updatePhaseZeroNote() {
+  const note = $('phaseZeroNote');
+  if (!note) return;
+
+  if (!state.compensate) {
+    note.textContent = 'Compensation off: the raw phase, delay included.';
+  } else if (state.phaseZeroMs === null) {
+    note.textContent = 'Waiting for a steady reading before the phase is zeroed.';
+  } else {
+    note.textContent = 'Phase is read against ' + state.phaseZeroMs.toFixed(2) +
+      ' ms — adding delay turns the trace.';
+  }
+}
+
+/** Call the arrival that is here now zero. */
+function zeroPhase() {
+  const res = state.results;
+  if (!res) {
+    setStatus('run the measurement before zeroing the phase', 'err');
+    return;
+  }
+  state.phaseZeroMs = res.delayMs;
+  applyPhaseZero(res);
+  updatePhaseZeroNote();
+  draw();
+  setStatus('phase zeroed at ' + res.delayMs.toFixed(2) +
+    ' ms — adding delay now turns the trace', 'ok');
+}
+
 function updateReadouts(res) {
+  applyPhaseZero(res);
   const offsetMs = (state.delayEstimate / res.sampleRate) * 1000;
   const totalMs = offsetMs + res.delayMs;
   state.totalDelayMs = totalMs;
@@ -4008,7 +4162,7 @@ function updateCursorReadout() {
     ' · ' +
     res.magDb[k].toFixed(1) +
     ' dB · ' +
-    wrapDegrees(res.phaseDeg[k]).toFixed(0) +
+    drawnPhase(res, k).toFixed(0) +
     '° · coh ' +
     (res.coh[k] * 100).toFixed(0) +
     '%';
@@ -4048,6 +4202,27 @@ function coherentPhaseAt(trace, frequency) {
   return trace.phaseDeg[lower] * (1 - fraction) + trace.phaseDeg[upper] * fraction;
 }
 
+/**
+ * The phase the chart actually draws at a bin: read against its own 1 kHz
+ * value and turned by the live delay preview, so a readout agrees with the
+ * line on screen.
+ */
+function drawnPhase(res, k) {
+  const df = res.sampleRate / res.fftSize;
+  if (!(df > 0) || !(res.bins > 2) || k < 0 || k >= res.bins) return 0;
+
+  const centre = Math.min(Math.max(1, Math.round(1000 / df)), res.bins - 1);
+  let sum = 0;
+  let n = 0;
+  for (let i = Math.max(0, centre - 4); i <= Math.min(res.bins - 1, centre + 4); i++) {
+    if (Number.isFinite(res.phaseDeg[i])) { sum += res.phaseDeg[i]; n++; }
+  }
+  const anchor = n ? sum / n : 0;
+  const frequency = k * df;
+  return wrapDegrees(res.phaseDeg[k] - anchor -
+    360 * frequency * (Number(res.livePhaseDelayMs) || 0) / 1000);
+}
+
 /** The live phase minus a held capture's, after that capture's preview delay. */
 function phaseDifference(live, held, frequency) {
   const livePhase = coherentPhaseAt(live, frequency);
@@ -4056,7 +4231,10 @@ function phaseDifference(live, held, frequency) {
 
   const previewed = heldPhase - 360 * frequency * (held.previewDelayMs || 0) / 1000 +
     (held.showInverted ? 180 : 0);
-  const difference = wrapDegrees(livePhase - previewed);
+  // The chart turns the live trace by its own delay preview; the figure has to
+  // turn with it or it describes a line that is not on screen.
+  const liveTurn = 360 * frequency * (Number(live.livePhaseDelayMs) || 0) / 1000;
+  const difference = wrapDegrees(livePhase - liveTurn - previewed);
   return (difference >= 0 ? '+' : '') + difference.toFixed(0) + '°';
 }
 
@@ -6030,7 +6208,12 @@ $('chkNormalize').addEventListener('change', (event) => {
 
 $('chkCompensate').addEventListener('change', (event) => {
   state.compensate = event.target.checked;
+  updatePhaseZeroNote();
+  draw();
 });
+
+const zeroPhaseButton = $('btnZeroPhase');
+if (zeroPhaseButton) zeroPhaseButton.addEventListener('click', zeroPhase);
 
 $('chkSpectrograph').addEventListener('change', (event) => {
   setSpectrographShown(event.target.checked);
@@ -6200,6 +6383,71 @@ $('btnPdDown').addEventListener('click', () => setPhaseDelay((currentCapturePrev
 $('btnPdUp').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) + 0.1));
 $('btnPdReset').addEventListener('click', () => setPhaseDelay(0));
 $('btnPdMatch').addEventListener('click', applyPhaseDelayMatch);
+$('btnPdDown01').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) - 0.01));
+$('btnPdUp01').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) + 0.01));
+$('phaseDelayValue').addEventListener('click', () => {
+  const letter = phaseDelaySlot();
+  const trace = letter ? heldSnapshot(letter) : null;
+  if (!trace) return;
+  const entered = window.prompt('Preview delay in milliseconds (−20 to +20)',
+    (Number(trace.previewDelayMs) || 0).toFixed(2));
+  if (entered === null) return;
+  const value = Number(String(entered).replace(',', '.'));
+  if (Number.isFinite(value)) setPhaseDelay(value);
+});
+$('btnCapShow').addEventListener('click', () => {
+  const letter = phaseDelaySlot();
+  if (!letter) return;
+  const hiddenNow = state.hiddenCaptures.indexOf(letter) >= 0;
+  state.hiddenCaptures = hiddenNow
+    ? state.hiddenCaptures.filter((item) => item !== letter)
+    : state.hiddenCaptures.concat(letter);
+  if (tfChart) tfChart.hiddenCaptures = state.hiddenCaptures;
+  renderPhaseDelayBar();
+  draw();
+});
+$('btnCapReplace').addEventListener('click', () => {
+  const letter = phaseDelaySlot();
+  if (!letter) return;
+  if (!state.results) {
+    setStatus('start the measurement before replacing a capture', 'err');
+    return;
+  }
+  clearSlot(letter);
+  captureSlot(letter);
+  renderPhaseDelayBar();
+});
+$('btnCapClear').addEventListener('click', () => {
+  const letter = phaseDelaySlot();
+  if (!letter) return;
+  clearSlot(letter);
+  renderPhaseDelayBar();
+});
+$('chkSumTrace').addEventListener('change', () => {
+  state.showSumTrace = $('chkSumTrace').checked;
+  updateSumTrace();
+  draw();
+});
+$('selPhaseMode').addEventListener('change', () => {
+  state.phaseMode = $('selPhaseMode').value === 'unwrapped' ? 'unwrapped' : 'wrapped';
+  if (tfChart) {
+    tfChart.phaseMode = state.phaseMode;
+    tfChart.phaseSpan = state.phaseMode === 'unwrapped' ? 360 : 180;
+  }
+  draw();
+});
+$('selCohGate').addEventListener('change', () => {
+  const value = Number($('selCohGate').value);
+  state.coherenceThreshold = Number.isFinite(value) ? value : 0.35;
+  if (tfChart) tfChart.coherenceThreshold = state.coherenceThreshold;
+  draw();
+});
+$('selPhaseSmooth').addEventListener('change', () => {
+  const value = Number($('selPhaseSmooth').value);
+  state.phaseSmoothing = Number.isFinite(value) ? value : 0;
+  if (analyser) analyser.phaseSmoothing = state.phaseSmoothing;
+  draw();
+});
 renderPhaseDelayBar();
 $('btnExportCsv').addEventListener('click', exportCSV);
 // The stacked reading lives inside the Decay screen now.
@@ -7014,7 +7262,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-12-03';
+const BUILD = '2026-11-15-01';
 let updateCheckedAt = 0;
 
 /**

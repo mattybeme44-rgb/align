@@ -259,11 +259,13 @@ the crossover period), and use the phase trace to confirm they track through the
 - **Phase / Coherence** — show or hide the phase pane and the coherence band under the magnitude
   curve. All three share the same log-frequency axis, so a feature can be read straight down the
   chart: the magnitude curve with its 3 dB grid, the phase against ±180°, and coherence against 1.
-  The phase is read against 1 kHz and eased between frames, so it settles rather than flickering, and
-  it is only drawn where coherence is high enough for it to mean anything. The legend at the top says
-  which trace is which, and **Capture A / B** add snapshots to it.
-- **Compensate** — removes the measured delay from the phase. Turn it off to see the raw phase
-  including delay.
+  Each trace is read against its own phase at 1 kHz and eased between frames, so it settles rather
+  than flickering, and it is only drawn where coherence is high enough for it to mean anything. The
+  legend at the top says which trace is which, and **Capture A / B** add snapshots to it.
+- **Compensate / Zero phase** — with compensation on, the arrival is called zero once the reading is
+  steady and the phase is read against that fixed reference from then on, so a delay you add turns
+  the traces predictably instead of being compensated away on the next frame. **Re-zero phase** calls
+  the present arrival zero. Turn compensation off to see the raw phase, delay included.
 - **Level calibration (dB) / Show input level as dB SPL** — the input readout is dBFS by default; a
   calibrated microphone's sensitivity offset turns it into dB SPL. The offset and the unit are
   remembered between launches.
