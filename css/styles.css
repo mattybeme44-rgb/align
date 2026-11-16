@@ -1245,6 +1245,9 @@ body.sheet-open {
 .phase-delay .pd-label { font-size: 9px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
 .phase-delay .pd-chips { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 5px; min-width: 0; }
 .phase-delay .pd-chip { font: inherit; font-size: 11px; font-weight: 600; min-height: 22px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-strong); background: transparent; color: var(--dim); }
+.update-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.update-banner .muted { margin: 0; flex: 1 1 auto; min-width: 0; color: var(--accent-bright); font-size: 13px; }
+.update-banner .btn { flex: 0 0 auto; padding: 8px 14px; }
 .phase-delay .pd-chip[aria-pressed="true"] { color: var(--bg); background: var(--accent); border-color: var(--accent); }
 .phase-delay .pd-chip.empty { color: var(--dim); border-style: dashed; }
 .phase-delay .pd-chip.muted { opacity: 0.45; }
