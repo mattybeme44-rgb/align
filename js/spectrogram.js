@@ -3,7 +3,7 @@ import { FFT, hannWindow } from './fft.js';
 /*
  * The impulse decay as a heat map: one row per window past the impulse peak,
  * frequency across on a log scale, and the energy of each slice as colour from
- * dark through teal to lime. Built only while its screen is open.
+ * dark through teal to a warm highlight. Built only while its screen is open.
  */
 
 const ROWS = 64;
@@ -15,9 +15,9 @@ const HIGHEST_HZ = 20000;
 const COL = {
   text: 'rgba(176,186,164,0.82)',
   textDim: 'rgba(160,172,150,0.52)',
-  grid: 'rgba(160,190,150,0.16)',
-  gridMinor: 'rgba(160,190,150,0.07)',
-  accent: '#c9ff70',
+  grid: 'rgba(160,168,176,0.16)',
+  gridMinor: 'rgba(160,168,176,0.07)',
+  accent: '#4ea8de',
 };
 
 const FONT_AXIS = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -315,7 +315,7 @@ export class SpectrogramChart {
     roundRect(ctx, 0.5, 0.5, this.w - 1, this.h - 1, 12);
     ctx.fillStyle = '#0e130f';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(160,190,150,0.14)';
+    ctx.strokeStyle = 'rgba(160,168,176,0.14)';
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
@@ -381,11 +381,11 @@ export class SpectrogramChart {
     const endY = plot.y + (gateEnd / span) * plot.h;
 
     if (Math.abs(endY - startY) > 1) {
-      ctx.fillStyle = gateEnabled ? 'rgba(201,255,112,0.07)' : 'rgba(201,255,112,0.02)';
+      ctx.fillStyle = gateEnabled ? 'rgba(78,168,222,0.07)' : 'rgba(78,168,222,0.02)';
       ctx.fillRect(plot.x, Math.min(startY, endY), plot.w, Math.abs(endY - startY));
     }
 
-    ctx.strokeStyle = gateEnabled ? 'rgba(201,255,112,0.85)' : 'rgba(201,255,112,0.30)';
+    ctx.strokeStyle = gateEnabled ? 'rgba(78,168,222,0.85)' : 'rgba(78,168,222,0.30)';
     ctx.lineWidth = 1.2;
     ctx.setLineDash([5, 4]);
     ctx.beginPath();

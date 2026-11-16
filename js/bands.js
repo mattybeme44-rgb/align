@@ -311,7 +311,7 @@ export class GroupDelayChart {
 
       if (this.cursorFreq) {
         const x = this.xOf(this.cursorFreq, plot);
-        ctx.strokeStyle = 'rgba(201,255,112,0.65)';
+        ctx.strokeStyle = 'rgba(78,168,222,0.65)';
         ctx.setLineDash([3, 3]);
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -323,7 +323,7 @@ export class GroupDelayChart {
         if (value !== null) {
           ctx.beginPath();
           ctx.arc(x, yOf(value), 3, 0, Math.PI * 2);
-          ctx.fillStyle = '#c9ff70';
+          ctx.fillStyle = '#4ea8de';
           ctx.fill();
         }
       }

@@ -10,8 +10,8 @@
   "lang": "en",
   "dir": "ltr",
   "categories": ["utilities", "music"],
-  "background_color": "#0b0f0c",
-  "theme_color": "#0b0f0c",
+  "background_color": "#0e1113",
+  "theme_color": "#0e1113",
   "icons": [
     {
       "src": "icons/icon-192.png",

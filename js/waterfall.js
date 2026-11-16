@@ -17,8 +17,8 @@ const COL = {
   grid: 'rgba(160,190,150,0.14)',
   gridMinor: 'rgba(160,190,150,0.07)',
   text: 'rgba(176,186,164,0.80)',
-  textDim: 'rgba(160,172,150,0.52)',
-  trace: '#c9ff70',
+  textDim: 'rgba(160,168,176,0.52)',
+  trace: '#4ea8de',
   slice: 'rgba(82,204,163,0.55)',
   cursor: 'rgba(255,140,120,0.55)',
 };
@@ -300,8 +300,8 @@ export class WaterfallChart {
         if (front) {
           const topY = sliceY(0, depth);
           const gradient = ctx.createLinearGradient(0, topY, 0, floorY);
-          gradient.addColorStop(0, 'rgba(201,255,112,0.28)');
-          gradient.addColorStop(1, 'rgba(201,255,112,0.02)');
+          gradient.addColorStop(0, 'rgba(78,168,222,0.28)');
+          gradient.addColorStop(1, 'rgba(78,168,222,0.02)');
           ctx.save();
           ctx.lineTo(xOf(slices.freqs[row.length - 1], depth), floorY);
           ctx.lineTo(xOf(slices.freqs[0], depth), floorY);
@@ -319,7 +319,7 @@ export class WaterfallChart {
           }
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
-          ctx.strokeStyle = 'rgba(201,255,112,0.20)';
+          ctx.strokeStyle = 'rgba(78,168,222,0.20)';
           ctx.lineWidth = 5;
           ctx.stroke();
           ctx.strokeStyle = COL.trace;

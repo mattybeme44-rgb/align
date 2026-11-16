@@ -11,8 +11,8 @@ const COL = {
   gridMinor: 'rgba(160,190,150,0.06)',
   gridZero: 'rgba(160,190,150,0.28)',
   text: 'rgba(176,186,164,0.80)',
-  textDim: 'rgba(160,172,150,0.52)',
-  trace: '#c9ff70',
+  textDim: 'rgba(160,168,176,0.52)',
+  trace: '#4ea8de',
   phase: '#6fe0d6',
   coh: '#d9a26c',
   ghost: 'rgba(226,235,214,0.85)',
@@ -21,7 +21,7 @@ const COL = {
   ghostD: 'rgba(251,184,107,0.90)',
   ghostE: 'rgba(107,216,248,0.88)',
   ghostF: 'rgba(250,133,184,0.90)',
-  peak: 'rgba(201,255,112,0.32)',
+  peak: 'rgba(78,168,222,0.32)',
   average: '#eeaac4',
   overlay: '#b4a7f7',
   savedColors: ['#b4a7f7', '#fbb679', '#72c7f2', '#eea4b3', '#a8df9b', '#f7d47b', '#86d5ca', '#d8a691'],
@@ -75,14 +75,10 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-/** The dark, rounded panel every plot is drawn on. */
+/** The flat, near-black panel every plot is drawn on. */
 function paintPanel(ctx, w, h) {
-  const shade = ctx.createLinearGradient(0, 0, 0, h);
-  shade.addColorStop(0, '#0e130f');
-  shade.addColorStop(1, '#090d0a');
-
-  roundRect(ctx, 0.5, 0.5, w - 1, h - 1, 12);
-  ctx.fillStyle = shade;
+  roundRect(ctx, 0.5, 0.5, w - 1, h - 1, 4);
+  ctx.fillStyle = '#0a0d0b';
   ctx.fill();
   ctx.strokeStyle = COL.border;
   ctx.lineWidth = 1;
@@ -146,9 +142,15 @@ export class TransferChart {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
-    this.pad = { left: 46, right: 46, top: 40, bottom: 26 };
+    this.pad = { left: 44, right: 44, top: 34, bottom: 24 };
     this.dbMin = -60;
     this.dbMax = 10;
+    /**
+     * A fixed height for the dB window, in dB. Zero lets the range follow the
+     * curves; anything else pins the top of the plot and gives a scale that
+     * does not breathe while a measurement settles.
+     */
+    this.dbSpan = 0;
     this.w = 0;
     this.h = 0;
     // The frequency span on show: 20 Hz – 20 kHz until a drag zooms in.
@@ -178,6 +180,12 @@ export class TransferChart {
     const lo = Math.min(Math.max(min, F_MIN), F_MAX * 0.99);
     const hi = Math.min(F_MAX, Math.max(max, lo * 1.001));
     this.range = { min: lo, max: hi };
+  }
+
+  /** A fixed dB window, or 0 to let the range follow the traces again. */
+  setDbSpan(span) {
+    const value = Number(span);
+    this.dbSpan = Number.isFinite(value) && value >= 20 ? value : 0;
   }
 
   plotRect() {
@@ -243,24 +251,35 @@ export class TransferChart {
   /** Magnitude, phase and coherence stacked to fit the height available. */
   layout(options) {
     const p = this.plotRect();
+    const showMag = options.showMag !== false;
     const showPhase = options.showPhase !== false;
     const showCoh = options.showCoh !== false;
-    const gap = 12;
+    const gap = showMag ? 10 : 8;
 
-    const cohH = showCoh ? Math.max(18, Math.round(p.h * 0.15)) : 0;
-    const phaseH = showPhase ? Math.max(36, Math.round(p.h * 0.34)) : 0;
-    const gaps = (showPhase ? gap : 0) + (showCoh ? gap : 0);
-    const magH = Math.max(24, p.h - phaseH - cohH - gaps);
+    let magH = 0;
+    let phaseH = 0;
+    let cohH = 0;
+
+    if (showMag) {
+      cohH = showCoh ? Math.max(16, Math.round(p.h * 0.14)) : 0;
+      phaseH = showPhase ? Math.max(34, Math.round(p.h * 0.33)) : 0;
+      const gaps = (showPhase ? gap : 0) + (showCoh ? gap : 0);
+      magH = Math.max(24, p.h - phaseH - cohH - gaps);
+    } else {
+      // Phase on its own gets the whole pane, with coherence a thin strip under it.
+      cohH = showCoh ? Math.max(16, Math.round(p.h * 0.16)) : 0;
+      phaseH = showPhase ? Math.max(48, p.h - cohH - (showCoh ? gap : 0)) : 0;
+    }
 
     const panes = { mag: { x: p.x, y: p.y, w: p.w, h: magH }, phase: null, coh: null };
     let y = p.y + magH;
-    if (showPhase) {
-      y += gap;
+    if (phaseH > 0) {
+      if (magH > 0) y += gap;
       panes.phase = { x: p.x, y, w: p.w, h: phaseH };
       y += phaseH;
     }
-    if (showCoh) {
-      y += gap;
+    if (cohH > 0) {
+      if (magH > 0 || phaseH > 0) y += gap;
       panes.coh = { x: p.x, y, w: p.w, h: cohH };
     }
     return panes;
@@ -329,6 +348,13 @@ export class TransferChart {
     }
 
     const ease = 0.18;
+    if (this.dbSpan) {
+      // A pinned window: the top follows the curve in 10 dB steps and the
+      // height stays put, so the scale never breathes under the trace.
+      this.dbMax = targetMax;
+      this.dbMin = targetMax - this.dbSpan;
+      return;
+    }
     this.dbMin += (targetMin - this.dbMin) * ease;
     this.dbMax += (targetMax - this.dbMax) * ease;
   }
@@ -351,7 +377,8 @@ export class TransferChart {
     const sumCurve = options.sumCurve !== undefined ? options.sumCurve : this.sumCurve;
     this.hiddenCaptures = hidden;
 
-    this.pad.top = Math.max(40, 48 + (options.savedCurves || []).length * 12);
+    const overlayRows = (options.savedCurves || []).length + 1;
+    this.pad.top = Math.min(74, Math.max(34, 22 + overlayRows * 12));
     paintPanel(ctx, this.w, this.h);
     this.updateRange(res, options);
     // Called even without a result, so a stopped measurement drops the eased
@@ -361,20 +388,23 @@ export class TransferChart {
 
     const panes = this.layout(options);
     const bottom = this.panesBottom(panes);
+    const showMag = panes.mag.h > 8;
 
     this.drawFrames(panes, bottom);
     this.drawFrequencyAxis(panes, bottom);
-    this.drawDbAxis(panes.mag);
+    if (showMag) this.drawDbAxis(panes.mag);
     if (panes.phase) this.drawPhaseAxis(panes.phase);
     if (panes.coh) this.drawCohAxis(panes.coh);
     this.drawLegend(panes, options);
 
-    if (options.target) this.drawTarget(panes.mag, options.target, options.customTargets);
-    (options.savedCurves || []).forEach((item, index) => {
-      this.drawSavedCurve(panes.mag, item.curve, COL.savedColors[index % COL.savedColors.length]);
-    });
-    if (options.peakHold) this.drawPeakHold(panes.mag, options.peakHold);
-    if (options.average) this.drawAverage(panes.mag, options.average);
+    if (showMag) {
+      if (options.target) this.drawTarget(panes.mag, options.target, options.customTargets);
+      (options.savedCurves || []).forEach((item, index) => {
+        this.drawSavedCurve(panes.mag, item.curve, COL.savedColors[index % COL.savedColors.length]);
+      });
+      if (options.peakHold) this.drawPeakHold(panes.mag, options.peakHold);
+      if (options.average) this.drawAverage(panes.mag, options.average);
+    }
 
     // Recalled speakers' phase goes on before the live traces, so the curve
     // that is moving stays the one on top.
@@ -385,7 +415,9 @@ export class TransferChart {
       });
     }
 
-    if (res) {
+    // Captures are drawn whether or not a measurement is running, so stopping
+    // the stimulus still shows what was captured, still there to compare.
+    if (showMag) {
       for (const extra of options.extraSnapshots || []) {
         if (hiddenLabel(extra.label)) continue;
         this.drawGhost(panes.mag, extra.trace, extra.color);
@@ -396,37 +428,39 @@ export class TransferChart {
       if (options.snapshot && !hiddenLabel('A')) {
         this.drawGhost(panes.mag, options.snapshot, COL.ghost);
       }
-      this.drawMagnitude(panes.mag, res, false);
+      if (res) this.drawMagnitude(panes.mag, res, false);
       if (sumCurve) this.drawSumCurve(panes.mag, sumCurve);
-      if (panes.coh) this.drawCoherence(panes.coh, res);
-      if (panes.phase) {
-        // Every trace is read against its own 1 kHz reference. Sharing the live
-        // trace's reference made the captures ride up and down with the live
-        // curve's noise, which looked like movement that had not happened.
-        for (const extra of options.extraSnapshots || []) {
-          if (!extra.showPhase || hiddenLabel(extra.label)) continue;
-          this.drawPhase(panes.phase, extra.trace, {
-            held: true,
-            color: extra.color,
-          });
-        }
-        if (options.showCaptureAPhase && options.snapshot && !hiddenLabel('A')) {
-          this.drawPhase(panes.phase, options.snapshot, {
-            held: true,
-            color: COL.ghost,
-            inverted: options.snapshot.showInverted,
-          });
-        }
-        if (options.showCaptureBPhase && options.secondSnapshot && !hiddenLabel('B')) {
-          this.drawPhase(panes.phase, options.secondSnapshot, {
-            held: true,
-            color: COL.ghostB,
-            inverted: options.secondSnapshot.showInverted,
-          });
-        }
-        this.drawPhase(panes.phase, res);
-      }
     }
+
+    if (panes.phase) {
+      // Every trace is read against its own 1 kHz reference. Sharing the live
+      // trace's reference made the captures ride up and down with the live
+      // curve's noise, which looked like movement that had not happened.
+      for (const extra of options.extraSnapshots || []) {
+        if (!extra.showPhase || hiddenLabel(extra.label)) continue;
+        this.drawPhase(panes.phase, extra.trace, {
+          held: true,
+          color: extra.color,
+        });
+      }
+      if (options.showCaptureAPhase && options.snapshot && !hiddenLabel('A')) {
+        this.drawPhase(panes.phase, options.snapshot, {
+          held: true,
+          color: COL.ghost,
+          inverted: options.snapshot.showInverted,
+        });
+      }
+      if (options.showCaptureBPhase && options.secondSnapshot && !hiddenLabel('B')) {
+        this.drawPhase(panes.phase, options.secondSnapshot, {
+          held: true,
+          color: COL.ghostB,
+          inverted: options.secondSnapshot.showInverted,
+        });
+      }
+      if (res) this.drawPhase(panes.phase, res);
+    }
+
+    if (res && panes.coh) this.drawCoherence(panes.coh, res);
 
     if (options.cursorFreq) this.drawCursor(panes, bottom, options.cursorFreq, res);
     if (this.selection) this.drawSelection(panes, bottom);
@@ -439,9 +473,9 @@ export class TransferChart {
     if (!(x1 - x0 >= 1)) return;
     const ctx = this.ctx;
     ctx.save();
-    ctx.fillStyle = 'rgba(201,255,112,0.12)';
+    ctx.fillStyle = 'rgba(78,168,222,0.12)';
     ctx.fillRect(x0, panes.mag.y, x1 - x0, bottom - panes.mag.y);
-    ctx.strokeStyle = 'rgba(201,255,112,0.6)';
+    ctx.strokeStyle = 'rgba(78,168,222,0.6)';
     ctx.lineWidth = 1;
     ctx.strokeRect(Math.round(x0) + 0.5, Math.round(panes.mag.y) + 0.5, x1 - x0, bottom - panes.mag.y);
     ctx.restore();
@@ -572,7 +606,8 @@ export class TransferChart {
     const short = p.w < 430;
     // [label, colour, dashed]: only the stored overlays are dashed, so the
     // swatch says which lines on the plot are which.
-    const items = [[short ? 'Mag' : 'Magnitude', COL.trace, false]];
+    const items = [];
+    if (options.showMag !== false) items.push([short ? 'Mag' : 'Magnitude', COL.trace, false]);
     if (panes.phase) items.push(['Phase', COL.phase, false]);
     if (panes.coh) items.push([short ? 'Coh' : 'Coherence', COL.coh, false]);
     if (options.target) items.push(['Target', COL.target, true]);
@@ -667,24 +702,6 @@ export class TransferChart {
     const values = this.magnitudeColumns(pane, trace);
     const x0 = pane.x + 0.5;
     const yOf = (db) => this.dbToY(db, pane);
-    const bottom = pane.y + pane.h;
-
-    if (!ghost) {
-      const gradient = ctx.createLinearGradient(0, pane.y, 0, bottom);
-      gradient.addColorStop(0, 'rgba(201,255,112,0.20)');
-      gradient.addColorStop(1, 'rgba(201,255,112,0.00)');
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(x0, yOf(values[0]));
-      for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, yOf(values[i]));
-      ctx.lineTo(x0 + values.length - 1, bottom);
-      ctx.lineTo(x0, bottom);
-      ctx.closePath();
-      ctx.fillStyle = gradient;
-      ctx.fill();
-      ctx.restore();
-    }
 
     ctx.save();
     ctx.beginPath();
@@ -694,20 +711,19 @@ export class TransferChart {
     ctx.lineCap = 'round';
 
     if (ghost) {
-      strokeSeparated(ctx, COL.ghost, 1.8);
+      strokeSeparated(ctx, COL.ghost, 1.2);
     } else {
-      // A wide, faint pass underneath makes the crisp trace glow a little.
-      ctx.strokeStyle = 'rgba(201,255,112,0.14)';
-      ctx.lineWidth = 5;
+      ctx.strokeStyle = COL.halo;
+      ctx.lineWidth = 2.6;
       ctx.stroke();
       ctx.strokeStyle = COL.trace;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.4;
       ctx.stroke();
     }
     ctx.restore();
   }
 
-  /** A captured curve, dashed like the iOS capture ghosts. */
+  /** A captured curve, held back in weight so the live trace stays on top. */
   drawGhost(pane, trace, color) {
     const values = this.magnitudeColumns(pane, trace);
     if (values.length < 2) return;
@@ -718,7 +734,7 @@ export class TransferChart {
     ctx.beginPath();
     ctx.moveTo(x0, this.dbToY(values[0], pane));
     for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
-    strokeSeparated(ctx, color, 2, [], true);
+    strokeSeparated(ctx, color, 1.3);
     ctx.restore();
   }
 
@@ -746,7 +762,7 @@ export class TransferChart {
     ctx.beginPath();
     ctx.moveTo(x0, this.dbToY(values[0], pane));
     for (let i = 1; i < values.length; i++) ctx.lineTo(x0 + i, this.dbToY(values[i], pane));
-    strokeSeparated(ctx, COL.average, 1.8, [5, 3], true);
+    strokeSeparated(ctx, COL.average, 1.2, [5, 3]);
     ctx.restore();
   }
 
@@ -767,7 +783,7 @@ export class TransferChart {
       if (open) ctx.lineTo(x, y);
       else { ctx.moveTo(x, y); open = true; }
     }
-    strokeSeparated(ctx, COL.sumTrace, 1.6, [6, 3], true);
+    strokeSeparated(ctx, COL.sumTrace, 1.2, [6, 3]);
     ctx.restore();
   }
 
@@ -800,7 +816,7 @@ export class TransferChart {
       }
     }
 
-    strokeSeparated(ctx, color, 1.8, [], true);
+    strokeSeparated(ctx, color, 1.2);
     ctx.restore();
   }
 
@@ -864,7 +880,7 @@ export class TransferChart {
       if (open) ctx.lineTo(point.x, point.y);
       else { ctx.moveTo(point.x, point.y); open = true; }
     }
-    strokeSeparated(ctx, color, 2, [], true);
+    strokeSeparated(ctx, color, 1.1);
     ctx.restore();
   }
 
@@ -1024,9 +1040,9 @@ export class TransferChart {
 
     if (faint.length) {
       ctx.save();
-      ctx.globalAlpha = 0.30;
+      ctx.globalAlpha = 0.28;
       ctx.strokeStyle = color;
-      ctx.lineWidth = opts.held ? 1.4 : 1.6;
+      ctx.lineWidth = opts.held ? 1 : 1.1;
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -1040,8 +1056,8 @@ export class TransferChart {
       ctx.restore();
     }
 
-    // Held captures are solid and as strong as the live curve, each with a glow
-    // of its own colour, so several overlapping traces read line by line.
+    // Held captures stay solid and readable, but no heavier than the live
+    // curve, so several still read as separate lines rather than a smudge.
     ctx.save();
     ctx.beginPath();
     let open = false;
@@ -1050,7 +1066,7 @@ export class TransferChart {
       if (open) ctx.lineTo(point.x, point.y);
       else { ctx.moveTo(point.x, point.y); open = true; }
     }
-    strokeSeparated(ctx, color, opts.held ? 2.2 : 2.4, [], true);
+    strokeSeparated(ctx, color, opts.held ? 1.1 : 1.3);
     ctx.restore();
   }
 
@@ -1180,17 +1196,13 @@ export class TransferChart {
     const x0 = pane.x + 0.5;
     const yOf = (v) => this.cohToY(v, pane);
 
-    const gradient = ctx.createLinearGradient(0, pane.y, 0, bottom);
-    gradient.addColorStop(0, 'rgba(217,162,108,0.32)');
-    gradient.addColorStop(1, 'rgba(217,162,108,0.05)');
-
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(x0, bottom);
     for (let i = 0; i < smoothed.length; i++) ctx.lineTo(x0 + i, yOf(smoothed[i]));
     ctx.lineTo(x0 + smoothed.length - 1, bottom);
     ctx.closePath();
-    ctx.fillStyle = gradient;
+    ctx.fillStyle = 'rgba(217,162,108,0.10)';
     ctx.fill();
 
     ctx.beginPath();
@@ -1201,7 +1213,7 @@ export class TransferChart {
       else ctx.lineTo(x, y);
     }
     ctx.strokeStyle = COL.coh;
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 1;
     ctx.lineJoin = 'round';
     ctx.stroke();
     ctx.restore();
@@ -1212,16 +1224,14 @@ export class TransferChart {
     const x = this.xOf(freq);
 
     ctx.save();
-    ctx.strokeStyle = COL.cursor;
+    ctx.strokeStyle = 'rgba(226,235,214,0.42)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
     ctx.beginPath();
     ctx.moveTo(Math.round(x) + 0.5, panes.mag.y);
     ctx.lineTo(Math.round(x) + 0.5, bottom);
     ctx.stroke();
-    ctx.setLineDash([]);
 
-    if (res) {
+    if (res && panes.mag.h > 8) {
       // Match the value the curve was drawn from: average the bins inside one
       // pixel column rather than reading a single bin.
       const df = res.sampleRate / res.fftSize;
@@ -1394,9 +1404,9 @@ export class ImpulseChart {
 
       if (gateEndX > p.x && gateStartX < p.x + p.w) {
         ctx.save();
-        ctx.fillStyle = 'rgba(201,255,112,0.10)';
+        ctx.fillStyle = 'rgba(78,168,222,0.10)';
         ctx.fillRect(Math.min(startX, endX), p.y, Math.max(1, Math.abs(endX - startX)), p.h);
-        ctx.strokeStyle = 'rgba(201,255,112,0.85)';
+        ctx.strokeStyle = 'rgba(78,168,222,0.85)';
         ctx.lineWidth = 1.5;
 
         for (const x of [startX, endX]) {
@@ -1415,7 +1425,7 @@ export class ImpulseChart {
         // A grip on the bottom edge moves the whole gate; the plot stays free
         // above it for drawing a zoom selection.
         const midX = (startX + endX) / 2;
-        ctx.fillStyle = 'rgba(201,255,112,0.28)';
+        ctx.fillStyle = 'rgba(78,168,222,0.28)';
         roundRect(ctx, midX - 15, bottom - 5, 30, 5, 2.5);
         ctx.fill();
 
@@ -1457,8 +1467,8 @@ export class ImpulseChart {
     const xEnd = p.x + last + 0.5;
 
     const gradient = ctx.createLinearGradient(0, p.y, 0, bottom);
-    gradient.addColorStop(0, 'rgba(201,255,112,0.20)');
-    gradient.addColorStop(1, 'rgba(201,255,112,0.00)');
+    gradient.addColorStop(0, 'rgba(78,168,222,0.20)');
+    gradient.addColorStop(1, 'rgba(78,168,222,0.00)');
 
     ctx.save();
     ctx.beginPath();
@@ -1475,7 +1485,7 @@ export class ImpulseChart {
     for (let i = first + 1; i <= last; i++) ctx.lineTo(p.x + i + 0.5, yOf(columns[i]));
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(201,255,112,0.16)';
+    ctx.strokeStyle = 'rgba(78,168,222,0.16)';
     ctx.lineWidth = 4.5;
     ctx.stroke();
     ctx.strokeStyle = COL.trace;
@@ -1486,7 +1496,7 @@ export class ImpulseChart {
     const xp = xOf(0);
     if (xp >= p.x - 2 && xp <= p.x + p.w + 2) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(201,255,112,0.35)';
+      ctx.strokeStyle = 'rgba(78,168,222,0.35)';
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(Math.round(xp) + 0.5, p.y);
@@ -1508,9 +1518,9 @@ export class ImpulseChart {
       const sx1 = Math.max(this.selection.x0, this.selection.x1);
       if (sx1 - sx0 >= 1) {
         ctx.save();
-        ctx.fillStyle = 'rgba(201,255,112,0.12)';
+        ctx.fillStyle = 'rgba(78,168,222,0.12)';
         ctx.fillRect(sx0, p.y, sx1 - sx0, p.h);
-        ctx.strokeStyle = 'rgba(201,255,112,0.6)';
+        ctx.strokeStyle = 'rgba(78,168,222,0.6)';
         ctx.lineWidth = 1;
         ctx.strokeRect(Math.round(sx0) + 0.5, Math.round(p.y) + 0.5, sx1 - sx0, p.h);
         ctx.restore();

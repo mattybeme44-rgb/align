@@ -1647,7 +1647,7 @@ function renderPhaseDelayBar() {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'pd-chip';
-      chip.textContent = trace ? item : '+';
+      chip.textContent = item;
       chip.setAttribute('aria-pressed', trace && item === selected ? 'true' : 'false');
       chip.setAttribute('aria-label', trace ? 'Select capture ' + item : 'Capture into slot ' + item);
       if (!trace) chip.classList.add('empty');
@@ -1677,6 +1677,13 @@ function renderPhaseDelayBar() {
     }
   }
 
+  const selectedEl = $('pdSelected');
+  if (selectedEl) {
+    selectedEl.textContent = selected
+      ? 'Capture ' + selected + (state.hiddenCaptures.indexOf(selected) >= 0 ? ' · hidden' : ' · shown')
+      : '';
+  }
+
   const slider = $('phaseDelaySlider');
   const trace = selected ? heldSnapshot(selected) : null;
   if (slider) {
@@ -1695,14 +1702,23 @@ function updatePhaseDelayReadout() {
   const match = $('btnPdMatch');
   if (!value || !reading || !match) return;
   if (!trace) {
-    setText(value, '—');
-    setText(reading, 'tap a capture slot to select it');
+    if (value) {
+      value.value = '';
+      value.placeholder = '—';
+      value.disabled = true;
+    }
+    setText(reading, 'select a capture to preview its delay');
     match.hidden = true;
     return;
   }
 
+  if (value) {
+    value.disabled = false;
+    value.placeholder = '0.00';
+  }
+
   const delay = Number(trace.previewDelayMs) || 0;
-  setText(value, (delay >= 0 ? '+' : '') + delay.toFixed(2) + ' ms');
+  if (value && document.activeElement !== value) value.value = delay.toFixed(2);
 
   const res = state.results;
   const frequency = state.cursorFreq;
@@ -1712,7 +1728,7 @@ function updatePhaseDelayReadout() {
     return;
   }
   if (!frequency) {
-    setText(reading, 'tap the plot to read the phase there');
+    setText(reading, 'move the cursor over the plot to read the phase there');
     match.hidden = true;
     return;
   }
@@ -2030,6 +2046,16 @@ function updateTraceSummary() {
   const summary = $('captureSummary');
   if (summary) summary.textContent = text;
   $('traceSummary').textContent = text;
+
+  // The difference figures only take a cell when there is a capture to
+  // compare with, so the strip stays a line of live readings rather than a table.
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const figure = $(letter === 'A' ? 'rdDelta' : 'rdDelta' + letter);
+    if (!figure) continue;
+    const cell = figure.closest('.metric');
+    if (cell) cell.hidden = !heldSnapshot(letter);
+  }
+
   const anyHeld = !!(state.snapshot || state.snapshotB || state.snapshotC || state.snapshotD || state.snapshotE || state.snapshotF);
   $('capturePhaseRow').hidden = !anyHeld;
   $('captureInvertRow').hidden = !(state.snapshot || state.snapshotB);
@@ -2077,6 +2103,8 @@ function captureSlot(label) {
   const chk = $('chkPhase' + label);
   if (chk) chk.checked = true;
   $('phaseAdvice').hidden = false;
+  state.selectedCapture = label;
+  renderPhaseDelayBar();
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
@@ -2089,10 +2117,12 @@ function captureSlot(label) {
 function clearSlot(label) {
   const slot = { A: 'snapshot', B: 'snapshotB', C: 'snapshotC', D: 'snapshotD', E: 'snapshotE', F: 'snapshotF' }[label];
   state[slot] = null;
+  if (state.selectedCapture === label) state.selectedCapture = null;
   const labelEl = $('phase' + label + 'Label');
   if (labelEl) labelEl.hidden = true;
   const deltaEl = $('rdDelta' + label);
   if (deltaEl) deltaEl.textContent = '—';
+  renderPhaseDelayBar();
   renderCaptureDelays();
   renderBalance();
   updateDelayAdvice();
@@ -3608,8 +3638,19 @@ function drawNow() {
   tfChart.setRange(tfRange.min, tfRange.max);
   tfChart.selection = tfDrag && tfDrag.moved ? { x0: tfDrag.startX, x1: tfDrag.currentX } : null;
 
+  // Magnitude and phase can be read apart or together; turning both off would
+  // leave an empty frame, so magnitude comes back instead.
+  let showMag = $('chkMag').checked;
+  const showPhase = $('chkPhase').checked;
+  if (!showMag && !showPhase) {
+    showMag = true;
+    $('chkMag').checked = true;
+  }
+  tfChart.setDbSpan(Number($('selDbSpan').value) || 0);
+
   tfChart.draw(state.results, {
-    showPhase: $('chkPhase').checked,
+    showMag,
+    showPhase,
     showCoh: $('chkCoh').checked,
     snapshot: state.snapshot,
     secondSnapshot: state.snapshotB,
@@ -4150,7 +4191,7 @@ function updateCursorReadout() {
   const readout = $('readout');
 
   if (!res || !freq) {
-    readout.textContent = 'tap the plot';
+    readout.textContent = 'move the cursor over the plot';
     updatePhaseDelayReadout();
     return;
   }
@@ -5463,7 +5504,7 @@ function drawRTA() {
     ctx.fillRect(centre - barWidth / 2, top, barWidth, Math.max(1, plot.y + plot.h - top));
     if (state.rtaPeaks && index < state.rtaPeaks.length) {
       const capY = y(state.rtaPeaks[index] + offset);
-      ctx.fillStyle = '#c9ff70';
+      ctx.fillStyle = '#4ea8de';
       ctx.fillRect(centre - barWidth / 2 - 1, capY, barWidth + 2, 2);
     }
   }
@@ -5586,7 +5627,7 @@ function drawDistortionChart() {
     const t = Math.min(1, Math.max(0, step.thdPercent / 10));
     const top = plot.y + plot.h - t * plot.h;
     const barWidth = Math.max(3, plot.w / DISTORTION_STEPS.length * 0.7);
-    ctx.fillStyle = step.thdPercent > 3 ? '#c9ff70' : '#55bb84';
+    ctx.fillStyle = step.thdPercent > 3 ? '#d9a26c' : '#55bb84';
     ctx.fillRect(centre - barWidth / 2, top, barWidth, Math.max(1, plot.y + plot.h - top));
   }
   ctx.textAlign = 'left';
@@ -6244,6 +6285,18 @@ $('chkPhase').addEventListener('change', () => {
   draw();
 });
 $('chkCoh').addEventListener('change', () => draw());
+// Magnitude on its own, phase on its own, or both — and the height of the dB
+// window, which the plot pins instead of letting it follow every frame.
+$('chkMag').addEventListener('change', () => {
+  if (!$('chkMag').checked && !$('chkPhase').checked) $('chkPhase').checked = true;
+  draw();
+});
+$('selDbSpan').addEventListener('change', () => {
+  const span = Number($('selDbSpan').value) || 0;
+  tfChart.setDbSpan(span);
+  write('align.dbSpan', span >= 20 ? String(span) : '');
+  draw();
+});
 $('btnTfReset').addEventListener('click', resetTfZoom);
 $('btnTfExpand').addEventListener('click', () => {
   const full = document.body.classList.toggle('tf-full');
@@ -6385,15 +6438,24 @@ $('btnPdReset').addEventListener('click', () => setPhaseDelay(0));
 $('btnPdMatch').addEventListener('click', applyPhaseDelayMatch);
 $('btnPdDown01').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) - 0.01));
 $('btnPdUp01').addEventListener('click', () => setPhaseDelay((currentCapturePreviewDelay() || 0) + 0.01));
-$('phaseDelayValue').addEventListener('click', () => {
+$('phaseDelayValue').addEventListener('change', () => {
   const letter = phaseDelaySlot();
   const trace = letter ? heldSnapshot(letter) : null;
-  if (!trace) return;
-  const entered = window.prompt('Preview delay in milliseconds (−20 to +20)',
-    (Number(trace.previewDelayMs) || 0).toFixed(2));
-  if (entered === null) return;
-  const value = Number(String(entered).replace(',', '.'));
-  if (Number.isFinite(value)) setPhaseDelay(value);
+  if (!trace) {
+    renderPhaseDelayBar();
+    return;
+  }
+  const entered = Number(String($('phaseDelayValue').value).replace(',', '.'));
+  if (!Number.isFinite(entered)) {
+    updatePhaseDelayReadout();
+    return;
+  }
+  setPhaseDelay(entered);
+});
+$('phaseDelayValue').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  $('phaseDelayValue').blur();
 });
 $('btnCapShow').addEventListener('click', () => {
   const letter = phaseDelaySlot();
@@ -6449,67 +6511,8 @@ $('selPhaseSmooth').addEventListener('change', () => {
   draw();
 });
 
-/* ---------- the session bar above the graph ---------- */
+/* ---------- the capture bar above the plot ---------- */
 
-function updateInstrumentBar() {
-  const start = $('btnInstrStart');
-  if (start) {
-    const running = !!(engine && engine.running) && !state.demo;
-    const label = running ? 'Stop' : 'Start';
-    if (start.textContent !== label) start.textContent = label;
-    start.classList.toggle('on', running);
-  }
-  const phase = $('btnInstrPhase');
-  if (phase) {
-    const label = state.phaseMode === 'unwrapped' ? 'Unwrapped' : 'Phase';
-    if (phase.textContent !== label) phase.textContent = label;
-    phase.classList.toggle('on', state.phaseMode === 'unwrapped');
-  }
-}
-
-$('btnInstrStart').addEventListener('click', () => $('btnPower').click());
-$('btnInstrCapture').addEventListener('click', () => {
-  captureSlot(state.selectedCapture || 'A');
-  renderPhaseDelayBar();
-});
-$('btnInstrOverlay').addEventListener('click', () => $('btnSaved').click());
-$('btnInstrDelay').addEventListener('click', () => {
-  const bar = $('phaseDelayBar');
-  if (bar) bar.scrollIntoView({ behavior: 'smooth', block: 'center' });
-});
-$('btnInstrPhase').addEventListener('click', () => {
-  state.phaseMode = state.phaseMode === 'unwrapped' ? 'wrapped' : 'unwrapped';
-  if (tfChart) {
-    tfChart.phaseMode = state.phaseMode;
-    tfChart.phaseSpan = state.phaseMode === 'unwrapped' ? 360 : 180;
-  }
-  const select = $('selPhaseMode');
-  if (select) select.value = state.phaseMode;
-  updateInstrumentBar();
-  draw();
-});
-$('btnInstrPolarity').addEventListener('click', () => {
-  const letter = phaseDelaySlot();
-  const trace = letter ? heldSnapshot(letter) : null;
-  if (!trace) {
-    setStatus('capture a trace before comparing polarity', 'err');
-    return;
-  }
-  trace.showInverted = !trace.showInverted;
-  const chk = $('chkInvert' + letter);
-  if (chk) chk.checked = !!trace.showInverted;
-  setStatus('capture ' + letter + (trace.showInverted
-    ? ' drawn inverted — preview only, the measurement is unchanged'
-    : ' drawn with its measured polarity'), 'ok');
-  draw();
-});
-$('btnInstrClear').addEventListener('click', () => {
-  const letter = phaseDelaySlot();
-  if (!letter) return;
-  clearSlot(letter);
-  renderPhaseDelayBar();
-});
-setInterval(updateInstrumentBar, 500);
 renderPhaseDelayBar();
 $('btnExportCsv').addEventListener('click', exportCSV);
 // The stacked reading lives inside the Decay screen now.
@@ -7255,6 +7258,7 @@ refreshTargetSelect();
 $('numCalibration').value = state.calibrationDb.toFixed(1);
 $('chkSpl').checked = state.showSpl;
 $('chkMeterSpl').checked = state.showSpl;
+$('selDbSpan').value = String(readNumber('align.dbSpan', 0) || 0);
 $('chkGate').checked = state.gate.enabled;
 $('chkSpectrograph').checked = state.showSpectrograph;
 $('chkSpectrographAnalysis').checked = state.showSpectrograph;
@@ -7324,7 +7328,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-15-03';
+const BUILD = '2026-11-18-01';
 let updateCheckedAt = 0;
 
 /**

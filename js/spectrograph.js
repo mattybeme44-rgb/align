@@ -123,7 +123,7 @@ export class LiveSpectrograph {
     const height = rect.height - 28;
     ctx.fillStyle = '#101510';
     ctx.fillRect(32, 4, width, height);
-    const colors = ['#0e1710', '#193c30', '#287765', '#55bb84', '#c9ff70'];
+    const colors = ['#0e1113', '#193c30', '#287765', '#55bb84', '#e0b055'];
     for (let y = 0; y < this.rows.length; y++) {
       const row = this.rows[this.rows.length - y - 1];
       for (let x = 0; x < COLUMNS; x++) {

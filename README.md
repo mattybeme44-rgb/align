@@ -6,12 +6,35 @@ device — all audio is captured and analysed locally.
 
 Open `index.html` (or tap Run) and press **Start**.
 
-To see it working without any hardware or microphone permission, press **Demo measurement** in the
-Input card (or **Show a demo** on the banner). The whole analysis path runs on a synthetic speaker —
+To see it working without any hardware or microphone permission, press **Demo** in the **Input** menu
+(or **See the demo here** on the banner). The whole analysis path runs on a synthetic speaker —
 3.7 ms of propagation delay, room gain low down, a dip near 260 Hz, presence at 2.4 kHz and a soft
 top-octave roll-off, with a little noise so coherence is not a flat 100%. Nothing is captured, so it
 also works in browsers that cannot open the microphone at all, which makes it the way to check the
 app renders and the maths runs before a real measurement.
+
+## The measurement screen
+
+The screen is one instrument: a setup toolbar, a graph, and a row of captures under it.
+
+- **Toolbar** — `Input`, `Reference`, `Generator`, `FFT`, `Averaging` and `Delay Finder` each open one
+  compact panel of settings over the workspace; `Start` begins and ends the measurement. Nothing that
+  is not needed while reading a curve sits on the screen.
+- **Graph** — magnitude on a 20 Hz – 20 kHz log axis with phase and coherence beneath it on the same
+  axis. `Mag`, `Phase` and `Coh` switch the panes on and off, `Wrapped` / `Unwrapped` and `Coh ≥` set
+  how the phase is read, and the `dB` menu pins the vertical window (Auto follows the curves). Drag
+  across the plot to zoom into a band; `Reset` returns to the full range. The cursor line reads out
+  frequency, level, phase, coherence and the difference to each held capture.
+- **Capture bar** — `A` to `F` capture the live measurement into a slot (an empty slot captures when
+  tapped, a filled one selects it), `Delay −0.1 / −0.01 / value / +0.01 / +0.1` and the slider rotate
+  only the selected capture's phase, and `Reset` puts it back to zero. The live measurement keeps
+  running throughout. Captures keep their own colour and can be hidden without being cleared.
+- **Panels** — `Impulse`, `Room`, `Traces`, `Analysis` and `Share` in the column beside the graph hold
+  the impulse response and gate, reflections, decay and quality, the capture library, presets,
+  calibration, EQ suggestions, exports and the field notes.
+
+Nothing here changes what is measured: the capture bar turns only the drawn phase, and every figure
+comes from the same averaged transfer function as before.
 
 ## Launching it from the phone's Home Screen
 
@@ -50,8 +73,8 @@ screen when that happens.
 ### Sending it to somebody else
 
 **Share** at the top of the page opens iOS's share sheet with Align's address, so the link goes
-straight into Messages, Mail or WhatsApp; **Share Align** on the Share card does the same from further
-down the page, and **Copy link** puts the address on the clipboard.
+straight into Messages, Mail or WhatsApp; **Share Align** in the Share panel does the same, and
+**Copy link** puts the address on the clipboard.
 
 **Share measurement** sends what is on screen as text — delay, polarity, coherence, the analysis
 settings and the EQ suggestions — which is how a result leaves the phone without a screenshot. It says
@@ -59,7 +82,7 @@ there is nothing to share until a measurement has run, and it only offers the re
 showing, never a hidden capture.
 
 Neither button hands out a private `--preview` address: the public one is used instead. Where a browser
-has no share sheet, both fall back to the clipboard, and the Share card's field shows the text so it
+has no share sheet, both fall back to the clipboard, and the Share panel's field shows the text so it
 can be selected by hand.
 
 ### Enabling Pages (one setting)
@@ -296,7 +319,7 @@ the crossover period), and use the phase trace to confirm they track through the
   library** adds what is not already stored, validating the file before touching anything.
 - **EQ designer** — add up to eight peaking, low-shelf, high-shelf and high-pass filters, drag their
   nodes on a log-frequency chart, edit frequency, gain and Q as rows, and read the predicted corrected
-  response in lime over the measurement as a dim ghost. It shows the maximum boost and the mean
+  response in the accent colour over the measurement as a dim ghost. It shows the maximum boost and the mean
   deviation from the chosen target, and **Copy filter list** puts the values on the clipboard. The set
   is remembered between launches and never changes the measurement, the gate or the captures.
 - **Capture polarity** — compares each held capture's main lobe with the live arrival and says **Inverted

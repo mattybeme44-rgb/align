@@ -118,7 +118,7 @@ export function drawLevelLog(canvas, samples, options = {}) {
     if (index === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = '#c9ff70';
+  ctx.strokeStyle = '#4ea8de';
   ctx.lineWidth = 1.8;
   ctx.lineJoin = 'round';
   ctx.stroke();

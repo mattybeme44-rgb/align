@@ -212,6 +212,7 @@ export class Analyser {
     this.delayJitter = 0;
     this.polarity = 1;
     this.polarityVotes = 0;
+    this.polarityDecided = false;
   }
 
   reset() {
@@ -230,6 +231,7 @@ export class Analyser {
     this.delayJitter = 0;
     this.polarity = 1;
     this.polarityVotes = 0;
+    this.polarityDecided = false;
   }
 
   /** Accumulate one window pair. mic = measured, ref = reference. */
@@ -415,12 +417,14 @@ export class Analyser {
   votePolarity(sign) {
     if (sign === this.polarity) {
       this.polarityVotes = 0;
+      this.polarityDecided = true;
       return;
     }
     this.polarityVotes += 1;
     if (this.polarityVotes >= 3) {
       this.polarity = sign;
       this.polarityVotes = 0;
+      this.polarityDecided = true;
     }
   }
 
@@ -512,7 +516,7 @@ export class Analyser {
     // coherence collapses and the sign is just noise, so the readout says
     // nothing instead of flickering between normal and inverted.
     const coherence = this.meanCoherence();
-    const polarityKnown = this.frames >= 3 && coherence > 0.45;
+    const polarityKnown = this.frames >= 3 && coherence > 0.45 && this.polarityDecided;
     if (polarityKnown) this.votePolarity(this.peakRe >= 0 ? 1 : -1);
 
     if (compensate) this.computeIR(this.delayAvg, false);
