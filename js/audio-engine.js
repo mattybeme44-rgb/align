@@ -95,6 +95,8 @@ export class AudioEngine {
     this.routing = { a: 0, b: 1, c: 2, ref: 3 };
     /** True when two or more inputs are carrying the very same signal. */
     this.channelDuplicated = false;
+    /** Each input's correlation against input 1, from the same probe. */
+    this.channelCorrelation = new Float64Array(4);
     /** ScriptProcessor callbacks that arrived late, a sign of underruns. */
     this.droppedCallbacks = 0;
     this.lastCallbackTime = 0;
@@ -531,6 +533,22 @@ export class AudioEngine {
     }
 
     this.channelDuplicated = measured > 0 && duplicated === measured;
+    // Each channel's correlation against channel 1, kept so the hardware check
+    // can show how independent the inputs really are rather than only saying
+    // whether all of them matched.
+    if (!(this.channelCorrelation instanceof Float64Array) || this.channelCorrelation.length !== 4) {
+      this.channelCorrelation = new Float64Array(4);
+    }
+    this.channelCorrelation.fill(0);
+    this.channelCorrelation[0] = 1;
+    for (let c = 1; c < count; c++) {
+      this.rings[c].read(other, base);
+      const rms = rmsOf(other);
+      if (rms < 1e-5 || baseRms < 1e-5) continue;
+      let dot = 0;
+      for (let i = 0; i < probe; i++) dot += window[i] * other[i];
+      this.channelCorrelation[c] = dot / (probe * baseRms * rms);
+    }
   }
 
   async stop() {

@@ -1,5 +1,6 @@
 import { AudioEngine } from './audio-engine.js';
 import { createMultiView } from './multiview.js';
+import { createHardwareCheck } from './hardware.js';
 import { Analyser, suggestEq } from './analyser.js';
 import { TransferChart, ImpulseChart, wrapDegrees } from './charts.js';
 import {

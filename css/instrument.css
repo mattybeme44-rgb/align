@@ -1519,3 +1519,120 @@ body.validation-page {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+
+/* ---------- hardware verification ---------- */
+.hw-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}
+
+.hw-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hw-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hw-head h3 {
+  margin: 0;
+}
+
+.hw-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.hw-pass {
+  color: #0d1a0b;
+  background: #8ff06a;
+}
+
+.hw-fail {
+  color: #2a0b0b;
+  background: #ff8a6b;
+}
+
+.hw-unverified {
+  color: rgba(226, 235, 214, 0.75);
+  background: rgba(160, 190, 150, 0.16);
+}
+
+.hw-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(148, 180, 140, 0.08);
+}
+
+.hw-row > span {
+  color: var(--dim, rgba(180, 190, 172, 0.6));
+  flex: 1 1 auto;
+}
+
+.hw-row > b {
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  flex: 0 1 auto;
+}
+
+.hw-row b[data-kind="report"]::after,
+.hw-row b[data-kind="requested"]::after,
+.hw-row b[data-kind="verified"]::after,
+.hw-row b[data-kind="app"]::after {
+  display: block;
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.4;
+}
+
+.hw-row b[data-kind="report"]::after { content: 'browser report'; }
+.hw-row b[data-kind="requested"]::after { content: 'requested'; }
+.hw-row b[data-kind="verified"]::after { content: 'measured'; }
+.hw-row b[data-kind="app"]::after { content: 'setting'; }
+
+.hw-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.hw-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.hw-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.hw-foot {
+  grid-column: 1 / -1;
+  opacity: 0.65;
+}

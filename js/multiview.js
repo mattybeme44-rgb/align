@@ -468,6 +468,23 @@ export function createMultiView(options) {
     drawNow();
   }
 
+  /** Throw away every live trace, keeping the stored snapshots and profiles. */
+  function invalidate(reason) {
+    results = [null, null, null];
+    average = null;
+    analyser = null;
+    state.running = false;
+    state.frozen = false;
+    const startButton = element('btnMultiStart');
+    if (startButton) {
+      startButton.textContent = 'Start listening';
+      startButton.classList.remove('on');
+    }
+    setStatus(reason, 'err');
+    updateUI(true);
+    drawNow();
+  }
+
   function reportCapture(channels) {
     const rate = engine.sampleRate;
     const count = Number(channels) || engine.channels || 1;
@@ -506,6 +523,16 @@ export function createMultiView(options) {
     const end = written - 512;
     const start = end - state.fftSize;
     if (start < 0) return;
+
+    // The context was suspended, the stream ended or the device went away: the
+    // samples in the rings are older than the screen claims they are, so they
+    // are dropped rather than drawn as a live measurement.
+    if (engine.interrupted || engine.trackIssue) {
+      invalidate(engine.interrupted
+        ? 'audio was suspended (' + engine.interrupted + ') — the captures were discarded'
+        : (engine.trackIssue || 'the input stopped') + ' — the captures were discarded');
+      return;
+    }
 
     const refChannel = channelFor('REF');
     if (refChannel >= engine.channels) return;
@@ -1052,6 +1079,7 @@ export function createMultiView(options) {
 
   function open() {
     state.active = true;
+    if (typeof opts.onOpen === 'function') opts.onOpen();
     const section = element('multiWorkspace');
     if (section) section.hidden = false;
     buildChart();
@@ -1072,7 +1100,6 @@ export function createMultiView(options) {
       drawNow();
     });
     setStatus('multi-microphone workspace ready — start listening', 'ok');
-    if (typeof opts.onOpen === 'function') opts.onOpen();
   }
 
   function close() {

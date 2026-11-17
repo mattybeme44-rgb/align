@@ -33,6 +33,7 @@
     <button class="tb-btn" type="button" data-panel="averagingPanel" aria-expanded="false">Averaging</button>
     <button class="tb-btn" type="button" data-panel="delayPanel" aria-expanded="false">Delay Finder</button>
     <button class="tb-btn" type="button" id="btnMulti">Multi-mic</button>
+    <button class="tb-btn" type="button" id="btnHardware">Hardware</button>
   </nav>
 
   <div class="tb-right">
@@ -671,6 +672,21 @@
     </div>
   </aside>
 </main>
+
+<section id="hwWorkspace" class="multi-workspace hw-workspace" hidden>
+  <div class="multi-head">
+    <div>
+      <h2>Hardware verification</h2>
+      <p class="source-hint" id="hwStatus">Walk through the interface, the loopback and the microphones. Every result is measured from captured audio.</p>
+    </div>
+    <div class="row btns">
+      <button id="btnHwStart" class="btn btn-power" type="button">Start the interface check</button>
+      <button id="btnHwSave" class="btn" type="button">Save report</button>
+      <button id="btnHwClose" class="btn" type="button">Close</button>
+    </div>
+  </div>
+  <div class="hw-grid" id="hwBody"></div>
+</section>
 
 <section id="multiWorkspace" class="multi-workspace" hidden>
   <div class="multi-head">
