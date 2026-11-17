@@ -20,12 +20,37 @@ function traceRate(trace) {
   return trace.sampleRate / trace.fftSize;
 }
 
-function frequencyAxis(a, b) {
-  const dfA = traceRate(a);
-  const dfB = traceRate(b);
-  if (!(dfA > 0) || !(dfB > 0)) return null;
+/** A trace's own log frequency grid, when it has one (a saved capture does). */
+function frequencyGrid(trace) {
+  const grid = trace && trace.frequencies;
+  if (!grid || grid.length < 2) return null;
+  for (let i = 0; i < grid.length; i += 1) {
+    if (!(grid[i] > 0) || !Number.isFinite(grid[i])) return null;
+  }
+  if (!(grid[grid.length - 1] > grid[0])) return null;
+  return grid;
+}
 
-  const highest = Math.min(HIGHEST_HZ, Math.min(a.sampleRate, b.sampleRate) / 2);
+function nyquistOf(trace) {
+  const rate = Number(trace && trace.sampleRate);
+  return rate > 0 ? rate / 2 : Infinity;
+}
+
+function frequencyAxis(a, b) {
+  const gridA = frequencyGrid(a);
+  const gridB = frequencyGrid(b);
+  let highest;
+
+  if (gridA || gridB) {
+    // At least one trace is a saved capture on a log grid: the shared axis is
+    // the standard log span, clipped to whichever sample rate is known.
+    highest = Math.min(HIGHEST_HZ, nyquistOf(a), nyquistOf(b));
+  } else {
+    const dfA = traceRate(a);
+    const dfB = traceRate(b);
+    if (!(dfA > 0) || !(dfB > 0)) return null;
+    highest = Math.min(HIGHEST_HZ, Math.min(a.sampleRate, b.sampleRate) / 2);
+  }
   if (!(highest > LOWEST_HZ * 2)) return null;
 
   const low = Math.log10(LOWEST_HZ);
@@ -37,25 +62,71 @@ function frequencyAxis(a, b) {
   return frequencies;
 }
 
+/** One point off a log grid: linear interpolation between two neighbours. */
+function gridSample(trace, grid, frequency) {
+  const last = grid.length - 1;
+  const first = grid[0];
+  const highest = grid[last];
+  // The axis is built to land on the grid's ends, but 10^log10(x) can round a
+  // hair outside them: tolerate that much and nothing more.
+  const edge = Math.max(first, highest) * 1e-9;
+  if (frequency < first - edge || frequency > highest + edge) return null;
+
+  let lo = 0;
+  let hi = last;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (grid[mid] <= frequency) lo = mid; else hi = mid;
+  }
+  const f0 = grid[lo];
+  const f1 = grid[hi];
+  const fraction = f1 > f0 ? (frequency - f0) / (f1 - f0) : 0;
+  return {
+    mag0: trace.magDb[lo],
+    mag1: trace.magDb[hi],
+    phase0: trace.phaseDeg ? trace.phaseDeg[lo] : 0,
+    phase1: trace.phaseDeg ? trace.phaseDeg[hi] : 0,
+    fraction,
+  };
+}
+
 /** One trace resampled onto the shared axis, held as complex values. */
 function spectrum(trace, frequencies) {
-  const df = traceRate(trace);
-  if (!(df > 0)) return null;
-
   const re = new Float64Array(frequencies.length);
   const im = new Float64Array(frequencies.length);
-  const last = trace.bins - 1;
+  const grid = frequencyGrid(trace);
+  // A saved capture without stored phase cannot take part in a prediction:
+  // assuming 0° would invent a timing answer that was never measured.
+  if (grid && !trace.phaseDeg) return null;
+  const df = grid ? 0 : traceRate(trace);
+  const last = trace && trace.bins > 0 ? trace.bins - 1 : 0;
 
   for (let i = 0; i < frequencies.length; i += 1) {
-    const position = frequencies[i] / df;
-    const lower = Math.min(last, Math.max(0, Math.floor(position)));
-    const upper = Math.min(last, lower + 1);
-    const fraction = Math.min(1, Math.max(0, position - lower));
+    const frequency = frequencies[i];
+    let mag0;
+    let mag1;
+    let phase0;
+    let phase1;
+    let fraction;
 
-    const mag0 = Number(trace.magDb[lower]);
-    const mag1 = Number(trace.magDb[upper]);
-    const phase0 = Number(trace.phaseDeg[lower]);
-    const phase1 = Number(trace.phaseDeg[upper]);
+    if (grid) {
+      // A saved capture lives on its own log grid. Outside the stored range it
+      // contributes nothing rather than being stretched to fit.
+      const sample = gridSample(trace, grid, frequency);
+      if (!sample) continue;
+      ({ mag0, mag1, phase0, phase1, fraction } = sample);
+    } else {
+      if (!(df > 0)) continue;
+      const position = frequency / df;
+      const lower = Math.min(last, Math.max(0, Math.floor(position)));
+      const upper = Math.min(last, lower + 1);
+      fraction = Math.min(1, Math.max(0, position - lower));
+
+      mag0 = Number(trace.magDb[lower]);
+      mag1 = Number(trace.magDb[upper]);
+      phase0 = Number(trace.phaseDeg ? trace.phaseDeg[lower] : 0);
+      phase1 = Number(trace.phaseDeg ? trace.phaseDeg[upper] : 0);
+    }
 
     const m0 = Number.isFinite(mag0) ? Math.pow(10, mag0 / 20) : 0;
     const m1 = Number.isFinite(mag1) ? Math.pow(10, mag1 / 20) : 0;

@@ -49,6 +49,17 @@ import {
   eqExportText,
 } from './parametric-eq.js';
 import { parseLibrary, mergeLibrary, serializeLibrary } from './library.js';
+import {
+  DEFAULT_SPEAKERS,
+  addCustomSpeaker,
+  impulseEnvelope,
+  isSpeakerCapture,
+  libraryTrace,
+  normalizeImpulseEnvelope,
+  normalizeSpeakerList,
+  normalizeSpeakerCapture,
+  speakerById,
+} from './speaker.js';
 import { EqDesignerChart, TargetEditorChart } from './editors.js';
 import { buildWaterfall, WaterfallChart } from './waterfall.js';
 import { FFT } from './fft.js';
@@ -143,6 +154,9 @@ const STORAGE = {
   calibration: 'align.levelCalibrationDb',
   spl: 'align.showLevelAsSpl',
   saved: 'align.savedMeasurements.v1',
+  speaker: 'align.currentSpeaker.v1',
+  speakerList: 'align.speakers.v1',
+  speakerFields: 'align.speakerFields.v1',
 };
 
 const state = {
@@ -237,6 +251,11 @@ const state = {
   rtaPeaks: null,
   distortionRunning: false,
   distortionSteps: [],
+  // Individual speaker captures: the selected speaker, the frozen capture
+  // frame, and the two saved captures feeding the predicted-sum view.
+  speakerId: null,
+  speakerFrozen: null,
+  speakerSumIds: { a: '', b: '' },
 };
 
 /**
@@ -293,8 +312,10 @@ function write(key, value) {
 /* ---------- the capture library's stored format ---------- */
 
 // Everything new is saved at this schema; an older entry is filled in and
-// written back on the first launch, keeping its magnitude curve.
-const SAVED_SCHEMA = 2;
+// written back on the first launch, keeping its magnitude curve. Schema 3
+// adds the speaker-capture fields: speaker identity, venue and event, mic
+// position, interface and calibration details, tags, and the impulse envelope.
+const SAVED_SCHEMA = 3;
 
 function captureId() {
   return 'm' + Date.now().toString(36) + '-' + Math.random().toString(16).slice(2);
@@ -364,6 +385,9 @@ function normalizeSavedItem(raw) {
     imported: source.imported === true,
     sourceName: typeof source.sourceName === 'string' ? source.sourceName.slice(0, 120) : '',
     gate,
+    // Speaker-capture fields, validated field by field: a corrupt entry loses
+    // the speaker data, never the measurement.
+    ...normalizeSpeakerCapture(source),
   };
 }
 
@@ -639,7 +663,8 @@ function updateSheetLock() {
     !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
     !$('sumSheet').hidden || !$('levelLogSheet').hidden ||
-    !$('rtaSheet').hidden || !$('distortionSheet').hidden || !$('guideSheet').hidden;
+    !$('rtaSheet').hidden || !$('distortionSheet').hidden || !$('guideSheet').hidden ||
+    !$('speakerSheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -2455,6 +2480,7 @@ function captureSettingsText(item) {
   if (item.reference) parts.push(item.reference);
   if (item.gate && item.gate.enabled) parts.push('gated');
   if (item.source) parts.push(item.source);
+  if (item.venue) parts.push(item.venue);
   if (item.previewDelayMs) parts.push('preview ' + signedMs(item.previewDelayMs) + ' ms');
   return parts.join(' · ');
 }
@@ -3713,6 +3739,7 @@ function drawNow() {
   if (state.targetOpen) drawTargetChart();
   if (state.showDiff) renderDifference();
   if (state.guideOpen) renderGuide();
+  if (!$('speakerSheet').hidden) updateSpeakerLive();
 }
 
 function meanCoherence(res) {
@@ -6645,6 +6672,612 @@ function findBestOverlap() {
     ' dB against B as it arrived. Nothing was applied.';
 }
 
+/* ---------- speaker captures ---------- */
+
+// Individual speaker measurement: pick a speaker, freeze a good frame, save
+// it with the venue, microphone position and interface it was taken with,
+// recall it onto the graph, and predict how two saved speakers will sum.
+
+function speakerCatalogue() {
+  let custom = [];
+  try {
+    custom = normalizeSpeakerList(JSON.parse(window.localStorage.getItem(STORAGE.speakerList) || '[]'));
+  } catch (err) {
+    custom = [];
+  }
+  return [...DEFAULT_SPEAKERS, ...custom];
+}
+
+function saveCustomSpeakers(custom) {
+  try {
+    window.localStorage.setItem(STORAGE.speakerList, JSON.stringify(custom));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function speakerMessage(text, isError) {
+  const el = $('spkMessage');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+  el.style.color = isError ? 'var(--danger, #ff6b6b)' : '';
+}
+
+function speakerNumberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function selectedSpeaker() {
+  return speakerById(speakerCatalogue(), state.speakerId);
+}
+
+function refreshSpeakerSelect() {
+  const select = $('selSpeaker');
+  if (!select) return;
+  select.replaceChildren();
+  for (const speaker of speakerCatalogue()) {
+    const option = document.createElement('option');
+    option.value = speaker.id;
+    option.textContent = speaker.group && speaker.group !== 'Custom'
+      ? speaker.name + ' — ' + speaker.group
+      : speaker.name;
+    select.appendChild(option);
+  }
+  select.value = state.speakerId || '';
+  if (select.selectedIndex < 0 && select.options.length) {
+    state.speakerId = select.options[0].value;
+    select.value = state.speakerId;
+    write(STORAGE.speaker, state.speakerId);
+  }
+}
+
+/* Per-speaker venue, event and microphone position, kept between launches. */
+
+function loadSpeakerFields() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(STORAGE.speakerFields) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function persistSpeakerFields(map) {
+  try {
+    window.localStorage.setItem(STORAGE.speakerFields, JSON.stringify(map));
+  } catch (err) {
+    /* storage blocked: the fields stay for this session only */
+  }
+}
+
+function fillSpeakerFields(id) {
+  const fields = loadSpeakerFields()[id] || {};
+  $('spkVenue').value = fields.venue || '';
+  $('spkEvent').value = fields.event || '';
+  $('spkPosition').value = fields.position || '';
+  $('spkDistance').value = fields.distance === null || fields.distance === undefined ? '' : String(fields.distance);
+  $('spkHeight').value = fields.height === null || fields.height === undefined ? '' : String(fields.height);
+}
+
+function saveSpeakerFieldsFor(id) {
+  if (!id) return;
+  const map = loadSpeakerFields();
+  map[id] = {
+    venue: $('spkVenue').value.trim().slice(0, 80),
+    event: $('spkEvent').value.trim().slice(0, 80),
+    position: $('spkPosition').value.trim().slice(0, 80),
+    distance: speakerNumberOrNull($('spkDistance').value),
+    height: speakerNumberOrNull($('spkHeight').value),
+  };
+  persistSpeakerFields(map);
+}
+
+/* The frozen frame: what Save stores until it is released. */
+
+function freezeSpeaker() {
+  if (state.speakerFrozen) {
+    state.speakerFrozen = null;
+    updateSpeakerLive();
+    setStatus('speaker frame released — saving reads the live measurement', 'ok');
+    return;
+  }
+  if (!state.results) {
+    speakerMessage('Nothing to freeze — start the measurement first.', true);
+    return;
+  }
+  state.speakerFrozen = {
+    ...captureTrace(state.results),
+    irDb: state.results.irDb ? Float32Array.from(state.results.irDb) : null,
+    delayMs: state.totalDelayMs,
+    polarityKnown: state.results.polarityKnown,
+    polarity: state.results.polarity,
+    frozenAt: Date.now(),
+  };
+  updateSpeakerLive();
+  const envelope = impulseEnvelope(state.speakerFrozen.irDb, state.speakerFrozen.sampleRate, state.speakerFrozen.fftSize);
+  drawSpeakerIr(envelope, 'the frozen frame');
+  setStatus('speaker frame frozen — the measurement keeps running', 'ok');
+}
+
+let lastSpeakerLiveText = '';
+
+function updateSpeakerLive() {
+  const el = $('spkLive');
+  if (!el) return;
+  const speaker = selectedSpeaker();
+  const res = state.speakerFrozen || state.results;
+  let text;
+  if (!speaker) {
+    text = 'Select a speaker first.';
+  } else if (!res) {
+    text = speaker.name + ' — idle. Start the measurement to read it.';
+  } else {
+    const coherence = Math.round(meanCoherence(res) * 100);
+    const delay = state.speakerFrozen ? res.delayMs : state.totalDelayMs;
+    text = (state.speakerFrozen ? 'FROZEN frame · ' : 'LIVE · ')
+      + speaker.name
+      + ' · delay ' + delay.toFixed(2) + ' ms'
+      + ' · coherence ' + coherence + '%'
+      + (state.running ? ' · measurement running' : ' · measurement stopped');
+  }
+  const power = $('btnSpkPower');
+  if (power) power.textContent = state.running ? 'Stop' : 'Start';
+  if (text !== lastSpeakerLiveText) {
+    lastSpeakerLiveText = text;
+    el.textContent = text;
+  }
+}
+
+function saveSpeakerCapture() {
+  const speaker = selectedSpeaker();
+  if (!speaker) {
+    speakerMessage('Choose a speaker first.', true);
+    return;
+  }
+  const frozen = !!state.speakerFrozen;
+  const res = state.speakerFrozen || state.results;
+  if (!res) {
+    speakerMessage('Start the measurement before saving.', true);
+    return;
+  }
+
+  const now = new Date();
+  const name = speaker.name + ' · ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const calibrationInfo = state.micCal && state.micCal.name
+    ? { name: state.micCal.name, offsetDb: state.calibrationDb || 0 }
+    : state.calibrationDb
+      ? { name: 'Level offset only', offsetDb: state.calibrationDb }
+      : null;
+
+  const item = {
+    schema: SAVED_SCHEMA,
+    id: captureId(),
+    name,
+    date: now.toISOString(),
+    source: frozen ? 'Speaker (frozen frame)' : 'Speaker (live)',
+    speaker: { id: speaker.id, name: speaker.name, group: speaker.group },
+    venue: $('spkVenue').value.trim().slice(0, 80),
+    event: $('spkEvent').value.trim().slice(0, 80),
+    micPosition: {
+      label: $('spkPosition').value.trim().slice(0, 80),
+      distanceM: speakerNumberOrNull($('spkDistance').value),
+      heightM: speakerNumberOrNull($('spkHeight').value),
+    },
+    inputs: {
+      device: (($('rdDevice') && $('rdDevice').textContent) || '').trim(),
+      micChannel: state.micChannel,
+      refChannel: state.refChannel,
+      channelsDetected: (($('rdChannelCount') && $('rdChannelCount').textContent) || '').trim(),
+      sampleRate: res.sampleRate > 0 ? res.sampleRate : null,
+    },
+    calibration: calibrationInfo,
+    delayMs: frozen ? res.delayMs : state.totalDelayMs,
+    coherence: meanCoherence(res),
+    polarity: res.polarityKnown ? (res.polarity > 0 ? 'normal' : 'inverted') : 'unknown',
+    fftSize: res.fftSize,
+    sampleRate: res.sampleRate,
+    smoothing: smoothingLabel(),
+    reference: referenceLabel(),
+    gate: { enabled: !!state.gate.enabled, startMs: state.gate.startMs, widthMs: state.gate.widthMs },
+    curve: savedCurve(res),
+    phase: sampleSaved(res.phaseDeg, res),
+    phaseCoherence: sampleSaved(res.coh, res),
+    phaseCompensated: state.compensate,
+    previewDelayMs: 0,
+    impulse: impulseEnvelope(res.irDb, res.sampleRate, res.fftSize),
+    tags: [],
+    note: '',
+  };
+
+  const updated = [item, ...state.saved];
+  if (!persistSaved(updated)) {
+    speakerMessage('Could not save — browser storage is full or blocked. Nothing was changed.', true);
+    return;
+  }
+  state.saved = updated;
+  renderSpeakerList();
+  renderSpeakerSumSelects();
+  drawSpeakerIr(item.impulse, item.name);
+  speakerMessage('Saved “' + name + '”' + (frozen ? ' from the frozen frame' : ' live') +
+    (item.impulse ? ' with its impulse envelope.' : ' (no impulse envelope this frame).'), false);
+  setStatus('speaker capture saved: ' + speaker.name, 'ok');
+}
+
+function speakerEntries() {
+  return state.saved.filter((item) => isSpeakerCapture(item));
+}
+
+function renderSpeakerList() {
+  const list = $('spkList');
+  if (!list) return;
+  list.replaceChildren();
+
+  const entries = speakerEntries().sort((left, right) => new Date(right.date) - new Date(left.date));
+  if (!entries.length) {
+    const empty = document.createElement('li');
+    empty.className = 'saved-empty';
+    empty.textContent = 'No speaker captures saved yet — pick a speaker, start the measurement, then Freeze and Save.';
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const item of entries) {
+    const row = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    const selection = state.overlaidSavedIds.indexOf(item.id);
+    const overlayColor = selection >= 0 ? SAVED_COLORS[selection % SAVED_COLORS.length] : '';
+    button.className = 'saved-item' + (selection >= 0 ? ' selected' : '');
+    if (overlayColor) button.style.borderColor = overlayColor;
+
+    button.addEventListener('click', () => {
+      if (selection >= 0) {
+        state.overlaidSavedIds.splice(selection, 1);
+      } else if (state.overlaidSavedIds.length >= 8) {
+        setStatus('Clear an overlay before adding another (8 maximum)', 'err');
+        speakerMessage('Eight overlays are already showing. Clear one first.', true);
+        return;
+      } else {
+        state.overlaidSavedIds.push(item.id);
+        if (item.phase) $('chkPhase').checked = true;
+      }
+      speakerMessage('');
+      renderSpeakerList();
+      renderSavedOverlayControls();
+      draw();
+    });
+
+    const main = document.createElement('div');
+    main.className = 'saved-main';
+
+    const place = [item.venue, item.event].filter(Boolean).join(' · ');
+    const where = item.micPosition && (item.micPosition.label ||
+      item.micPosition.distanceM !== null || item.micPosition.heightM !== null)
+      ? ' · mic: ' + [
+          item.micPosition.label,
+          item.micPosition.distanceM !== null ? item.micPosition.distanceM + ' m' : '',
+          item.micPosition.heightM !== null ? item.micPosition.heightM + ' m high' : '',
+        ].filter(Boolean).join(', ')
+      : '';
+
+    const meta = document.createElement('div');
+    meta.className = 'saved-meta';
+    meta.textContent = (place || 'no venue') + where;
+
+    const figures = document.createElement('div');
+    figures.className = 'saved-meta';
+    figures.textContent = (item.polarity && item.polarity !== 'unknown' ? 'Polarity ' + item.polarity + ' · ' : '') +
+      'Delay ' + Number(item.delayMs).toFixed(2) + ' ms · coherence ' + Math.round(item.coherence * 100) + '%' +
+      (item.impulse ? ' · impulse stored' : '');
+
+    const name = document.createElement('div');
+    name.className = 'saved-name';
+    name.textContent = item.name + (item.speaker.group && item.speaker.group !== 'Custom'
+      ? ' (' + item.speaker.group + ')' : '');
+
+    main.append(figures, meta, name);
+
+    const date = document.createElement('div');
+    date.className = 'saved-date';
+    date.textContent = formatSavedDate(item.date);
+    main.appendChild(date);
+
+    const thumb = document.createElement('canvas');
+    thumb.className = 'saved-thumb';
+    thumb.width = 148; thumb.height = 76;
+    drawSavedThumb(thumb, item.curve, overlayColor);
+
+    const check = document.createElement('span');
+    check.className = 'saved-check';
+    check.textContent = selection >= 0 ? '✓' : '+';
+    check.style.color = overlayColor || '';
+
+    button.append(main, thumb, check);
+
+    const actions = document.createElement('div');
+    actions.className = 'saved-extra';
+    const action = (label, handler) => {
+      const control = document.createElement('button');
+      control.type = 'button';
+      control.className = 'btn';
+      control.textContent = label;
+      control.addEventListener('click', handler);
+      actions.appendChild(control);
+    };
+
+    action('Impulse', () => {
+      const envelope = normalizeImpulseEnvelope(item.impulse);
+      drawSpeakerIr(envelope, item.name);
+      if (!envelope) speakerMessage('That capture has no impulse envelope stored.', true);
+    });
+
+    if (!item.imported) {
+      action('Restore settings', () => restoreSavedSettings(item));
+    }
+
+    action('Delete', () => {
+      const updated = state.saved.filter((entry) => entry.id !== item.id);
+      if (!persistSaved(updated)) return;
+      state.saved = updated;
+      state.overlaidSavedIds = state.overlaidSavedIds.filter((id) => id !== item.id);
+      if (state.speakerSumIds.a === item.id) state.speakerSumIds.a = '';
+      if (state.speakerSumIds.b === item.id) state.speakerSumIds.b = '';
+      renderSpeakerList();
+      renderSpeakerSumSelects();
+      renderSavedOverlayControls();
+      draw();
+    });
+
+    row.append(button, actions);
+    list.appendChild(row);
+  }
+}
+
+/* The stored impulse envelope, drawn as an ETC view. */
+
+function drawSpeakerIr(envelope, label) {
+  const canvas = $('spkIrChart');
+  const info = $('spkIrInfo');
+  const note = $('spkIrNote');
+  if (!canvas) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 320;
+  const height = canvas.clientHeight || 150;
+  const pixelWidth = Math.round(width * dpr);
+  const pixelHeight = Math.round(height * dpr);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  if (!envelope || !Array.isArray(envelope.values) || envelope.values.length < 2) {
+    if (info) info.textContent = '—';
+    if (note) note.textContent = 'No impulse envelope in ' + (label || 'this capture') +
+      '. It appears when a speaker capture is saved from a live or frozen frame.';
+    return;
+  }
+
+  ctx.fillStyle = 'rgba(10, 16, 11, 0.96)';
+  ctx.strokeStyle = 'rgba(161, 191, 150, 0.16)';
+  ctx.lineWidth = 1;
+  ctx.fillRect(0.5, 0.5, width - 1, height - 1);
+  ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+
+  const stepMs = envelope.stepMs > 0 ? envelope.stepMs : 1;
+  const startMs = envelope.startMs;
+  const endMs = startMs + (envelope.values.length - 1) * stepMs;
+  const plot = { x: 30, y: 8, w: width - 40, h: height - 26 };
+  const dbHigh = 6;
+  const dbLow = -100;
+  const xFor = (ms) => plot.x + ((ms - startMs) / (endMs - startMs)) * plot.w;
+  const yFor = (db) => plot.y + plot.h - ((db - dbLow) / (dbHigh - dbLow)) * plot.h;
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  for (let ms = Math.ceil(startMs / 25) * 25; ms <= endMs; ms += 25) {
+    const x = xFor(ms);
+    ctx.strokeStyle = ms === 0 ? 'rgba(161, 191, 150, 0.30)' : 'rgba(161, 191, 150, 0.08)';
+    ctx.beginPath();
+    ctx.moveTo(x, plot.y);
+    ctx.lineTo(x, plot.y + plot.h);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(156, 159, 149, 0.8)';
+    ctx.fillText(String(Math.round(ms)), Math.min(plot.x + plot.w - 10, Math.max(plot.x + 8, x)), plot.y + plot.h + 12);
+  }
+
+  ctx.textAlign = 'right';
+  for (let db = 0; db >= dbLow; db -= 20) {
+    const y = yFor(db);
+    ctx.strokeStyle = db === 0 ? 'rgba(161, 191, 150, 0.26)' : 'rgba(161, 191, 150, 0.08)';
+    ctx.beginPath();
+    ctx.moveTo(plot.x, y);
+    ctx.lineTo(plot.x + plot.w, y);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(156, 159, 149, 0.8)';
+    ctx.fillText(String(db), plot.x - 4, y + 3);
+  }
+
+  ctx.beginPath();
+  envelope.values.forEach((value, index) => {
+    const x = xFor(startMs + index * stepMs);
+    const y = yFor(Math.max(dbLow, Math.min(dbHigh, value)));
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#a1bf96';
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  if (info) {
+    info.textContent = 'peak ' + envelope.peakMs.toFixed(2) + ' ms · ' +
+      startMs.toFixed(0) + ' to ' + endMs.toFixed(0) + ' ms · ' + stepMs.toFixed(1) + ' ms steps';
+  }
+  if (note) {
+    note.textContent = 'Envelope of the measured impulse response relative to its peak (ETC), from ' +
+      ((label && label !== 'the frozen frame') ? '“' + label + '”' : label || 'the capture') +
+      '. Each point is the loudest sample of its time bucket, so the arrival and the early decay are honest.';
+  }
+}
+
+/* The predicted sum of two saved speaker captures. */
+
+function renderSpeakerSumSelects() {
+  const selectA = $('spkSumA');
+  const selectB = $('spkSumB');
+  if (!selectA || !selectB) return;
+
+  const capable = speakerEntries().filter((item) => Array.isArray(item.phase) && Array.isArray(item.phaseCoherence));
+  for (const select of [selectA, selectB]) {
+    select.replaceChildren();
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '— none —';
+    select.appendChild(none);
+    for (const item of capable) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name + ' · ' + formatSavedDate(item.date);
+      select.appendChild(option);
+    }
+  }
+  selectA.value = state.speakerSumIds.a || '';
+  if (selectA.selectedIndex < 0) selectA.value = '';
+  selectB.value = state.speakerSumIds.b || '';
+  if (selectB.selectedIndex < 0) selectB.value = '';
+}
+
+function renderSpeakerSum() {
+  const summary = $('spkSumSummary');
+  const entryA = state.saved.find((item) => item.id === state.speakerSumIds.a) || null;
+  const entryB = state.saved.find((item) => item.id === state.speakerSumIds.b) || null;
+
+  if (!entryA || !entryB) {
+    if (summary) summary.textContent = 'Choose two saved speaker captures that carry phase.';
+    drawSumChart($('spkSumChart'), null);
+    return;
+  }
+
+  const traceA = libraryTrace(entryA);
+  const traceB = libraryTrace(entryB);
+  const phaseMissing = [entryA, entryB].filter((entry) => {
+    const trace = entry === entryA ? traceA : traceB;
+    return !trace || !trace.phaseDeg;
+  }).map((entry) => entry.name);
+
+  if (phaseMissing.length) {
+    if (summary) summary.textContent = phaseMissing.join(' and ') +
+      ' has no stored phase — recapture with phase, or choose another pair.';
+    drawSumChart($('spkSumChart'), null);
+    return;
+  }
+
+  const options = {
+    delayMs: Number($('spkSumDelay').value) || 0,
+    levelDb: Number($('spkSumLevel').value) || 0,
+    inverted: $('spkSumInvert').checked,
+  };
+  const data = buildSumPreview(traceA, traceB, options);
+  const compensated = [entryA, entryB].some((entry) => entry.phaseCompensated);
+  if (summary) {
+    summary.textContent = data
+      ? 'Prediction · ' + data.summary + (compensated ? ' Captured with phase compensation on — the relative arrival may be shifted.' : '')
+      : 'Those two captures cannot be laid on one frequency axis.';
+  }
+  drawSumChart($('spkSumChart'), data);
+}
+
+function openSpeakerSheet() {
+  refreshSpeakerSelect();
+  fillSpeakerFields(state.speakerId);
+  renderSpeakerList();
+  renderSpeakerSumSelects();
+  renderSpeakerSum();
+  updateSpeakerLive();
+  const frozenEnvelope = state.speakerFrozen
+    ? impulseEnvelope(state.speakerFrozen.irDb, state.speakerFrozen.sampleRate, state.speakerFrozen.fftSize)
+    : null;
+  if (frozenEnvelope) drawSpeakerIr(frozenEnvelope, 'the frozen frame');
+  speakerMessage('');
+  $('speakerSheet').hidden = false;
+  updateSheetLock();
+}
+
+function wireSpeakerSheet() {
+  if (!$('speakerSheet') || !$('btnSpeakers')) return;
+
+  $('btnSpeakers').addEventListener('click', openSpeakerSheet);
+  $('btnCloseSpeakers').addEventListener('click', () => closeSheet('speakerSheet'));
+
+  $('selSpeaker').addEventListener('change', () => {
+    saveSpeakerFieldsFor(state.speakerId);
+    state.speakerId = $('selSpeaker').value || null;
+    write(STORAGE.speaker, state.speakerId || '');
+    fillSpeakerFields(state.speakerId);
+    updateSpeakerLive();
+  });
+
+  $('btnSpkAdd').addEventListener('click', () => {
+    const answer = window.prompt('Custom speaker name', '');
+    if (answer === null) return;
+    const custom = addCustomSpeaker(speakerCatalogue(), answer);
+    if (!custom.ok) {
+      speakerMessage(custom.message, true);
+      return;
+    }
+    const onlyCustom = custom.speakers.filter((entry) =>
+      !DEFAULT_SPEAKERS.some((def) => def.id === entry.id));
+    if (!saveCustomSpeakers(onlyCustom)) {
+      speakerMessage('Could not store the custom speaker — browser storage is full or blocked. It lasts until the page reloads.', true);
+    }
+    state.speakerId = custom.speakers[custom.speakers.length - 1].id;
+    write(STORAGE.speaker, state.speakerId);
+    refreshSpeakerSelect();
+    updateSpeakerLive();
+    speakerMessage('Added “' + custom.speakers[custom.speakers.length - 1].name + '”.', false);
+  });
+
+  $('btnSpkPower').addEventListener('click', () => $('btnPower').click());
+  $('btnSpkFreeze').addEventListener('click', freezeSpeaker);
+  $('btnSpkSave').addEventListener('click', saveSpeakerCapture);
+
+  for (const id of ['spkVenue', 'spkEvent', 'spkPosition', 'spkDistance', 'spkHeight']) {
+    $(id).addEventListener('change', () => saveSpeakerFieldsFor(state.speakerId));
+  }
+
+  $('spkSumA').addEventListener('change', () => {
+    state.speakerSumIds.a = $('spkSumA').value;
+    renderSpeakerSum();
+  });
+  $('spkSumB').addEventListener('change', () => {
+    state.speakerSumIds.b = $('spkSumB').value;
+    renderSpeakerSum();
+  });
+  $('spkSumDelay').addEventListener('input', () => {
+    $('spkSumDelayValue').textContent = signedMs(Number($('spkSumDelay').value) || 0) + ' ms';
+    renderSpeakerSum();
+  });
+  $('spkSumLevel').addEventListener('input', () => {
+    const level = Number($('spkSumLevel').value) || 0;
+    $('spkSumLevelValue').textContent = (level >= 0 ? '+' : '') + level.toFixed(1) + ' dB';
+    renderSpeakerSum();
+  });
+  $('spkSumInvert').addEventListener('change', renderSpeakerSum);
+
+  state.speakerId = readString(STORAGE.speaker, '') || null;
+  refreshSpeakerSelect();
+  fillSpeakerFields(state.speakerId);
+}
+
+wireSpeakerSheet();
+
 /* ---------- level log ---------- */
 
 const levelLogState = {
@@ -7385,8 +8018,16 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 
 /* ---------- published build check ---------- */
 
-// Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-19-01';
+// The build stamp lives in index.html's align-build meta tag, published
+// together with version.json, so the page and the version file cannot drift
+// apart. app.js holds no literal of its own: a literal here was what made the
+// update banner come back after every reload.
+function documentBuild() {
+  const meta = document.querySelector('meta[name="align-build"]');
+  return meta && meta.content ? meta.content.trim() : '';
+}
+
+const currentBuild = documentBuild();
 let updateCheckedAt = 0;
 
 /**
@@ -7403,7 +8044,7 @@ async function checkForUpdate(force) {
     const response = await fetch('version.json', { cache: 'no-store' });
     if (!response.ok) return;
     const data = await response.json();
-    if (!data || !data.build || data.build === BUILD) return;
+    if (!data || !data.build || data.build === currentBuild) return;
     const banner = $('updateBanner');
     if (banner) banner.hidden = false;
   } catch (err) {
@@ -7411,9 +8052,29 @@ async function checkForUpdate(force) {
   }
 }
 
+/**
+ * Reload loads the new build. A waiting service worker only takes over when
+ * the page asks it to, so the SKIP_WAITING message goes first and navigation
+ * follows the moment the new worker is controlling the page. The 2.5 s timer
+ * is the belt-and-braces: even a silent worker cannot leave the button dead.
+ */
+function reloadUpdate() {
+  let navigated = false;
+  const go = () => {
+    if (navigated) return;
+    navigated = true;
+    window.location.reload();
+  };
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
+    navigator.serviceWorker.addEventListener('controllerchange', go, { once: true });
+  }
+  setTimeout(go, 2500);
+}
+
 const reloadUpdateButton = $('btnReloadUpdate');
 if (reloadUpdateButton) {
-  reloadUpdateButton.addEventListener('click', () => location.reload());
+  reloadUpdateButton.addEventListener('click', reloadUpdate);
 }
 
 document.addEventListener('visibilitychange', () => {

@@ -1636,3 +1636,21 @@ body.validation-page {
   grid-column: 1 / -1;
   opacity: 0.65;
 }
+
+.hw-foot {
+  grid-column: 1 / -1;
+  opacity: 0.65;
+}
+
+/* ---------- speaker captures ---------- */
+
+.chart-wrap.spk {
+  height: 160px;
+  margin-bottom: 8px;
+}
+
+.chart-wrap.spk canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

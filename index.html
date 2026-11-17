@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-05" />
+<meta name="align-build" content="2026-11-19-06" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -34,6 +34,7 @@
     <button class="tb-btn" type="button" data-panel="averagingPanel" aria-expanded="false">Averaging</button>
     <button class="tb-btn" type="button" data-panel="delayPanel" aria-expanded="false">Delay Finder</button>
     <button class="tb-btn" type="button" id="btnMulti">Multi-mic</button>
+    <button class="tb-btn" type="button" id="btnSpeakers">Speakers</button>
     <button class="tb-btn" type="button" id="btnHardware">Hardware</button>
   </nav>
 
@@ -867,6 +868,67 @@
     <button id="btnClearSavedOverlays" class="btn" type="button">Clear all overlays</button>
     <button id="btnSaveCurrent" class="btn btn-power" type="button">Save capture</button>
     <p class="muted" id="saveHint">A capture is saved with its magnitude, phase, coherence, delay, settings and note in this browser.</p>
+  </div>
+</section>
+
+<section id="speakerSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <h2 class="sheet-title">Speaker capture</h2>
+    <button id="btnCloseSpeakers" class="btn" type="button">Done</button>
+  </div>
+  <p class="muted" id="spkSubtitle">Measure one loudspeaker at a time · captures go to the capture library</p>
+  <div class="row"><label for="selSpeaker">Speaker</label><select id="selSpeaker"></select></div>
+  <div class="row btns">
+    <button id="btnSpkAdd" class="btn" type="button">Add custom…</button>
+    <button id="btnSpkPower" class="btn" type="button">Start</button>
+    <button id="btnSpkFreeze" class="btn" type="button">Freeze</button>
+  </div>
+  <div class="row"><label for="spkVenue">Venue</label><input id="spkVenue" type="text" maxlength="80" placeholder="Venue name" autocomplete="off" /></div>
+  <div class="row"><label for="spkEvent">Event</label><input id="spkEvent" type="text" maxlength="80" placeholder="Show or date" autocomplete="off" /></div>
+  <div class="row"><label for="spkPosition">Mic position</label><input id="spkPosition" type="text" maxlength="80" placeholder="e.g. FOH centre" autocomplete="off" /></div>
+  <div class="row"><label for="spkDistance">Distance <span class="hint">m</span></label><input id="spkDistance" type="number" step="0.1" min="0" max="200" inputmode="decimal" placeholder="—" /></div>
+  <div class="row"><label for="spkHeight">Height <span class="hint">m</span></label><input id="spkHeight" type="number" step="0.1" min="0" max="60" inputmode="decimal" placeholder="—" /></div>
+  <p class="source-hint" id="spkLive">Idle — the capture frame reads the measurement that is running.</p>
+  <div class="row btns">
+    <button id="btnSpkSave" class="btn btn-power" type="button">Save speaker capture</button>
+  </div>
+  <p id="spkMessage" class="source-hint" hidden></p>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label>Impulse envelope (ETC)</label>
+      <span class="value-box" id="spkIrInfo">—</span>
+    </div>
+    <div class="chart-wrap spk">
+      <canvas id="spkIrChart" aria-label="Impulse envelope of the shown speaker capture"></canvas>
+    </div>
+    <p class="sheet-foot-note" id="spkIrNote">The envelope of the measured impulse response, one value per millisecond, relative to its peak. It comes from the transfer-function measurement — a capture with no impulse data shows nothing.</p>
+  </div>
+  <ul class="saved-list" id="spkList"></ul>
+  <div class="card wf-card">
+    <div class="row wf-row">
+      <label>Predicted sum</label>
+      <span class="value-box" id="spkSumTag">prediction</span>
+    </div>
+    <div class="row"><label for="spkSumA">Trace A</label><select id="spkSumA"></select></div>
+    <div class="row"><label for="spkSumB">Trace B</label><select id="spkSumB"></select></div>
+    <div class="row wf-row">
+      <label for="spkSumDelay">B delay</label>
+      <span class="value-box" id="spkSumDelayValue">0.0 ms</span>
+    </div>
+    <input type="range" id="spkSumDelay" min="-20" max="20" step="0.1" value="0" />
+    <div class="range-labels"><span>−20 ms</span><span>+20 ms</span></div>
+    <div class="row wf-row">
+      <label for="spkSumLevel">B level</label>
+      <span class="value-box" id="spkSumLevelValue">+0.0 dB</span>
+    </div>
+    <input type="range" id="spkSumLevel" min="-12" max="12" step="0.5" value="0" />
+    <div class="range-labels"><span>−12 dB</span><span>+12 dB</span></div>
+    <label class="chk"><input type="checkbox" id="spkSumInvert" /> Flip B polarity</label>
+    <div class="chart-wrap spk">
+      <canvas id="spkSumChart" aria-label="Predicted sum of two saved speaker captures"></canvas>
+    </div>
+    <p class="source-hint" id="spkSumSummary">Choose two saved speaker captures that carry phase.</p>
+    <p class="sheet-foot-note">A prediction from the stored captures — how the pair would add once B is delayed, gained or flipped. It is not a measurement and changes nothing.</p>
   </div>
 </section>
 

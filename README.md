@@ -377,6 +377,31 @@ than by boosting.
   `main`
 
 
+## Individual speaker captures
+
+The `Speakers` button in the toolbar opens a capture workflow for measuring one
+loudspeaker at a time and keeping the results in the capture library.
+
+- **Pick a speaker** — the list ships with Subwoofer 1–8, Main L/R Inner/Outer
+  and Mid/Rear Delay L/R; `Add custom…` names any other box. The selection, and
+  each speaker's venue, event, microphone position, distance and height, are
+  kept between launches.
+- **Freeze, then Save** — `Freeze` holds the current frame (the measurement
+  keeps running); `Save speaker capture` stores the frozen or live frame with
+  magnitude, phase and coherence on the library's 400-point grid, the delay,
+  polarity, FFT settings, gate, the interface and channels it was taken with,
+  the calibration in use, and the envelope of the measured impulse response
+  (ETC, one value per millisecond, relative to its peak). Captures land in the
+  same library as ordinary captures, so export, import, search and the eight
+  overlay colours all work on them.
+- **Compare** — tap entries in the list to overlay them on the live graph;
+  `Impulse` shows a capture's stored envelope; `Restore settings` puts its FFT
+  size, smoothing and reference back on the measurement.
+- **Predicted sum** — choose two phase-carrying captures and slide B's delay
+  and level (with a polarity flip) to see how the pair would add. It is a
+  prediction from stored curves, never a measurement, and a capture saved with
+  phase compensation on is flagged because its relative arrival may be shifted.
+
 ## Four-channel, multi-microphone measurement
 
 The `Multi-mic` button in the toolbar opens a second workspace built for one
