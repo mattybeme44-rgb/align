@@ -178,6 +178,11 @@ export class Analyser {
     // transform it back for a gated magnitude curve.
     this.irRe = new Float64Array(size);
     this.irIm = new Float64Array(size);
+    // The impulse response of the transfer function itself (IFFT of H), which
+    // the gate windows. Kept apart from irRe/irIm, which carry the reference's
+    // spectrum with them.
+    this.hIrRe = new Float64Array(size);
+    this.hIrIm = new Float64Array(size);
     // Working buffers for one result set. A live measurement builds a result
     // every frame, and a fresh couple of hundred kilobytes of Float64 each
     // time is what used to keep the browser's collector running while the
@@ -444,6 +449,34 @@ export class Analyser {
   }
 
   /**
+   * Inverse-transform the transfer function H = Sxy / Sxx into its own impulse
+   * response, so a gate can window the loudspeaker's response and not the
+   * cross-correlation. Sxy is the reference's spectrum times H, so gating Sxy
+   * tilts the curve by the reference's slope: 3 dB per octave for the pink
+   * noise the app plays by default. H is Hermitian for a real signal, so the
+   * negative frequencies are its conjugates.
+   */
+  buildTransferIR(hRe, hIm) {
+    const n = this.fftSize;
+    const half = n >> 1;
+    const re = this.hIrRe;
+    const im = this.hIrIm;
+    re.fill(0);
+    im.fill(0);
+    re[0] = hRe[0];
+    im[0] = 0;
+    for (let k = 1; k < half; k++) {
+      re[k] = hRe[k];
+      im[k] = hIm[k];
+      re[n - k] = hRe[k];
+      im[n - k] = -hIm[k];
+    }
+    re[half] = hRe[half];
+    im[half] = 0;
+    this.fft.inverse(re, im);
+  }
+
+  /**
    * The power spectrum of the impulse response windowed in time, measured from
    * the impulse peak, with softly tapered edges so the gate itself does not add
    * ripples to the curve.
@@ -479,8 +512,8 @@ export class Analyser {
         weight = 0.5 * (1 - Math.cos((Math.PI * (width - offset - 1)) / taper));
       }
 
-      re[index] = this.irRe[index] * weight;
-      im[index] = this.irIm[index] * weight;
+      re[index] = this.hIrRe[index] * weight;
+      im[index] = this.hIrIm[index] * weight;
     }
 
     this.fft.forward(re, im);
@@ -515,9 +548,12 @@ export class Analyser {
     // related. Across a link whose latency wanders — Bluetooth, typically —
     // coherence collapses and the sign is just noise, so the readout says
     // nothing instead of flickering between normal and inverted.
+    // The vote has to run before the decided flag is read: the flag is only set
+    // by a vote, so testing it first meant the readout could never leave unknown.
     const coherence = this.meanCoherence();
-    const polarityKnown = this.frames >= 3 && coherence > 0.45 && this.polarityDecided;
-    if (polarityKnown) this.votePolarity(this.peakRe >= 0 ? 1 : -1);
+    const measurable = this.frames >= 3 && coherence > 0.45;
+    if (measurable) this.votePolarity(this.peakRe >= 0 ? 1 : -1);
+    const polarityKnown = measurable && this.polarityDecided;
 
     if (compensate) this.computeIR(this.delayAvg, false);
 
@@ -555,6 +591,9 @@ export class Analyser {
       const denom = sxx * this.syy[k];
       coh[k] = denom > 0 ? Math.min(1, cxy / denom) : 0;
     }
+
+    // Taken before any smoothing, so the gate sees the measured transfer function.
+    if (gated) this.buildTransferIR(hRe, hIm);
 
     // Phase-aware smoothing: the transfer function is complex, so the average is
     // a vector sum of the real and imaginary parts, not an average of wrapped

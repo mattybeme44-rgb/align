@@ -1,4 +1,5 @@
 import { AudioEngine } from './audio-engine.js';
+import { createMultiView } from './multiview.js';
 import { Analyser, suggestEq } from './analyser.js';
 import { TransferChart, ImpulseChart, wrapDegrees } from './charts.js';
 import {
@@ -236,6 +237,26 @@ const state = {
   distortionRunning: false,
   distortionSteps: [],
 };
+
+/**
+ * The four-channel workspace. It owns its own analysers and audio graph while it
+ * is open, and the single-microphone measurement pauses behind it.
+ */
+const multiView = createMultiView({
+  engine,
+  setStatus,
+  sourceOptions: () => sourceOptions(),
+  generator: () => ({ signal: state.signal, level: state.level, sineHz: state.sineHz }),
+  onOpen: () => {
+    if (state.running) stopAll();
+    const start = $('btnPower');
+    if (start) start.disabled = true;
+  },
+  onClose: () => {
+    const start = $('btnPower');
+    if (start) start.disabled = false;
+  },
+});
 
 /* ---------- storage ---------- */
 
@@ -1326,7 +1347,7 @@ function reportInput() {
     return;
   }
   if (engine.deviceChannels < 2) {
-    setStatus('phone microphone · generated reference', 'ok');
+    setStatus('built-in microphone · generated reference · measures the phone, not your system', 'ok');
     return;
   }
   setStatus(engine.deviceLabel + ' · ' + engine.deviceChannels + ' inputs', 'ok');
@@ -5946,8 +5967,10 @@ async function startAll() {
     $('selRef').value = 'internal';
     showInputAdvice(
       'The browser opened only one input channel, so loopback is not available — using the ' +
-        'generated reference instead. Replug the interface and tap Restart audio to try for ' +
-        'two channels again.',
+        'generated reference instead. Loopback needs the microphone and the reference on two ' +
+        'inputs of the same interface, sharing one clock: a phone microphone and an interface ' +
+        'drift apart and cannot be measured as a pair. Replug the interface and tap Restart ' +
+        'audio to try for two channels again.',
       false,
     );
   }
@@ -5991,7 +6014,14 @@ async function startAll() {
 
 function loop(now) {
   rafId = requestAnimationFrame(loop);
-  if (!state.running || document.hidden) return;
+  if (document.hidden) return;
+  // The multi-microphone workspace runs its own analysers and paints its own
+  // chart; the single measurement behind it stays paused until it is closed.
+  if (multiView.active) {
+    multiView.tick(now);
+    return;
+  }
+  if (!state.running) return;
   // The noise check silences the source; hold the analysis rather than feed
   // three seconds of silence into the running average.
   if (state.checkingNoise) return;
@@ -7104,6 +7134,23 @@ $('btnCopySafari').addEventListener('click', () => {
   copyLink();
 });
 
+/* ---------- the multi-microphone workspace ---------- */
+
+$('btnMulti')?.addEventListener('click', () => {
+  if (multiView.active) {
+    multiView.close();
+    $('btnMulti').classList.remove('on');
+  } else {
+    multiView.open();
+    $('btnMulti').classList.add('on');
+  }
+});
+
+$('btnMultiClose')?.addEventListener('click', () => {
+  multiView.close();
+  $('btnMulti').classList.remove('on');
+});
+
 $('btnTryHere').addEventListener('click', () => {
   allowStartHere = true;
   hideSafariBanner();
@@ -7338,7 +7385,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ---------- published build check ---------- */
 
 // Bumped with every published build; version.json carries the same string.
-const BUILD = '2026-11-18-02';
+const BUILD = '2026-11-19-01';
 let updateCheckedAt = 0;
 
 /**

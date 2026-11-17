@@ -32,6 +32,7 @@
     <button class="tb-btn" type="button" data-panel="fftPanel" aria-expanded="false">FFT</button>
     <button class="tb-btn" type="button" data-panel="averagingPanel" aria-expanded="false">Averaging</button>
     <button class="tb-btn" type="button" data-panel="delayPanel" aria-expanded="false">Delay Finder</button>
+    <button class="tb-btn" type="button" id="btnMulti">Multi-mic</button>
   </nav>
 
   <div class="tb-right">
@@ -95,9 +96,16 @@
       <button id="btnDemo" class="btn" type="button">Demo</button>
     </div>
     <p class="source-hint">
-      The iPhone microphone needs no interface: pick it and the generated reference is used. A USB-C
-      interface reopens the stream when chosen. Bluetooth output adds 100–300 ms of wandering latency —
-      use a cable or an interface to measure.
+      The iPhone microphone needs no interface: pick it and the generated reference is used — the
+      exact noise the app plays. Be clear about what that measures. The curve is the phone's own
+      chain: its speaker, the room between them and its microphone, not your system. Expect little
+      energy below roughly 300 Hz, a direct path through the phone's own body, a delay dominated by
+      the phone's audio latency, and the speaker's own voicing. Use it to learn the workflow and to
+      compare two captures taken the same way — not for absolute response, sub alignment or distance.
+    </p>
+    <p class="source-hint">
+      A USB-C interface reopens the stream when chosen. Output over Bluetooth adds 100–300 ms of
+      wandering latency, so use a cable or an interface to measure.
     </p>
   </div>
 
@@ -111,9 +119,11 @@
       </select>
     </div>
     <p class="source-hint">
-      Generated compares the microphone with the noise or sweep the app plays, so one input is enough.
-      Loopback takes the reference from input 2, which is the true dual-channel method and needs a
-      two-input interface.
+      Generated compares the microphone with the noise or sweep the app plays, so one input is
+      enough. Loopback takes the reference from input 2 of the same interface — the true
+      dual-channel method. Both channels must come from that one device on one clock: a phone
+      microphone and an interface run on separate clocks, drift apart and turn a coherent
+      measurement into noise, so they cannot be paired.
     </p>
   </div>
 
@@ -662,8 +672,127 @@
   </aside>
 </main>
 
+<section id="multiWorkspace" class="multi-workspace" hidden>
+  <div class="multi-head">
+    <div>
+      <h2>Multi-microphone measurement</h2>
+      <p class="source-hint" id="multiStatus">Four inputs on one interface: channels 1–3 are the microphones, channel 4 the electrical reference.</p>
+    </div>
+    <div class="row btns">
+      <button id="btnMultiStart" class="btn btn-power" type="button">Start listening</button>
+      <button id="btnMultiFreeze" class="btn" type="button">Freeze</button>
+      <button id="btnMultiSnapshot" class="btn" type="button">Snapshot</button>
+      <button id="btnMultiExport" class="btn" type="button">Export CSV</button>
+      <button id="btnMultiClose" class="btn" type="button">Close</button>
+    </div>
+  </div>
+
+  <div class="multi-grid">
+    <div class="multi-plot">
+      <div class="row multi-tools">
+        <label for="selMultiMode">Average</label>
+        <select id="selMultiMode">
+          <option value="power" selected>Power average</option>
+          <option value="db">dB average</option>
+          <option value="coherence">Coherence-weighted</option>
+        </select>
+        <label for="selMultiSmoothing">Smoothing</label>
+        <select id="selMultiSmoothing">
+          <option value="0">None</option>
+          <option value="0.125">1/8 oct</option>
+          <option value="0.1666667" selected>1/6 oct</option>
+          <option value="0.3333333">1/3 oct</option>
+        </select>
+        <label for="selMultiRate">Update</label>
+        <select id="selMultiRate">
+          <option value="200">5 / s</option>
+          <option value="350" selected>3 / s</option>
+          <option value="700">1.5 / s</option>
+        </select>
+        <label class="chk"><input id="chkMultiShowAverage" type="checkbox" checked /> Average</label>
+        <label class="chk"><input id="chkMultiPhase" type="checkbox" checked /> Phase</label>
+        <label class="chk"><input id="chkMultiCoh" type="checkbox" checked /> Coherence</label>
+        <button id="btnMultiReset" class="link-btn" type="button" hidden>Reset zoom</button>
+      </div>
+      <div class="multi-chart-wrap">
+        <canvas id="multiChart" aria-label="Three microphone transfer functions and the spatial average, 20 hertz to 20 kilohertz"></canvas>
+      </div>
+      <p id="multiReadout" class="cursor-readout">move the cursor over the plot to read the three microphones there</p>
+      <div class="multi-snapshots" id="multiSnapshots"></div>
+    </div>
+
+    <aside class="multi-side">
+      <div class="multi-panel">
+        <h3>Routing</h3>
+        <p class="source-hint">One interface, four inputs, one clock. Reassign any of them here.</p>
+        <div class="row"><label for="selMultiChA">Mic A</label>
+          <select id="selMultiChA"><option value="0" selected>Input 1</option><option value="1">Input 2</option><option value="2">Input 3</option><option value="3">Input 4</option></select>
+        </div>
+        <div class="row"><label for="selMultiChB">Mic B</label>
+          <select id="selMultiChB"><option value="0">Input 1</option><option value="1" selected>Input 2</option><option value="2">Input 3</option><option value="3">Input 4</option></select>
+        </div>
+        <div class="row"><label for="selMultiChC">Mic C</label>
+          <select id="selMultiChC"><option value="0">Input 1</option><option value="1">Input 2</option><option value="2" selected>Input 3</option><option value="3">Input 4</option></select>
+        </div>
+        <div class="row"><label for="selMultiChREF">Reference</label>
+          <select id="selMultiChREF"><option value="0">Input 1</option><option value="1">Input 2</option><option value="2">Input 3</option><option value="3" selected>Input 4</option></select>
+        </div>
+      </div>
+
+      <div class="multi-mics" id="multiMics"></div>
+
+      <div class="multi-panel">
+        <h3>Relative microphone matching</h3>
+        <p class="source-hint">
+          Place the capsules together, play noise, and match B and C onto A. This is relative matching
+          between your microphones, not absolute laboratory calibration — low-coherence bands are refused
+          rather than corrected.
+        </p>
+        <div class="row"><label for="selMatchCoh">Coherence ≥</label>
+          <select id="selMatchCoh">
+            <option value="0.5">50%</option>
+            <option value="0.6" selected>60%</option>
+            <option value="0.7">70%</option>
+            <option value="0.8">80%</option>
+          </select>
+        </div>
+        <div class="row"><label for="selMatchSmooth">Smooth</label>
+          <select id="selMatchSmooth">
+            <option value="0.0833333">1/12 oct</option>
+            <option value="0.1666667" selected>1/6 oct</option>
+            <option value="0.3333333">1/3 oct</option>
+          </select>
+        </div>
+        <div class="row"><label for="numMatchLimit">Limit <span class="hint">dB</span></label>
+          <input id="numMatchLimit" type="number" value="6" step="1" min="1" max="18" />
+        </div>
+        <div class="row btns">
+          <button id="btnMatchB" class="btn" type="button">Match B to A</button>
+          <button id="btnMatchC" class="btn" type="button">Match C to A</button>
+        </div>
+        <p id="multiMatchNote" class="source-hint"></p>
+        <label class="chk"><input id="chkMatchBypass" type="checkbox" /> Bypass all corrections</label>
+        <div id="multiMatchList" class="multi-match-list"></div>
+      </div>
+
+      <div class="multi-panel">
+        <h3>Manufacturer calibration</h3>
+        <p class="source-hint">One vendor file per microphone, applied on top of the measured curve.</p>
+        <div class="row btns">
+          <button id="btnMultiCalA" class="btn" type="button">Mic A file</button>
+          <button id="btnMultiCalB" class="btn" type="button">Mic B file</button>
+          <button id="btnMultiCalC" class="btn" type="button">Mic C file</button>
+          <button id="btnMultiClearCal" class="btn" type="button">Clear</button>
+        </div>
+        <p id="multiCalNote" class="source-hint">No manufacturer calibration is loaded for any microphone.</p>
+        <input id="multiCalFile" type="file" accept=".txt,.csv,.cal,text/plain,text/csv" hidden />
+      </div>
+    </aside>
+  </div>
+</section>
+
 <footer class="foot">
-  <p>Align · runs locally in the browser · no audio leaves the device · <a href="manual.html">Illustrated manual</a> · <a href="https://precisionaudioalignment.com/" target="_blank" rel="noopener noreferrer">System tuning</a></p>
+  <p>Align · runs locally in the browser · no audio leaves the device · <a href="manual.html">Illustrated manual</a> · <a href="validate.html">Validation tests</a> · <a href="https://precisionaudioalignment.com/" target="_blank" rel="noopener noreferrer">System tuning</a></p>
   <p class="copyright">© <span id="copyrightYear">2026</span> Mathew Steven / Precision Audio Alignment. All rights reserved.</p>
 </footer>
 

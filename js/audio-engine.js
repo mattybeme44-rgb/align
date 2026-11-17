@@ -81,11 +81,23 @@ export class AudioEngine {
     this.stream = null;
     this.micRing = null;
     this.refRing = null;
+    /** One ring per device channel, so every input keeps its own samples. */
+    this.rings = [];
     this.channels = 1;
     this.deviceChannels = 1;
+    /** What the browser actually handed over, after the capture graph opened. */
+    this.actualChannels = 1;
+    this.requestedChannels = 2;
     this.micLevel = 0;
-    this.channelLevel = [0, 0];
-    this.channelClippedUntil = [0, 0];
+    this.channelLevel = [0, 0, 0, 0];
+    this.channelClippedUntil = [0, 0, 0, 0];
+    /** Logical input -> device channel. Channel 4 is the electrical reference. */
+    this.routing = { a: 0, b: 1, c: 2, ref: 3 };
+    /** True when two or more inputs are carrying the very same signal. */
+    this.channelDuplicated = false;
+    /** ScriptProcessor callbacks that arrived late, a sign of underruns. */
+    this.droppedCallbacks = 0;
+    this.lastCallbackTime = 0;
     this.deviceLabel = '';
     this.deviceIdUsed = '';
     this.exactDeviceRejected = false;
@@ -113,7 +125,18 @@ export class AudioEngine {
   }
 
   get micWritten() {
-    return this.micRing ? this.micRing.written : 0;
+    return this.rings[0] ? this.rings[0].written : 0;
+  }
+
+  /** How many inputs actually carry audio, out of the four possible. */
+  get inputCount() {
+    return Math.max(0, Math.min(4, this.channels));
+  }
+
+  /** The device channel a logical input (a, b, c, ref) is routed to. */
+  deviceChannelFor(logical) {
+    const value = this.routing[logical];
+    return Number.isInteger(value) ? value : 0;
   }
 
   /**
@@ -124,6 +147,9 @@ export class AudioEngine {
     const opts = typeof options === 'string' ? { deviceId: options } : options || {};
     const mode = opts.mode || 'auto';
     const deviceId = opts.deviceId || '';
+    // The measurement screen asks for one or two channels; the multi-microphone
+    // workspace asks for four. The browser decides what it will actually give.
+    const wanted = Math.max(1, Math.min(4, Math.round(Number(opts.channels) || 2)));
     const progress = typeof opts.onProgress === 'function' ? opts.onProgress : () => {};
 
     // iOS only lets audio start from inside the tap that called us, so the new
@@ -168,8 +194,16 @@ export class AudioEngine {
     // outright (especially channelCount on the built-in microphone), and a
     // mono phone mic is fine for the generated-reference mode.
     const attempts = [];
-    if (deviceId) attempts.push({ deviceId: { exact: deviceId }, channelCount: { ideal: 2, max: 2 } });
-    attempts.push({ channelCount: { ideal: 2, max: 2 } });
+    const channelAttempts = [];
+    for (let count = wanted; count >= 2; count--) {
+      channelAttempts.push({ channelCount: { ideal: count, max: count } });
+    }
+    if (deviceId) {
+      channelAttempts.forEach((base) => {
+        attempts.push(Object.assign({}, base, { deviceId: { exact: deviceId } }));
+      });
+    }
+    channelAttempts.forEach((base) => attempts.push(base));
     attempts.push({});
     attempts.push(true);
 
@@ -197,21 +231,21 @@ export class AudioEngine {
     // Device labels only appear once permission has been granted, so the
     // source choice is applied after a first stream exists.
     if (mode !== 'auto' && !deviceId) {
-      const wanted = await this.deviceForMode(mode);
+      const wantedDevice = await this.deviceForMode(mode);
       const currentTrack = stream.getAudioTracks()[0];
       const current =
         currentTrack && currentTrack.getSettings ? currentTrack.getSettings().deviceId || '' : '';
-      if (wanted && wanted !== current) {
+      if (wantedDevice && wantedDevice !== current) {
         let switched = null;
         try {
           switched = await this.openStream({
-            deviceId: { exact: wanted },
-            channelCount: { ideal: 2, max: 2 },
+            deviceId: { exact: wantedDevice },
+            channelCount: { ideal: wanted, max: wanted },
           });
         } catch (err) {
           // Some inputs refuse a channelCount, so ask once more without it.
           try {
-            switched = await this.openStream({ deviceId: { exact: wanted } });
+            switched = await this.openStream({ deviceId: { exact: wantedDevice } });
           } catch (fallbackError) {
             // iOS refused the pinned device; keep the route it opened.
           }
@@ -244,30 +278,31 @@ export class AudioEngine {
     this.deviceLabel = track.label || 'audio input';
     this.builtInInput = looksBuiltIn(this.deviceLabel);
 
-    // A two-input interface can open with one channel if the browser ignores
-    // the ideal channelCount — and then the loopback reference has nothing to
-    // read. Ask once more for exactly two before accepting a mono stream.
-    if (!this.builtInInput && (settings.channelCount || 0) < 2) {
+    // An interface can open with fewer channels than asked for — one when a
+    // stereo or four-channel request was ignored — and then the reference and
+    // the extra microphones have nothing to read. Ask once more for exactly the
+    // number wanted before accepting what the browser opened.
+    if (!this.builtInInput && wanted > 1 && (settings.channelCount || 0) < wanted) {
       try {
-        const stereo = await this.openStream({
-          channelCount: { exact: 2 },
+        const more = await this.openStream({
+          channelCount: { exact: wanted },
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
         });
-        const stereoSettings = stereo.getAudioTracks()[0] && stereo.getAudioTracks()[0].getSettings
-          ? stereo.getAudioTracks()[0].getSettings()
+        const moreSettings = more.getAudioTracks()[0] && more.getAudioTracks()[0].getSettings
+          ? more.getAudioTracks()[0].getSettings()
           : {};
-        if ((stereoSettings.channelCount || 0) >= 2) {
+        if ((moreSettings.channelCount || 0) > (settings.channelCount || 0)) {
           stream.getTracks().forEach((t) => t.stop());
-          stream = stereo;
+          stream = more;
           this.stream = stream;
-          settings = stereoSettings;
+          settings = moreSettings;
         } else {
-          stereo.getTracks().forEach((t) => t.stop());
+          more.getTracks().forEach((t) => t.stop());
         }
       } catch (err) {
-        /* the device or the browser will not give two channels */
+        /* the device or the browser will not give that many channels */
       }
     }
 
@@ -275,24 +310,31 @@ export class AudioEngine {
     const streamChannels = Math.max(settings.channelCount || 0, source.channelCount || 0, 1);
     // The built-in microphone is single-channel whatever the browser reports,
     // so it always takes the generated reference on input 1.
-    this.channels = this.builtInInput ? 1 : streamChannels;
+    this.channels = this.builtInInput ? 1 : Math.min(streamChannels, wanted);
     this.deviceChannels = this.channels;
+    this.actualChannels = this.channels;
+    this.requestedChannels = wanted;
     this.deviceIdUsed = settings.deviceId || '';
     this.inputMode = mode;
     this.modeSatisfied = this.inputMatchesMode(mode, this.deviceLabel);
 
     const capacity = Math.round(ctx.sampleRate * 4);
-    this.micRing = new Ring(capacity);
-    this.refRing = new Ring(capacity);
-    this.channelLevel = [0, 0];
-    this.channelClippedUntil = [0, 0];
+    this.rings = [];
+    for (let c = 0; c < 4; c++) this.rings.push(new Ring(capacity));
+    this.micRing = this.rings[0];
+    this.refRing = this.rings[1];
+    this.channelLevel = [0, 0, 0, 0];
+    this.channelClippedUntil = [0, 0, 0, 0];
+    this.channelDuplicated = false;
+    this.droppedCallbacks = 0;
+    this.lastCallbackTime = 0;
     this.micLevel = 0;
 
     progress('starting audio');
 
     try {
-      const micRing = this.micRing;
-      const refRing = this.refRing;
+      const rings = this.rings;
+      const inputChannels = Math.max(1, Math.min(4, this.channels));
 
       // ScriptProcessor rather than AudioWorklet: iOS Safari is stable with it,
       // and a fault inside a worklet takes the whole browser down with it.
@@ -300,52 +342,66 @@ export class AudioEngine {
       // The input channel count has to match what the device actually gives us:
       // Safari on the iPhone can hand a mono microphone to a stereo-input
       // processor and then deliver nothing but silence.
-      const inputChannels = this.channels >= 2 ? 2 : 1;
       // 8192 frames is 170 ms of audio at 48 kHz: the callback is where the
       // browser hands over the input, so a buffer that size absorbs a main
       // thread stall instead of dropping the samples that were taken during it.
-      this.captureNode = ctx.createScriptProcessor(8192, inputChannels, 1);
-      // The empty second channel of a mono input, allocated once rather than
-      // on every audio callback.
+      const node = ctx.createScriptProcessor(8192, inputChannels, 1);
+      this.captureNode = node;
+      // The empty channel of a device that sends fewer channels than the node
+      // was built for, allocated once rather than on every audio callback.
       let silence = null;
-      this.captureNode.onaudioprocess = (event) => {
+      let callbacks = 0;
+
+      node.onaudioprocess = (event) => {
+        // A restart may already have replaced the graph; ignore late chunks.
+        if (this.captureNode !== node) return;
         const input = event.inputBuffer;
         if (!input || input.numberOfChannels === 0) return;
-        const left = input.getChannelData(0);
-        // A restart may already have replaced the rings; ignore late chunks.
-        if (!left || this.micRing !== micRing) return;
-        const right = input.numberOfChannels > 1 ? input.getChannelData(1) : null;
-        micRing.push(left);
-        if (right) {
-          refRing.push(right);
-        } else {
-          if (!silence || silence.length !== left.length) silence = new Float32Array(left.length);
-          refRing.push(silence);
+
+        // Underrun surveillance: a callback that arrives well after its
+        // expected time means the main thread missed audio.
+        if (event.playbackTime > 0) {
+          const step = input.length / this.sampleRate;
+          if (this.lastCallbackTime > 0) {
+            const gap = event.playbackTime - this.lastCallbackTime;
+            if (gap > step * 1.8) this.droppedCallbacks += 1;
+          }
+          this.lastCallbackTime = event.playbackTime;
         }
 
-        const leftRms = rmsOf(left);
-        const rightRms = right ? rmsOf(right) : 0;
-        this.channelLevel[0] = this.channelLevel[0] * 0.85 + leftRms * 0.15;
-        this.channelLevel[1] = this.channelLevel[1] * 0.85 + rightRms * 0.15;
+        const block = input.getChannelData(0);
+        if (!silence || silence.length !== block.length) silence = new Float32Array(block.length);
+
+        // Every channel is pushed in the same callback, so all four inputs share
+        // the one sample counter the analysis reads against.
+        for (let c = 0; c < inputChannels; c++) {
+          const data = c < input.numberOfChannels ? input.getChannelData(c) : null;
+          const samples = data || silence;
+          rings[c].push(samples);
+
+          const level = data ? rmsOf(samples) : 0;
+          this.channelLevel[c] = this.channelLevel[c] * 0.85 + level * 0.15;
+          if (data) {
+            for (let i = 0; i < samples.length; i++) {
+              if (Math.abs(samples[i]) >= 0.999) {
+                this.channelClippedUntil[c] = Date.now() + 750;
+                break;
+              }
+            }
+          }
+        }
         this.micLevel = this.channelLevel[0];
-        for (let i = 0; i < left.length; i++) {
-          if (Math.abs(left[i]) >= 0.999) this.channelClippedUntil[0] = Date.now() + 750;
-          if (right && Math.abs(right[i]) >= 0.999) this.channelClippedUntil[1] = Date.now() + 750;
-        }
 
-        // A mono device is up-mixed to two channels with silence in the second,
-        // so energy there means the interface really is stereo.
-        if (!this.builtInInput && rightRms > 1e-5 && this.deviceChannels < 2) {
-          this.deviceChannels = 2;
-        }
+        callbacks += 1;
+        if (callbacks % 8 === 0) this.checkChannelSeparation(inputChannels);
       };
 
       // A near-muted sink keeps the capture node pulled by the graph. Exact
       // zero is what some iOS builds treat as "nothing to render" and skip.
       this.sinkNode = ctx.createGain();
       this.sinkNode.gain.value = 0.0001;
-      source.connect(this.captureNode);
-      this.captureNode.connect(this.sinkNode);
+      source.connect(node);
+      node.connect(this.sinkNode);
       this.sinkNode.connect(ctx.destination);
 
       this.gainNode = ctx.createGain();
@@ -426,12 +482,55 @@ export class AudioEngine {
     this.gainNode = null;
     this.micRing = null;
     this.refRing = null;
+    this.rings = [];
     this.generated = null;
     this.micLevel = 0;
-    this.channelLevel = [0, 0];
+    this.channelLevel = [0, 0, 0, 0];
+    this.channelDuplicated = false;
+    this.droppedCallbacks = 0;
+    this.lastCallbackTime = 0;
     this.refOffset = 0;
     this.refAligned = false;
     this.refSamples = [];
+  }
+
+  /**
+   * Compare the inputs against the first one and note when they are carrying
+   * the very same signal: a browser or a driver that up-mixes one channel into
+   * four would otherwise look like four working microphones.
+   */
+  checkChannelSeparation(count) {
+    if (count < 2 || this.rings.length < 2) {
+      this.channelDuplicated = false;
+      return;
+    }
+
+    const probe = 4096;
+    const base = this.rings[0].written - probe;
+    if (probe > 0 && this.rings[0].written < probe * 2) return;
+
+    const window = new Float32Array(probe);
+    const other = new Float32Array(probe);
+    this.rings[0].read(window, base);
+    const baseRms = rmsOf(window);
+
+    let measured = 0;
+    let duplicated = 0;
+
+    for (let c = 1; c < count; c++) {
+      this.rings[c].read(other, base);
+      const rms = rmsOf(other);
+      if (rms < 1e-5 || baseRms < 1e-5) continue;
+      measured += 1;
+
+      let dot = 0;
+      for (let i = 0; i < probe; i++) dot += window[i] * other[i];
+      const correlation = dot / (probe * baseRms * rms);
+      const sameLevel = Math.abs(rms - baseRms) / Math.max(baseRms, 1e-9) < 0.01;
+      if (correlation > 0.9995 && sameLevel) duplicated += 1;
+    }
+
+    this.channelDuplicated = measured > 0 && duplicated === measured;
   }
 
   async stop() {
@@ -520,9 +619,9 @@ export class AudioEngine {
     this.refSamples = [];
   }
 
-  /** Copy a window of one captured channel (0 = input 1, 1 = input 2). */
+  /** Copy a window of one device channel: 0 = input 1 … 3 = input 4. */
   readChannel(target, startIndex, channel) {
-    const ring = channel === 1 ? this.refRing : this.micRing;
+    const ring = this.rings[channel];
     if (!ring) {
       target.fill(0);
       return;
@@ -531,11 +630,11 @@ export class AudioEngine {
   }
 
   readMic(target, startIndex) {
-    this.readChannel(target, startIndex, 0);
+    this.readChannel(target, startIndex, this.deviceChannelFor('a'));
   }
 
   readRefCaptured(target, startIndex) {
-    this.readChannel(target, startIndex, 1);
+    this.readChannel(target, startIndex, this.deviceChannelFor('ref'));
   }
 
   readGeneratedRef(target, startIndex) {

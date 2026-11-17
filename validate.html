@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#080a09" />
+<title>Align — DSP validation</title>
+<link rel="stylesheet" href="css/styles.css" />
+<link rel="stylesheet" href="css/instrument.css" />
+</head>
+<body class="validation-page">
+<main class="validation">
+  <header class="validation-head">
+    <h1>DSP validation</h1>
+    <p class="source-hint">
+      Synthetic signals with known answers, run through the same analyser, averaging
+      and matching code the app measures with. Nothing on this page is a live
+      microphone measurement — it exists so the maths can be checked on its own.
+    </p>
+  </header>
+
+  <section id="validationResults" class="validation-results">
+    <p class="source-hint">Running…</p>
+  </section>
+
+  <section class="validation-note">
+    <h2>What cannot be tested here</h2>
+    <ul class="validation-list">
+      <li><b>Four-channel capture on your interface.</b> The browser decides how many channels it will hand over. Open the app, press Multi-mic → Start listening and read the status line: it reports the device, the channels actually received and the sample rate.</li>
+      <li><b>Channel independence.</b> The engine compares the inputs while running and reports when several of them carry the same signal. Patch a different signal into each channel to confirm it.</li>
+      <li><b>Clock and buffer stability.</b> Late audio callbacks are counted during a live measurement and reported in the multi-microphone status line.</li>
+      <li><b>Microphone matching against real microphones.</b> The arithmetic is checked below with a known difference; whether two capsules really agree is a measurement, not a test.</li>
+    </ul>
+  </section>
+
+  <p class="source-hint"><a href="index.html">Back to Align</a></p>
+</main>
+<script type="module" src="js/validation.js"></script>
+</body>
+</html>

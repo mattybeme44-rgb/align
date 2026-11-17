@@ -375,3 +375,51 @@ than by boosting.
   manifest and for iOS's Home Screen
 - `.github/workflows/pages.yml` — publishes the repository root to GitHub Pages on every push to
   `main`
+
+
+## Four-channel, multi-microphone measurement
+
+The `Multi-mic` button in the toolbar opens a second workspace built for one
+four-input interface and one clock: three measurement microphones on inputs 1–3
+and an electrical reference on input 4, reassignable from the Routing panel.
+
+- **Capture** — the engine asks the browser for four discrete channels from one
+  device, refuses to pretend when it gets fewer, and reports which inputs the
+  device actually delivers. Each channel has its own ring buffer, level, clip
+  detection and shared sample counter, so all four are analysed on one timebase.
+  It also compares the inputs while running and reports when several of them are
+  carrying the same signal (a mono input spread across four channels).
+- **Three transfer functions** — one `Analyser` per microphone against the same
+  reference window, so each has its own magnitude, phase, coherence, delay and
+  impulse response. Nothing is shared but the reference.
+- **Spatial average** — power average, dB average or coherence-weighted average,
+  on a common frequency grid, with each microphone's share shown in its card.
+  Contributed microphones can be enabled, hidden, or soloed.
+- **Relative microphone matching** — place the capsules together, play noise and
+  match B or C onto A. The correction is stored as points, limited in dB, and
+  refused outright when too little of the band is coherent. It is labelled as
+  relative matching between your microphones, not absolute calibration, and it
+  works on the raw curves so it never double-applies a manufacturer file.
+- **Manufacturer calibration** — one importable calibration file per microphone,
+  applied on top of the matched correction; `Bypass all corrections` turns the
+  lot off for comparison.
+- **Display** — A green, B blue, C orange, average purple and thicker, drawn on a
+  Canvas 2D chart at the animation frame rate while the analysers run a few
+  frames a second. Phase is never averaged; each microphone keeps its own, with
+  an optional per-microphone display offset that changes the drawing only.
+- **Also there** — snapshots to compare before and after a change, freeze, CSV
+  export through the share sheet, and the live status of channels, sample rate
+  and late callbacks.
+
+Single-microphone mode is untouched: the multi workspace is a separate screen
+and the measurement screen behind it pauses while it is open.
+
+### Validation
+
+`validate.html` in the app, and `node tests/dsp.mjs` in the repository, run the
+same synthetic checks with known answers: the FFT round trip, delay at 48 kHz
+and 44.1 kHz, a known −6.02 dB magnitude, coherence of identical and unrelated
+signals, all three averaging modes, matching sign, limits and refusal, and the
+channel-separation measure. These are DSP tests, never measurements: what they
+cannot prove is that a particular interface hands the browser four real
+channels — the app reports that at capture time.
