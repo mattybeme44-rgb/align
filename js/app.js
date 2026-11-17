@@ -1,6 +1,8 @@
 import { AudioEngine } from './audio-engine.js';
 import { createMultiView } from './multiview.js';
 import { createHardwareCheck } from './hardware.js';
+import { createDataModeler } from './modeler/ui.js';
+import { persistProject as persistModelProject } from './modeler/store.js';
 import { Analyser, suggestEq } from './analyser.js';
 import { TransferChart, ImpulseChart, wrapDegrees } from './charts.js';
 import {
@@ -268,6 +270,7 @@ const multiView = createMultiView({
   sourceOptions: () => sourceOptions(),
   generator: () => ({ signal: state.signal, level: state.level, sineHz: state.sineHz }),
   onOpen: () => {
+    if (dataModeler.active) dataModeler.close();
     if (state.running) stopAll();
     const start = $('btnPower');
     if (start) start.disabled = true;
@@ -292,6 +295,7 @@ const hardwareCheck = createHardwareCheck({
       multiView.close();
       $('btnMulti').classList.remove('on');
     }
+    if (dataModeler.active) dataModeler.close();
     if (state.running) stopAll();
     const start = $('btnPower');
     if (start) start.disabled = true;
@@ -299,6 +303,58 @@ const hardwareCheck = createHardwareCheck({
   onClose: () => {
     const start = $('btnPower');
     if (start) start.disabled = false;
+  },
+});
+
+/**
+ * The system data modeler: the loudspeaker library, the arrangement of the
+ * sources, the predicted complex sum and the alignment that follows from it.
+ *
+ * It only reads the app. The capture library and the running measurement are
+ * offered as measured data; nothing here starts audio, changes the routing or
+ * writes a setting into a processor.
+ */
+const dataModeler = createDataModeler({
+  setStatus,
+  library: () => state.saved,
+  live: () => (state.results
+    ? {
+        results: state.results,
+        delayMs: state.totalDelayMs,
+        compensated: state.compensate,
+        label: 'Live measurement',
+        device: (($('rdDevice') && $('rdDevice').textContent) || '').trim(),
+        channels: (($('rdChannelCount') && $('rdChannelCount').textContent) || '').trim(),
+        reference: state.refMode,
+        calibration: state.micCal && state.micCal.name ? state.micCal.name : '',
+        micLabel: $('selMicCh') ? 'Input ' + (Number($('selMicCh').value) + 1) : '',
+      }
+    : null),
+  held: () => ['A', 'B', 'C', 'D', 'E', 'F']
+    .map((letter) => ({ label: letter, trace: heldSnapshot(letter) }))
+    .filter((entry) => !!entry.trace),
+  persist: (project) => persistModelProject(project),
+  share: (blob, filename, title) => { shareOrDownload(blob, filename, title); },
+  onOpen: () => {
+    if (multiView.active) {
+      multiView.close();
+      $('btnMulti').classList.remove('on');
+    }
+    if (hardwareCheck.active) {
+      hardwareCheck.close();
+      $('btnHardware').classList.remove('on');
+    }
+    if (state.running) stopAll();
+    const start = $('btnPower');
+    if (start) start.disabled = true;
+    const button = $('btnModeler');
+    if (button) button.classList.add('on');
+  },
+  onClose: () => {
+    const start = $('btnPower');
+    if (start) start.disabled = false;
+    const button = $('btnModeler');
+    if (button) button.classList.remove('on');
   },
 });
 
@@ -7833,6 +7889,16 @@ $('btnHwStart')?.addEventListener('click', () => {
 $('btnHwClose')?.addEventListener('click', () => {
   hardwareCheck.close();
   $('btnHardware').classList.remove('on');
+});
+
+/* ---------- the system data modeler ---------- */
+
+$('btnModeler')?.addEventListener('click', () => {
+  if (dataModeler.active) {
+    dataModeler.close();
+  } else {
+    dataModeler.open();
+  }
 });
 
 $('btnTryHere').addEventListener('click', () => {

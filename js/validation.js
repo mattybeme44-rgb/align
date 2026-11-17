@@ -2,6 +2,23 @@ import { FFT } from './fft.js';
 import { Analyser } from './analyser.js';
 import { spatialAverage } from './spatial.js';
 import { relativeMatch } from './micmatch.js';
+import {
+  GRID_POINTS,
+  compareCurves,
+  fractionalOctaveSmooth,
+  gridFrequencies,
+  parseResponseText,
+  resampleResponse,
+  wrapDegrees,
+} from './modeler/curve.js';
+import { chainResponse, designCrossover } from './modeler/filters.js';
+import {
+  effectiveSettings,
+  groupDelay,
+  optimizeAlignment,
+  sumResponses,
+  synthesizeImpulse,
+} from './modeler/model.js';
 
 /*
  * Synthetic checks for the measurement maths.
@@ -286,6 +303,287 @@ test('Matching refuses an incoherent capture',
     return {
       pass: !match.accepted,
       detail: match.accepted ? 'accepted, which it should not have been' : 'refused: ' + match.reason,
+    };
+  });
+
+/* ---------- the system data modeler ---------- */
+
+/**
+ * One complex response on the model grid, built with a known answer: a level
+ * and a phase written as a function of frequency.
+ */
+function modelResponse(phaseFn, magDbValue = 0) {
+  const frequencies = gridFrequencies(GRID_POINTS);
+  const count = frequencies.length;
+  const magDb = new Float64Array(count).fill(magDbValue);
+  const phaseDeg = new Float64Array(count);
+  const re = new Float64Array(count);
+  const im = new Float64Array(count);
+  const linear = Math.pow(10, magDbValue / 20);
+  for (let i = 0; i < count; i++) {
+    const phase = phaseFn ? phaseFn(frequencies[i]) : 0;
+    phaseDeg[i] = (phase * 180) / Math.PI;
+    re[i] = linear * Math.cos(phase);
+    im[i] = linear * Math.sin(phase);
+  }
+  return { frequencies, magDb, phaseDeg, re, im, phaseValid: true, id: 'test', name: 'test' };
+}
+
+function nearest(response, frequency) {
+  let best = 0;
+  for (let i = 0; i < response.frequencies.length; i++) {
+    if (Math.abs(response.frequencies[i] - frequency) <
+      Math.abs(response.frequencies[best] - frequency)) best = i;
+  }
+  return best;
+}
+
+test('Two coherent sources sum to +6.02 dB',
+  'Adding the same curve to itself as complex pressure must be +6.02 dB, not +3 dB.',
+  () => {
+    const sum = sumResponses([modelResponse(null, 0), modelResponse(null, 0)]);
+    const index = nearest(sum, 1000);
+    return {
+      pass: Math.abs(sum.magDb[index] - 6.0206) < 0.01,
+      detail: 'sum at 1 kHz ' + sum.magDb[index].toFixed(3) + ' dB',
+    };
+  });
+
+test('Equal opposite-phase sources cancel',
+  'An inverted copy at the same level must sum to silence, which dB magnitudes cannot show.',
+  () => {
+    const sum = sumResponses([modelResponse(null, 0), modelResponse(() => Math.PI, 0)]);
+    const index = nearest(sum, 1000);
+    return {
+      pass: sum.magDb[index] < -120,
+      detail: 'sum at 1 kHz ' + sum.magDb[index].toFixed(1) + ' dB',
+    };
+  });
+
+test('Polarity is a 180° change, not a delay',
+  'A polarity inversion must leave the level of one source alone and turn its phase by 180°.',
+  () => {
+    const normal = modelResponse(null, 0);
+    const inverted = modelResponse(() => Math.PI, 0);
+    const index = nearest(normal, 1000);
+    const turn = Math.abs(wrapDegrees(inverted.phaseDeg[index] - normal.phaseDeg[index]));
+    return {
+      pass: Math.abs(turn - 180) < 1e-6 &&
+        Math.abs(normal.magDb[index] - inverted.magDb[index]) < 1e-9,
+      detail: 'phase turned ' + turn.toFixed(1) + '° at the same level',
+    };
+  });
+
+test('A delay reads back as group delay',
+  'A phase curve of −360° per frequency-second must read as that delay in milliseconds.',
+  () => {
+    const tau = 0.002;
+    const response = modelResponse((frequency) => -2 * Math.PI * frequency * tau, 0);
+    const delays = groupDelay(response.frequencies, response.phaseDeg, response.magDb, {});
+    const index = nearest(response, 1000);
+    return {
+      pass: Math.abs(delays[index] - 2) < 0.01,
+      detail: 'group delay at 1 kHz ' + delays[index].toFixed(3) + ' ms',
+    };
+  });
+
+test('Group delay is left blank where the coherence is low',
+  'Timing is only read where the data can support it; a doubtful point must not be drawn.',
+  () => {
+    const response = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+    const coherence = new Float64Array(response.frequencies.length).fill(0.9);
+    for (let i = 0; i < coherence.length; i++) if (response.frequencies[i] > 2000) coherence[i] = 0.1;
+    const delays = groupDelay(response.frequencies, response.phaseDeg, response.magDb,
+      { coherence, coherenceThreshold: 0.5 });
+    const low = nearest(response, 5000);
+    const good = nearest(response, 500);
+    return {
+      pass: Number.isNaN(delays[low]) && Number.isFinite(delays[good]),
+      detail: 'low-coherence point ' + (Number.isNaN(delays[low]) ? 'blank' : 'drawn') +
+        ', usable point ' + delays[good].toFixed(2) + ' ms',
+    };
+  });
+
+test('A Linkwitz-Riley 4th-order crossover sits 6 dB down at its frequency',
+  'Two cascaded Butterworth sections must read −6.02 dB at the crossover and fall 24 dB per octave below it.',
+  () => {
+    const design = designCrossover({ family: 'Linkwitz-Riley', slope: 24, frequency: 1000, type: 'highPass' });
+    if (!design.ok) return { pass: false, detail: design.message };
+    const at = chainResponse(design.filters, new Float64Array([1000]), 48000);
+    const below = chainResponse(design.filters, new Float64Array([500]), 48000);
+    return {
+      pass: Math.abs(at.magDb[0] + 6.0206) < 0.15 && below.magDb[0] < -20,
+      detail: 'at crossover ' + at.magDb[0].toFixed(2) + ' dB, an octave below ' +
+        below.magDb[0].toFixed(1) + ' dB, ' + design.filters.length + ' sections',
+    };
+  });
+
+test('A 2nd-order Butterworth crossover sits 3 dB down',
+  'A single Butterworth high-pass section must read −3.01 dB at its frequency and roll off below it.',
+  () => {
+    const design = designCrossover({ family: 'Butterworth', slope: 12, frequency: 1000, type: 'highPass' });
+    if (!design.ok) return { pass: false, detail: design.message };
+    const at = chainResponse(design.filters, new Float64Array([1000]), 48000);
+    const below = chainResponse(design.filters, new Float64Array([500]), 48000);
+    return {
+      pass: Math.abs(at.magDb[0] + 3.0103) < 0.1 && below.magDb[0] < -10,
+      detail: 'at crossover ' + at.magDb[0].toFixed(2) + ' dB, an octave below ' +
+        below.magDb[0].toFixed(1) + ' dB',
+    };
+  });
+
+test('The optimizer finds a known delay',
+  'A target arriving 2 ms late must be aligned by moving it back 2 ms.',
+  () => {
+    const reference = modelResponse(null, 0);
+    const target = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+    const result = optimizeAlignment({
+      reference,
+      target,
+      band: { min: 200, max: 1000 },
+      delay: { min: -10, max: 10, stepMs: 0.05 },
+      polarity: 'normal',
+      objective: 'sum',
+    });
+    if (!result.ok) return { pass: false, detail: result.message };
+    return {
+      pass: Math.abs(result.best.delayMs + 2) < 0.1,
+      detail: 'recommended ' + result.best.delayMs.toFixed(2) + ' ms against −2.00 ms',
+    };
+  });
+
+test('Smoothing leaves a flat curve flat',
+  'Fractional-octave smoothing may not tilt a curve that has no shape to smooth.',
+  () => {
+    const values = new Float64Array(GRID_POINTS).fill(-12);
+    const smoothed = fractionalOctaveSmooth(values, 1 / 3, GRID_POINTS);
+    let worst = 0;
+    for (const value of smoothed) worst = Math.max(worst, Math.abs(value + 12));
+    return { pass: worst < 1e-9, detail: 'largest change ' + worst.toExponential(2) + ' dB' };
+  });
+
+test('Phase is unwrapped before it is interpolated',
+  'A phase curve that wraps must stay continuous, and a delay’s phase is linear in frequency.',
+  () => {
+    const resampled = resampleResponse({ frequencies: [100, 1000], magDb: [0, 0], phaseDeg: [170, -170] });
+    if (!resampled.ok) return { pass: false, detail: resampled.message };
+    let index = 0;
+    for (let i = 0; i < resampled.grid.length; i++) {
+      if (Math.abs(resampled.grid[i] - 550) < Math.abs(resampled.grid[index] - 550)) index = i;
+    }
+    const value = resampled.phaseDeg[index];
+    return {
+      pass: Math.abs(value - 180) < 1,
+      detail: 'phase near 550 Hz ' + value.toFixed(1) + '°',
+    };
+  });
+
+test('A response file is read by its columns',
+  'A known file must land on the grid with the level and phase it carried, over its own range.',
+  () => {
+    const lines = ['# frequency magnitude phase'];
+    for (let i = 0; i < 12; i++) {
+      const frequency = 100 * Math.pow(2, i / 3);
+      lines.push(frequency.toFixed(1) + ',' + (-6 + i * 0.5).toFixed(2) + ',' + (i * 10) + '');
+    }
+    const parsed = parseResponseText(lines.join('\n'));
+    if (!parsed.ok) return { pass: false, detail: parsed.message };
+    return {
+      pass: parsed.points === 12 && !!parsed.response.phaseDeg &&
+        Math.abs(parsed.response.fMin - 100) < 0.01,
+      detail: parsed.points + ' points from ' + parsed.response.fMin.toFixed(1) + ' Hz, phase ' +
+        (parsed.response.phaseDeg ? 'kept' : 'dropped'),
+    };
+  });
+
+test('A magnitude-only file stays magnitude-only',
+  'No phase may be invented for a file that does not carry it.',
+  () => {
+    const lines = [];
+    for (let i = 0; i < 20; i++) lines.push((100 * Math.pow(2, i / 4)).toFixed(1) + ' ' + (-3).toFixed(1));
+    const parsed = parseResponseText(lines.join('\n'));
+    if (!parsed.ok) return { pass: false, detail: parsed.message };
+    return {
+      pass: parsed.response.phaseDeg === null,
+      detail: parsed.response.phaseDeg ? 'phase was invented' : 'stayed magnitude-only',
+    };
+  });
+
+test('A file too short to be a response is refused',
+  'A truncated file must be refused whole rather than half-imported.',
+  () => {
+    const parsed = parseResponseText('100 0\n200 0\n400 0');
+    return { pass: !parsed.ok, detail: parsed.ok ? 'accepted a 3-row file' : parsed.message };
+  });
+
+test('Phase wrapping stays inside ±180°',
+  'A wrapped phase reading must never leave the −180° to +180° range.',
+  () => {
+    const wrapped = [370, -190, 180, -180].map(wrapDegrees);
+    return {
+      pass: Math.abs(wrapped[0] - 10) < 1e-9 && Math.abs(wrapped[1] - 170) < 1e-9 &&
+        wrapped[2] === 180 && wrapped[3] === -180,
+      detail: wrapped.join('°, ') + '°',
+    };
+  });
+
+test('The impulse response comes from the modelled sum',
+  'A flat, delay-free sum must transform to an impulse at the window\'s origin.',
+  () => {
+    const sum = sumResponses([modelResponse(null, 0)]);
+    const transformed = synthesizeImpulse(sum, { sampleRate: 48000, bins: 4096, beforeMs: 5, stepMs: 1 });
+    if (!transformed.ok) return { pass: false, detail: transformed.message };
+    const values = transformed.envelope.values;
+    const peakIndex = values.indexOf(Math.max(...values));
+    const peakMs = transformed.envelope.startMs + peakIndex * transformed.envelope.stepMs;
+    return {
+      pass: Math.abs(values[peakIndex]) < 0.5 && peakIndex === 5,
+      detail: 'peak at ' + peakMs.toFixed(1) + ' ms, ' + values[peakIndex].toFixed(2) + ' dB',
+    };
+  });
+
+test('A prediction is compared with a measurement band by band',
+  'A measured curve 3 dB above the prediction must read as a 3 dB error, averaged and at its worst.',
+  () => {
+    const predicted = modelResponse(null, 0);
+    const measured = modelResponse(null, 3);
+    const stats = compareCurves(predicted, measured, { min: 200, max: 2000 });
+    return {
+      pass: Math.abs(stats.meanDb - 3) < 0.02 && Math.abs(stats.rmsDb - 3) < 0.02 &&
+        Math.abs(stats.worstDb - 3) < 0.02,
+      detail: 'mean ' + stats.meanDb.toFixed(2) + ' dB, rms ' + stats.rmsDb.toFixed(2) +
+        ' dB over ' + stats.count + ' points',
+    };
+  });
+
+test('Free-field distance changes the arrival and the level',
+  'Two metres against one must cost 6.02 dB and add 2.92 ms of travel at 343 m/s.',
+  () => {
+    const settings = effectiveSettings(
+      { gainDb: 0, delayMs: 0, polarity: 'normal', distanceM: 2 },
+      null,
+      { enabled: true, referenceDistanceM: 1, speedOfSound: 343 },
+    );
+    return {
+      pass: Math.abs(settings.freeFieldGainDb + 6.0206) < 0.01 &&
+        Math.abs(settings.freeFieldDelayMs - 2.9155) < 0.01,
+      detail: settings.freeFieldGainDb.toFixed(2) + ' dB, ' +
+        settings.freeFieldDelayMs.toFixed(2) + ' ms',
+    };
+  });
+
+test('A band-pass passes its band and stops outside it',
+  'A high-pass at 100 Hz plus a low-pass at 1 kHz must be −3 dB at each edge and fall outside.',
+  () => {
+    const design = designCrossover({
+      family: 'Butterworth', slope: 12, frequency: 100, lowFrequency: 1000, type: 'bandPass',
+    });
+    if (!design.ok) return { pass: false, detail: design.message };
+    const at = chainResponse(design.filters, new Float64Array([20, 100, 1000, 5000]), 48000);
+    return {
+      pass: Math.abs(at.magDb[1] + 3.01) < 0.3 && Math.abs(at.magDb[2] + 3.01) < 0.3 &&
+        at.magDb[0] < -10 && at.magDb[3] < -10,
+      detail: at.magDb.map((value) => value.toFixed(1)).join(' / ') + ' dB',
     };
   });
 

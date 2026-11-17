@@ -1,0 +1,897 @@
+/*
+ * The modelling engine: what a system of loudspeakers actually sums to.
+ *
+ * A response is kept as a complex pressure on one log frequency grid. Gain,
+ * delay and polarity rotate and scale it; a DSP chain multiplies it; a sum adds
+ * the complex values, never the decibel magnitudes. That is the whole point of
+ * this module: two curves that read the same in dB can add to +6 dB, cancel, or
+ * anything in between, and only the complex arithmetic knows which.
+ *
+ * Where a curve carries no measured phase, the prediction assumes zero phase at
+ * that source and says so — it never pretends the sum of two magnitudes is an
+ * answer.
+ */
+
+import {
+  GRID_POINTS,
+  SPEED_OF_SOUND,
+  compareCurves,
+  curveStatistics,
+  fractionalOctaveSmooth,
+  gridFrequencies,
+  gridFrequency,
+  resampleResponse,
+  wrapDegrees,
+} from './curve.js';
+import { chainResponse, normalizeFilter } from './filters.js';
+import { FFT } from '../fft.js';
+
+export const MODEL_TYPES = ['Subwoofer', 'Full-range', 'Top / main', 'Monitor', 'Custom'];
+
+export const PROVENANCES = [
+  { id: 'manufacturer', label: 'Manufacturer data' },
+  { id: 'measured', label: 'Measured' },
+  { id: 'theoretical', label: 'Theoretical model' },
+];
+
+export const OBJECTIVES = [
+  { id: 'sum', label: 'Broadband coherent summation' },
+  { id: 'crossover', label: 'Best crossover-region summation' },
+  { id: 'worst', label: 'Minimum cancellation' },
+  { id: 'phase', label: 'Minimum phase difference' },
+  { id: 'smooth', label: 'Smoothest combined response' },
+  { id: 'custom', label: 'Weighted (low / mid / high)' },
+];
+
+function clamp(value, low, high, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(high, Math.max(low, number));
+}
+
+function text(value, limit) {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, limit);
+}
+
+function finiteOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function makeId(prefix) {
+  return prefix + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
+}
+
+export function provenanceLabel(id) {
+  const found = PROVENANCES.find((entry) => entry.id === id);
+  return found ? found.label : 'Imported';
+}
+
+/* ---------- the catalogue ---------- */
+
+export function newModel(fields = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: makeId('m-'),
+    name: text(fields.name, 80) || 'Unnamed loudspeaker',
+    manufacturer: text(fields.manufacturer, 60),
+    model: text(fields.model, 60),
+    type: MODEL_TYPES.includes(fields.type) ? fields.type : 'Custom',
+    impedanceOhm: clamp(fields.impedanceOhm, 0.5, 64, 8),
+    sensitivityDb: clamp(fields.sensitivityDb, 50, 150, 96),
+    distanceM: clamp(fields.distanceM, 0, 200, 1),
+    referenceDelayMs: clamp(fields.referenceDelayMs, -100, 100, 0),
+    crossoverText: text(fields.crossoverText, 120),
+    directivityText: text(fields.directivityText, 120),
+    specs: text(fields.specs, 400),
+    notes: text(fields.notes, 400),
+    provenance: PROVENANCES.some((entry) => entry.id === fields.provenance)
+      ? fields.provenance
+      : 'measured',
+    datasets: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function normalizeCurve(raw, count = GRID_POINTS) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const values = Array.from(source.magDb || []).map(Number);
+  const usable = values.filter((value) => Number.isFinite(value));
+  if (usable.length < 2) return null;
+
+  if (values.length === count && usable.length === count) {
+    return {
+      magDb: values.slice(),
+      phaseDeg: Array.isArray(source.phaseDeg) && source.phaseDeg.length === count
+        ? source.phaseDeg.map(Number).map((value) => (Number.isFinite(value) ? value : 0))
+        : null,
+      coherence: Array.isArray(source.coherence) && source.coherence.length === count
+        ? source.coherence.map((value) => clamp(value, 0, 1, 0))
+        : null,
+    };
+  }
+
+  const frequencies = values.map((value, index) => gridFrequency(index, values.length));
+  const resampled = resampleResponse({
+    frequencies,
+    magDb: values,
+    phaseDeg: Array.isArray(source.phaseDeg) ? source.phaseDeg : null,
+    coherence: Array.isArray(source.coherence) ? source.coherence : null,
+  }, count);
+  if (!resampled.ok) return null;
+  return {
+    magDb: Array.from(resampled.magDb),
+    phaseDeg: resampled.phaseDeg ? Array.from(resampled.phaseDeg) : null,
+    coherence: resampled.coherence ? Array.from(resampled.coherence) : null,
+  };
+}
+
+function normalizeConditions(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const mic = source.micPosition && typeof source.micPosition === 'object' ? source.micPosition : {};
+  return {
+    venue: text(source.venue, 80),
+    event: text(source.event, 80),
+    micLabel: text(source.micLabel, 80),
+    micDistanceM: finiteOrNull(source.micDistanceM),
+    micHeightM: finiteOrNull(source.micHeightM),
+    device: text(source.device, 120),
+    channels: text(source.channels, 40),
+    reference: text(source.reference, 60),
+    calibrationName: text(source.calibrationName, 120),
+    calibrationOffsetDb: finiteOrNull(source.calibrationOffsetDb),
+    phaseCompensated: source.phaseCompensated === true,
+    measuredAt: text(source.measuredAt, 40),
+    mic,
+  };
+}
+
+export function normalizeDataset(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const curve = normalizeCurve(source.curve || source);
+  if (!curve) return null;
+  const hasPhase = !!curve.phaseDeg;
+  return {
+    id: text(source.id, 60) || makeId('d-'),
+    label: text(source.label || source.name, 80) || 'Imported response',
+    provenance: PROVENANCES.some((entry) => entry.id === source.provenance)
+      ? source.provenance
+      : 'measured',
+    importedFrom: text(source.importedFrom, 120),
+    curve,
+    points: GRID_POINTS,
+    hasPhase,
+    phaseOrigin: hasPhase ? (text(source.phaseOrigin, 40) || 'measured') : 'none',
+    fMin: clamp(source.fMin, 1, 20000, 20),
+    fMax: clamp(source.fMax, 20, 20000, 20000),
+    sampleRate: clamp(source.sampleRate, 0, 384000, 0),
+    fftSize: clamp(source.fftSize, 0, 262144, 0),
+    delayMs: clamp(source.delayMs, -1000, 1000, 0),
+    conditions: normalizeConditions(source.conditions),
+    note: text(source.note, 200),
+    importedAt: text(source.importedAt, 40) || new Date().toISOString(),
+  };
+}
+
+export function normalizeModel(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const model = newModel(source);
+  const datasets = Array.isArray(source.datasets) ? source.datasets : [];
+  model.id = text(source.id, 60) || model.id;
+  model.createdAt = text(source.createdAt, 40) || model.createdAt;
+  model.updatedAt = text(source.updatedAt, 40) || model.updatedAt;
+  if (Number.isFinite(Number(source.impedanceOhm))) model.impedanceOhm = clamp(source.impedanceOhm, 0.5, 64, 8);
+  if (Number.isFinite(Number(source.sensitivityDb))) model.sensitivityDb = clamp(source.sensitivityDb, 50, 150, 96);
+  model.datasets = datasets.map(normalizeDataset).filter(Boolean).slice(0, 24);
+  return model;
+}
+
+export function normalizeGroup(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    id: text(source.id, 60) || makeId('g-'),
+    name: text(source.name, 60) || 'Group',
+    gainDb: clamp(source.gainDb, -24, 24, 0),
+    delayMs: clamp(source.delayMs, -100, 100, 0),
+    polarity: source.polarity === 'inverted' ? 'inverted' : 'normal',
+    muted: source.muted === true,
+  };
+}
+
+export function normalizeSource(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const positionDatasets = {};
+  if (source.positionDatasets && typeof source.positionDatasets === 'object') {
+    for (const [key, value] of Object.entries(source.positionDatasets)) {
+      if (typeof value === 'string' && value) positionDatasets[String(key).slice(0, 40)] = value.slice(0, 60);
+    }
+  }
+  return {
+    id: text(source.id, 60) || makeId('s-'),
+    modelId: text(source.modelId, 60),
+    datasetId: text(source.datasetId, 60),
+    name: text(source.name, 60) || 'Source',
+    groupId: text(source.groupId, 60),
+    gainDb: clamp(source.gainDb, -30, 30, 0),
+    delayMs: clamp(source.delayMs, -50, 100, 0),
+    polarity: source.polarity === 'inverted' ? 'inverted' : 'normal',
+    muted: source.muted === true,
+    soloed: source.soloed === true,
+    filters: Array.isArray(source.filters)
+      ? source.filters.map(normalizeFilter).slice(0, 24)
+      : [],
+    positionDatasets,
+    distanceM: finiteOrNull(source.distanceM),
+    note: text(source.note, 200),
+  };
+}
+
+export function normalizePosition(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    id: text(source.id, 60) || makeId('p-'),
+    label: text(source.label, 40) || 'Position',
+    weight: clamp(source.weight, 0, 1, 1),
+  };
+}
+
+export function normalizeSnapshot(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const name = text(source.name, 60);
+  if (!name) return null;
+  const data = source.data && typeof source.data === 'object' ? source.data : {};
+  return {
+    id: text(source.id, 60) || makeId('snap-'),
+    name,
+    savedAt: text(source.savedAt, 40) || new Date().toISOString(),
+    data: {
+      sources: (Array.isArray(data.sources) ? data.sources : []).map(normalizeSource).filter(Boolean),
+      groups: (Array.isArray(data.groups) ? data.groups : []).map(normalizeGroup).filter(Boolean),
+      positions: (Array.isArray(data.positions) ? data.positions : []).map(normalizePosition).filter(Boolean),
+      settings: data.settings && typeof data.settings === 'object' ? data.settings : {},
+      optimizer: data.optimizer && typeof data.optimizer === 'object' ? data.optimizer : null,
+    },
+  };
+}
+
+export function emptyProject() {
+  return {
+    models: [],
+    sources: [],
+    groups: [],
+    positions: [{ id: 'centre', label: 'Centre', weight: 1 }],
+    snapshots: [],
+    settings: {
+      positionId: 'centre',
+      view: 'transfer',
+      phaseMode: 'wrapped',
+      smoothing: 1 / 12,
+      dbSpan: 0,
+      showIndividual: true,
+      showSum: true,
+      propagation: { enabled: false, referenceDistanceM: 1, speedOfSound: SPEED_OF_SOUND },
+      coherenceThreshold: 0.35,
+      nullDepthDb: 20,
+      compareDatasetId: '',
+      compareLabel: '',
+    },
+  };
+}
+
+export function normalizeProject(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const base = emptyProject();
+  return {
+    ...base,
+    models: (Array.isArray(source.models) ? source.models : []).map(normalizeModel).filter(Boolean),
+    sources: (Array.isArray(source.sources) ? source.sources : []).map(normalizeSource).filter(Boolean),
+    groups: (Array.isArray(source.groups) ? source.groups : []).map(normalizeGroup).filter(Boolean),
+    positions: (Array.isArray(source.positions) && source.positions.length
+      ? source.positions.map(normalizePosition).filter(Boolean)
+      : base.positions),
+    snapshots: (Array.isArray(source.snapshots) ? source.snapshots : [])
+      .map(normalizeSnapshot).filter(Boolean).slice(0, 30),
+    settings: { ...base.settings, ...(source.settings && typeof source.settings === 'object' ? source.settings : {}) },
+  };
+}
+
+/* ---------- evaluating one source ---------- */
+
+export function datasetTrace(dataset) {
+  if (!dataset || !dataset.curve || !Array.isArray(dataset.curve.magDb)) return null;
+  const count = dataset.curve.magDb.length;
+  const frequencies = gridFrequencies(count);
+  const magDb = Float64Array.from(dataset.curve.magDb.map(Number));
+  const phaseDeg = Array.isArray(dataset.curve.phaseDeg)
+    ? Float64Array.from(dataset.curve.phaseDeg.map(Number))
+    : null;
+  const coherence = Array.isArray(dataset.curve.coherence)
+    ? Float64Array.from(dataset.curve.coherence.map(Number))
+    : null;
+  return { frequencies, magDb, phaseDeg, coherence, count };
+}
+
+export function findDataset(project, modelId, datasetId) {
+  const model = (project.models || []).find((entry) => entry.id === modelId);
+  if (!model) return { model: null, dataset: null };
+  // A named dataset is the one that is used; only a source without a named
+  // dataset falls back to the loudspeaker's first response.
+  const dataset = datasetId
+    ? (model.datasets || []).find((entry) => entry.id === datasetId) || null
+    : (model.datasets && model.datasets[0]) || null;
+  return { model, dataset };
+}
+
+export function sourceFilters(source, group) {
+  const list = source && Array.isArray(source.filters) ? source.filters : [];
+  // A group carries gain, delay and polarity; the filters stay on the source so
+  // nothing about one cabinet is destroyed by a change to its group.
+  return list;
+}
+
+/**
+ * The effective settings of one source once its group is applied. Nothing stored
+ * on the source is changed: the group is added on top, so removing the group
+ * restores exactly what the source carried.
+ */
+export function effectiveSettings(source, group, propagation) {
+  const groupGain = group ? group.gainDb : 0;
+  const groupDelay = group ? group.delayMs : 0;
+  const groupInverted = !!(group && group.polarity === 'inverted');
+
+  let freeFieldGain = 0;
+  let freeFieldDelay = 0;
+  if (propagation && propagation.enabled && Number(source.distanceM) > 0 && propagation.referenceDistanceM > 0) {
+    const reference = Number(propagation.referenceDistanceM);
+    const distance = Number(source.distanceM);
+    const speed = Number(propagation.speedOfSound) > 0 ? Number(propagation.speedOfSound) : SPEED_OF_SOUND;
+    freeFieldGain = 20 * Math.log10(reference / distance);
+    freeFieldDelay = ((distance - reference) / speed) * 1000;
+  }
+
+  return {
+    gainDb: Number(source.gainDb) + groupGain + freeFieldGain,
+    delayMs: Number(source.delayMs) + groupDelay + freeFieldDelay,
+    inverted: (source.polarity === 'inverted') !== groupInverted,
+    ownGainDb: Number(source.gainDb),
+    groupGainDb: groupGain,
+    freeFieldGainDb: freeFieldGain,
+    freeFieldDelayMs: freeFieldDelay,
+  };
+}
+
+/**
+ * One source as a complex response on the grid: its own curve, its gain, delay
+ * and polarity, and its DSP chain multiplied in. A magnitude-only curve is
+ * summed with zero phase and flagged, so the caller can say so.
+ */
+export function sourceResponse(source, trace, group, options = {}) {
+  const count = trace.magDb.length;
+  const frequencies = trace.frequencies;
+  const settings = effectiveSettings(source, group, options.propagation);
+  const chain = chainResponse(source.filters, frequencies, options.sampleRate || 48000);
+  const polarityRad = settings.inverted ? Math.PI : 0;
+  const delaySeconds = settings.delayMs / 1000;
+
+  const magDb = new Float64Array(count);
+  const phaseDeg = new Float64Array(count);
+  const re = new Float64Array(count);
+  const im = new Float64Array(count);
+
+  for (let i = 0; i < count; i += 1) {
+    const f = frequencies[i];
+    const magnitude = trace.magDb[i] + settings.gainDb + chain.magDb[i];
+    const measuredPhase = trace.phaseDeg ? (trace.phaseDeg[i] * Math.PI) / 180 : 0;
+    const phase = measuredPhase + chain.phaseRad[i] - 2 * Math.PI * f * delaySeconds + polarityRad;
+    const linear = Math.pow(10, magnitude / 20);
+    magDb[i] = magnitude;
+    phaseDeg[i] = (phase * 180) / Math.PI;
+    re[i] = linear * Math.cos(phase);
+    im[i] = linear * Math.sin(phase);
+  }
+
+  return {
+    id: source.id,
+    name: source.name,
+    frequencies,
+    magDb,
+    phaseDeg,
+    re,
+    im,
+    filters: source.filters,
+    settings,
+    phaseValid: !!trace.phaseDeg,
+    coherence: trace.coherence,
+    datasetId: trace.datasetId || '',
+    label: trace.label || source.name,
+  };
+}
+
+/** Add complex responses; the result is null when nothing is active. */
+export function sumResponses(list) {
+  const active = (list || []).filter(Boolean);
+  if (!active.length) return null;
+  const count = active[0].magDb.length;
+  const frequencies = active[0].frequencies;
+  const re = new Float64Array(count);
+  const im = new Float64Array(count);
+  let assumedPhase = 0;
+
+  for (const response of active) {
+    if (!response.phaseValid) assumedPhase += 1;
+    for (let i = 0; i < count; i += 1) {
+      re[i] += response.re[i];
+      im[i] += response.im[i];
+    }
+  }
+
+  const magDb = new Float64Array(count);
+  const phaseDeg = new Float64Array(count);
+  for (let i = 0; i < count; i += 1) {
+    const magnitude = Math.hypot(re[i], im[i]);
+    magDb[i] = magnitude > 0 ? 20 * Math.log10(magnitude) : -240;
+    phaseDeg[i] = (Math.atan2(im[i], re[i]) * 180) / Math.PI;
+  }
+
+  return {
+    frequencies,
+    re,
+    im,
+    magDb,
+    phaseDeg,
+    activeIds: active.map((response) => response.id),
+    assumedPhase,
+  };
+}
+
+/**
+ * Evaluate the whole system for one measuring position: every source resolved,
+ * muted and soloed as set, summed in the complex domain.
+ */
+export function evaluateSystem(project, options = {}) {
+  const positionId = options.positionId || (project.settings && project.settings.positionId) || 'centre';
+  const anySolo = (project.sources || []).some((source) => source.soloed);
+  const responses = [];
+  const missing = [];
+
+  for (const source of project.sources || []) {
+    if (source.muted) continue;
+    if (anySolo && !source.soloed) continue;
+    const datasetId = (source.positionDatasets && source.positionDatasets[positionId]) || source.datasetId;
+    const found = findDataset(project, source.modelId, datasetId);
+    const trace = found.dataset ? datasetTrace(found.dataset) : null;
+    if (!trace) {
+      missing.push(source.name);
+      continue;
+    }
+    trace.datasetId = found.dataset.id;
+    trace.label = found.dataset.label;
+    const group = (project.groups || []).find((entry) => entry.id === source.groupId) || null;
+    if (group && group.muted) continue;
+    responses.push(sourceResponse(source, trace, group, options));
+  }
+
+  const sum = sumResponses(responses);
+  return { responses, sum, missing, positionId };
+}
+
+/* ---------- timing views of the sum ---------- */
+
+/**
+ * Group delay from the slope of the unwrapped phase: τ = −(dφ/df) / 360 s.
+ *
+ * A slope is taken over a small band of neighbours, in milliseconds, and left
+ * blank where the coherence is below the threshold or where the sum sits in a
+ * deep cancellation null — the phase there says nothing about timing.
+ */
+export function groupDelay(frequencies, phaseDeg, magDb, options = {}) {
+  const count = frequencies.length;
+  const threshold = Number.isFinite(Number(options.coherenceThreshold))
+    ? Number(options.coherenceThreshold)
+    : 0.35;
+  const coherence = options.coherence || null;
+  const nullDepthDb = Number.isFinite(Number(options.nullDepthDb))
+    ? Number(options.nullDepthDb)
+    : 20;
+  const span = Math.max(1, Math.round(Number(options.span) || 3));
+
+  let maxMag = -Infinity;
+  for (let i = 0; i < count; i += 1) {
+    if (Number.isFinite(magDb[i])) maxMag = Math.max(maxMag, magDb[i]);
+  }
+
+  const out = new Float64Array(count).fill(NaN);
+  const phaseRad = new Float64Array(count);
+  for (let i = 0; i < count; i += 1) phaseRad[i] = (phaseDeg[i] * Math.PI) / 180;
+
+  for (let i = 0; i < count; i += 1) {
+    if (coherence && Number(coherence[i]) < threshold) continue;
+    if (Number.isFinite(maxMag) && magDb[i] < maxMag - nullDepthDb) continue;
+    const lo = Math.max(0, i - span);
+    const hi = Math.min(count - 1, i + span);
+    if (hi === lo) continue;
+    const slope = (phaseRad[hi] - phaseRad[lo]) / (frequencies[hi] - frequencies[lo]);
+    const value = (-slope / (2 * Math.PI)) * 1000;
+    out[i] = Math.max(-100, Math.min(100, value));
+  }
+  return out;
+}
+
+/**
+ * The impulse response of the summed model, by inverse transform of its complex
+ * response. This is a derived curve, not a measurement: the band edges are
+ * tapered, so the result is labelled as derived wherever it is shown.
+ */
+export function synthesizeImpulse(sum, options = {}) {
+  if (!sum) return { ok: false, message: 'There is no summed response to transform.' };
+  const sampleRate = clamp(options.sampleRate, 8000, 192000, 48000);
+  const bins = Math.max(1024, Math.min(65536, Math.round(options.bins || 8192)));
+  const size = bins;
+  const re = new Float64Array(size);
+  const im = new Float64Array(size);
+  const frequencies = sum.frequencies;
+  const count = frequencies.length;
+  const fMin = frequencies[0];
+  const fMax = frequencies[count - 1];
+  const low = Math.log(fMin);
+  const high = Math.log(fMax);
+
+  // A raised-cosine taper at both edges: no invented DC term, no invented
+  // bandwidth above the modelled band.
+  const taper = (logF) => {
+    if (!Number.isFinite(logF) || logF < low || logF > high) return 0;
+    const t = (logF - low) / (high - low);
+    const edge = 0.08;
+    if (t < edge) return 0.5 * (1 - Math.cos((Math.PI * t) / edge));
+    if (t > 1 - edge) return 0.5 * (1 - Math.cos((Math.PI * (1 - t)) / edge));
+    return 1;
+  };
+
+  const complexAt = (frequency) => {
+    // Interpolate the complex parts on the log axis; a fractional index.
+    const logF = Math.log(frequency);
+    const t = ((logF - low) / (high - low)) * (count - 1);
+    if (t <= 0) return { re: sum.re[0], im: sum.im[0] };
+    if (t >= count - 1) return { re: sum.re[count - 1], im: sum.im[count - 1] };
+    const lo = Math.floor(t);
+    const hi = Math.min(count - 1, lo + 1);
+    const frac = t - lo;
+    return {
+      re: sum.re[lo] * (1 - frac) + sum.re[hi] * frac,
+      im: sum.im[lo] * (1 - frac) + sum.im[hi] * frac,
+    };
+  };
+
+  for (let k = 1; k < size / 2; k += 1) {
+    const frequency = (k * sampleRate) / size;
+    const weight = taper(Math.log(frequency));
+    if (!(weight > 0)) continue;
+    const value = complexAt(frequency);
+    re[k] = value.re * weight;
+    im[k] = value.im * weight;
+    re[size - k] = re[k];
+    im[size - k] = -im[k];
+  }
+
+  const fft = new FFT(size);
+  fft.inverse(re, im);
+
+  let peak = 0;
+  let peakIndex = 0;
+  for (let i = 0; i < size; i += 1) {
+    const value = Math.hypot(re[i], im[i]);
+    if (value > peak) { peak = value; peakIndex = i; }
+  }
+  if (!(peak > 0)) return { ok: false, message: 'That response transformed to silence.' };
+
+  const beforeMs = clamp(options.beforeMs, 0, 20, 5);
+  const afterMs = clamp(options.afterMs, 10, 200, 100);
+  const stepMs = clamp(options.stepMs, 0.1, 5, 1);
+  const stepSamples = Math.max(1, Math.round((stepMs / 1000) * sampleRate));
+  const start = peakIndex - Math.round((beforeMs / 1000) * sampleRate);
+  const buckets = Math.round((beforeMs + afterMs) / stepMs) + 1;
+
+  const values = [];
+  for (let b = 0; b < buckets; b += 1) {
+    let largest = 0;
+    for (let s = 0; s < stepSamples; s += 1) {
+      const index = start + b * stepSamples + s;
+      if (index < 0 || index >= size) continue;
+      largest = Math.max(largest, Math.hypot(re[index], im[index]));
+    }
+    values.push(largest > 0 ? 20 * Math.log10(largest / peak) : -120);
+  }
+
+  return {
+    ok: true,
+    message: 'Derived by inverse transform of the modelled sum; edges tapered.',
+    envelope: { startMs: -beforeMs, stepMs, peakMs: 0, values },
+    sampleRate,
+    bins: size,
+  };
+}
+
+/**
+ * Align a target to a reference: the delay and polarity at which the two sum
+ * best, and honestly what that choice costs elsewhere in the band.
+ *
+ * No single delay is universally best. The result carries the best delay, the
+ * runner-up solutions, the nulls the choice leaves behind and how far the result
+ * can be trusted from the data it was computed from.
+ */
+export function optimizeAlignment(options = {}) {
+  const reference = options.reference;
+  const target = options.target;
+  if (!reference || !target) {
+    return { ok: false, message: 'Aligning needs both a reference and a target source.' };
+  }
+  if (options.objective === 'phase' && (!reference.phaseValid || !target.phaseValid)) {
+    return {
+      ok: false,
+      message: 'A phase objective needs measured phase on both sources; one of them is magnitude-only.',
+    };
+  }
+
+  const frequencies = reference.frequencies;
+  const band = {
+    min: clamp(options.band && options.band.min, 20, 20000, 1000),
+    max: clamp(options.band && options.band.max, 20, 20000, 2000),
+  };
+  if (!(band.max > band.min)) band.max = Math.min(20000, band.min * 2);
+
+  const delayMin = clamp(options.delay && options.delay.min, -50, 50, -20);
+  const delayMax = clamp(options.delay && options.delay.max, -50, 50, 20);
+  const step = clamp(options.step && options.step.stepMs, 0.005, 1, 0.05);
+  const low = Math.min(delayMin, delayMax);
+  const high = Math.max(delayMin, delayMax);
+  const objective = OBJECTIVES.some((entry) => entry.id === options.objective)
+    ? options.objective
+    : 'sum';
+
+  const focus = clamp(options.focusFrequency, 20, 20000, Math.sqrt(band.min * band.max));
+  const crossoverBand = { min: focus / Math.pow(2, 1 / 3), max: focus * Math.pow(2, 1 / 3) };
+
+  const indices = [];
+  let referenceSum = 0;
+  let targetSum = 0;
+  let referenceCount = 0;
+  let targetCount = 0;
+  for (let i = 0; i < frequencies.length; i += 1) {
+    const f = frequencies[i];
+    if (f < band.min || f > band.max) continue;
+    indices.push(i);
+    const refMag = 20 * Math.log10(Math.max(1e-12, Math.hypot(reference.re[i], reference.im[i])));
+    const targetMag = 20 * Math.log10(Math.max(1e-12, Math.hypot(target.re[i], target.im[i])));
+    referenceSum += refMag;
+    targetSum += targetMag;
+    referenceCount += 1;
+    targetCount += 1;
+  }
+  if (!indices.length) {
+    return { ok: false, message: 'The chosen band holds no modelled points.' };
+  }
+
+  const referenceMean = referenceSum / Math.max(1, referenceCount);
+  const targetMean = targetSum / Math.max(1, targetCount);
+
+  const weights = indices.map((index) => {
+    const f = frequencies[index];
+    if (objective === 'crossover') {
+      return f >= crossoverBand.min && f <= crossoverBand.max ? 1 : 0;
+    }
+    if (objective === 'custom') {
+      const anchors = options.weights || { low: 1, mid: 1, high: 1 };
+      if (f < 250) return clamp(anchors.low, 0, 1, 1);
+      if (f <= 2000) return clamp(anchors.mid, 0, 1, 1);
+      return clamp(anchors.high, 0, 1, 1);
+    }
+    return 1;
+  });
+
+  const polarities = options.polarity === 'normal'
+    ? ['normal']
+    : options.polarity === 'inverted'
+      ? ['inverted']
+      : ['normal', 'inverted'];
+
+  const candidates = [];
+
+  const evaluate = (delayMs, polarity) => {
+    const sign = polarity === 'inverted' ? -1 : 1;
+    const sums = [];
+    let worst = Infinity;
+    let phaseError = 0;
+    let phaseCount = 0;
+    for (let k = 0; k < indices.length; k += 1) {
+      const index = indices[k];
+      const f = frequencies[index];
+      const rotation = (-2 * Math.PI * f * delayMs) / 1000;
+      const cos = Math.cos(rotation);
+      const sin = Math.sin(rotation);
+      const targetRe = sign * (target.re[index] * cos - target.im[index] * sin);
+      const targetIm = sign * (target.re[index] * sin + target.im[index] * cos);
+      const re = reference.re[index] + targetRe;
+      const im = reference.im[index] + targetIm;
+      const magnitude = Math.hypot(re, im);
+      const value = magnitude > 0 ? 20 * Math.log10(magnitude) : -240;
+      sums.push(value);
+      worst = Math.min(worst, value);
+      if (target.phaseValid && reference.phaseValid) {
+        const phaseTarget = Math.atan2(targetIm, targetRe);
+        const phaseReference = Math.atan2(reference.im[index], reference.re[index]);
+        phaseError += Math.abs(wrapDegrees(((phaseTarget - phaseReference) * 180) / Math.PI));
+        phaseCount += 1;
+      }
+    }
+
+    let objectiveValue = 0;
+    const baseline = Math.max(referenceMean, targetMean);
+    if (objective === 'sum' || objective === 'crossover' || objective === 'custom') {
+      let weighted = 0;
+      let weight = 0;
+      for (let k = 0; k < sums.length; k += 1) {
+        weighted += sums[k] * weights[k];
+        weight += weights[k];
+      }
+      objectiveValue = weight > 0 ? (weighted / weight) - baseline : -240;
+    } else if (objective === 'worst') {
+      objectiveValue = worst - baseline;
+    } else if (objective === 'phase') {
+      objectiveValue = phaseCount ? -(phaseError / phaseCount) : -360;
+    } else if (objective === 'smooth') {
+      const mean = sums.reduce((a, b) => a + b, 0) / Math.max(1, sums.length);
+      let variance = 0;
+      for (const value of sums) variance += (value - mean) * (value - mean);
+      objectiveValue = -Math.sqrt(variance / Math.max(1, sums.length));
+    }
+
+    const nulls = [];
+    const sumMean = sums.reduce((a, b) => a + b, 0) / Math.max(1, sums.length);
+    for (let k = 1; k < sums.length - 1; k += 1) {
+      const value = sums[k];
+      if (value > sums[k - 1] || value > sums[k + 1]) continue;
+      if (value > sumMean - 6) continue;
+      nulls.push({ hz: frequencies[indices[k]], depthDb: value - sumMean });
+    }
+    nulls.sort((a, b) => a.depthDb - b.depthDb);
+
+    return {
+      delayMs,
+      polarity,
+      objectiveValue,
+      sumMeanDb: sumMean,
+      gainDb: sumMean - baseline,
+      worstDb: worst - baseline,
+      phaseErrorDeg: phaseCount ? phaseError / phaseCount : NaN,
+      nulls: nulls.slice(0, 4),
+      sums,
+    };
+  };
+
+  const steps = Math.min(4000, Math.max(2, Math.round((high - low) / step) + 1));
+  const actualStep = (high - low) / (steps - 1);
+
+  for (let i = 0; i < steps; i += 1) {
+    const delayMs = low + i * actualStep;
+    for (const polarity of polarities) candidates.push(evaluate(delayMs, polarity));
+  }
+
+  candidates.sort((a, b) => b.objectiveValue - a.objectiveValue);
+  const best = candidates[0];
+  const alternatives = [];
+  for (const candidate of candidates.slice(1)) {
+    if (alternatives.length >= 3) break;
+    if (Math.abs(candidate.delayMs - best.delayMs) < 0.1) continue;
+    if (alternatives.some((entry) => Math.abs(entry.delayMs - candidate.delayMs) < 0.1)) continue;
+    alternatives.push(candidate);
+  }
+
+  // Data quality decides how far the answer can be trusted.
+  let coherence = NaN;
+  if (target.coherence) {
+    let sum = 0;
+    let count = 0;
+    for (const index of indices) {
+      const value = Number(target.coherence[index]);
+      if (!Number.isFinite(value)) continue;
+      sum += value;
+      count += 1;
+    }
+    if (count) coherence = sum / count;
+  }
+  const phaseKnown = !!target.phaseValid;
+  const coverage = (band.max - band.min) / (20000 - 20);
+
+  let confidence = 'good';
+  let confidenceNote = 'Both curves cover the band and carry measured phase.';
+  if (!phaseKnown) {
+    confidence = 'limited';
+    confidenceNote = 'One curve carries no measured phase: the sum assumes its phase at ' +
+      'zero delay, so this delay is a starting point, not a verified alignment.';
+  } else if (Number.isFinite(coherence) && coherence < 0.5) {
+    confidence = 'limited';
+    confidenceNote = 'The target curve’s coherence is low in this band, so the prediction ' +
+      'is only as good as that data.';
+  } else if (coverage > 0.9) {
+    confidenceNote = 'The band spans nearly the whole model; a narrower band around the ' +
+      'crossover is usually the more meaningful choice.';
+  }
+
+  const tradeoff = 'The best delay for the chosen band is not automatically best for the ' +
+    'whole system: lifting the crossover can deepen a null elsewhere. Check the nulls below ' +
+    'and take a new measurement with both cabinets running before committing anything.';
+
+  return {
+    ok: true,
+    message: '',
+    best,
+    alternatives,
+    confidence: { level: confidence, note: confidenceNote, coherence, phaseKnown },
+    tradeoff,
+    band,
+    objective,
+    evaluated: candidates.length,
+  };
+}
+
+/** Compare a predicted sum with a measured response, for the verification card. */
+export function compareSum(sum, measured, band, options = {}) {
+  if (!sum) return null;
+  const measuredTrace = datasetTrace(measured);
+  if (!measuredTrace) return null;
+  return compareCurves(
+    {
+      frequencies: sum.frequencies,
+      magDb: sum.magDb,
+      // A sum that rests on an assumed phase is compared in level only.
+      phaseDeg: sum.assumedPhase ? null : sum.phaseDeg,
+    },
+    {
+      frequencies: measuredTrace.frequencies,
+      magDb: measuredTrace.magDb,
+      phaseDeg: measuredTrace.phaseDeg,
+      coherence: measuredTrace.coherence,
+    },
+    band,
+    options,
+  );
+}
+
+/** Third-octave band levels of a curve, with the levels of a comparison. */
+export function bandTable(frequencies, magDb, other, band) {
+  const rows = [];
+  for (let centre = 25; centre <= 16000; centre *= Math.pow(2, 1 / 3)) {
+    const min = centre / Math.pow(2, 1 / 6);
+    const max = centre * Math.pow(2, 1 / 6);
+    const level = [];
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < frequencies.length; i += 1) {
+      if (frequencies[i] < min || frequencies[i] > max) continue;
+      const value = magDb[i];
+      if (!Number.isFinite(value)) continue;
+      sum += value;
+      count += 1;
+    }
+    const mean = count ? sum / count : NaN;
+    let difference = NaN;
+    if (other) {
+      let otherSum = 0;
+      let otherCount = 0;
+      for (let i = 0; i < frequencies.length; i += 1) {
+        if (frequencies[i] < min || frequencies[i] > max) continue;
+        const value = other[i];
+        if (!Number.isFinite(value)) continue;
+        otherSum += value;
+        otherCount += 1;
+      }
+      if (otherCount) difference = mean - otherSum / otherCount;
+    }
+    rows.push({ centre, meanDb: mean, differenceDb: difference });
+    if (band && centre > band.max) break;
+  }
+  return rows;
+}

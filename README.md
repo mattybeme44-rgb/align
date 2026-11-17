@@ -439,12 +439,34 @@ and an electrical reference on input 4, reassignable from the Routing panel.
 Single-microphone mode is untouched: the multi workspace is a separate screen
 and the measurement screen behind it pauses while it is open.
 
+## System Data Modeler
+
+The `Data Modeler` button in the toolbar opens a modelling workspace of its own:
+import measured responses (the capture library, the live or a held capture, FRD,
+TXT, CSV or a WAV impulse, with a column-mapping importer), keep a loudspeaker
+library in which each speaker carries several measured datasets, arrange the
+sources in named groups and at several measuring positions, give every source its
+own real biquad DSP chain (parametric, shelves, Butterworth/Linkwitz-Riley/Bessel
+crossovers, all-pass, gain, delay, polarity, bypass), sum them as complex
+pressure — never as decibel magnitudes — and read the result as magnitude, phase,
+group delay, a derived impulse, or against a real measurement with a difference
+trace and error figures. An alignment optimizer searches delay and polarity for a
+chosen band and objective, and reports the nulls it leaves, alternatives and how
+far the data can be trusted.
+
+`MODELER.md` holds the feature-by-feature comparison with what Smaart Data
+Modeler documents, the status of every requested capability, and what could not be
+verified.
+
+
 ### Validation
 
 `validate.html` in the app, and `node tests/dsp.mjs` in the repository, run the
 same synthetic checks with known answers: the FFT round trip, delay at 48 kHz
 and 44.1 kHz, a known −6.02 dB magnitude, coherence of identical and unrelated
 signals, all three averaging modes, matching sign, limits and refusal, and the
-channel-separation measure. These are DSP tests, never measurements: what they
-cannot prove is that a particular interface hands the browser four real
-channels — the app reports that at capture time.
+channel-separation measure. `node tests/modeler.mjs` does the same for the System
+Data Modeler: complex summation and cancellation, delay, crossovers, imports, the
+derived impulse and the alignment optimizer. These are DSP tests, never
+measurements: what they cannot prove is that a particular interface hands the
+browser four real channels — the app reports that at capture time.

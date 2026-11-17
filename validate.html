@@ -26,6 +26,9 @@
   <section class="validation-note">
     <h2>What cannot be tested here</h2>
     <ul class="validation-list">
+      <li><b>The Data Modeler's screen.</b> These checks cover its maths — complex summation, delay, crossovers, the optimizer, imports and the impulse. Opening the workspace, importing a file and pressing its buttons are a browser session, not a numerical test.</li>
+      <li><b>A Smaart <code>.trf</code> file.</b> The format is proprietary; the modeler refuses it and names text and FRD as the way in, so no check here can prove otherwise.</li>
+      <li><b>A real manufacturer FRD.</b> The importer is checked with synthetic files of the same shape; a file from a vendor has to be tried at the desk.</li>
       <li><b>Four-channel capture on your interface.</b> The browser decides how many channels it will hand over. Open the app, press Multi-mic → Start listening and read the status line: it reports the device, the channels actually received and the sample rate.</li>
       <li><b>Channel independence.</b> The engine compares the inputs while running and reports when several of them carry the same signal. Patch a different signal into each channel to confirm it.</li>
       <li><b>Clock and buffer stability.</b> Late audio callbacks are counted during a live measurement and reported in the multi-microphone status line.</li>

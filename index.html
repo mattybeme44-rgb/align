@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-10" />
+<meta name="align-build" content="2026-11-19-11" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -36,6 +36,7 @@
     <button class="tb-btn" type="button" id="btnMulti">Multi-mic</button>
     <button class="tb-btn" type="button" id="btnSpeakers">Speakers</button>
     <button class="tb-btn" type="button" id="btnHardware">Hardware</button>
+    <button class="tb-btn" type="button" id="btnModeler">Data Modeler</button>
   </nav>
 
   <div class="tb-right">
@@ -816,6 +817,448 @@
         <div id="multiDiag"></div>
       </div>
     </aside>
+  </div>
+</section>
+
+<!-- ============ the System Data Modeler ============ -->
+<section id="dmWorkspace" class="dm-workspace" hidden>
+  <header class="dm-head">
+    <div class="dm-head-title">
+      <h2>System Data Modeler</h2>
+      <p class="source-hint" id="dmStatus">
+        Import measured responses, arrange the sources and predict their complex sum. Every curve here
+        is computed from imported or measured data — nothing on this screen is a drawn decoration.
+      </p>
+    </div>
+    <div class="row btns dm-head-actions">
+      <button id="btnDmUndo" class="btn" type="button" disabled>Undo</button>
+      <button id="btnDmRedo" class="btn" type="button" disabled>Redo</button>
+      <button id="btnDmNewProject" class="btn" type="button">New project</button>
+      <button id="btnDmSaveProject" class="btn" type="button">Save</button>
+      <button id="btnDmExportProject" class="btn" type="button">Export project</button>
+      <button id="btnDmImportProject" class="btn" type="button">Import project</button>
+      <button id="btnDmClose" class="btn" type="button">Close</button>
+    </div>
+  </header>
+  <input id="dmProjectFile" type="file" accept=".json,application/json,text/plain" hidden />
+
+  <div class="dm-layout" id="dmLayout">
+    <div class="dm-column" data-column="left" id="dmColLeft">
+
+      <section class="dm-card" data-card="library" data-dock="left">
+        <div class="dm-card-head">
+          <h3>Data library</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <p class="dm-sub" id="dmLibrarySummary">no loudspeakers yet</p>
+          <div class="row">
+            <label for="dmLibrarySearch">Search</label>
+            <input id="dmLibrarySearch" type="search" placeholder="Name, maker or note" />
+          </div>
+          <div class="dm-create">
+            <input id="dmNewName" class="dm-text" type="text" maxlength="80" placeholder="New loudspeaker name" autocomplete="off" />
+            <input id="dmNewManufacturer" class="dm-text" type="text" maxlength="60" placeholder="Manufacturer" autocomplete="off" />
+            <button id="btnDmCreateModel" class="btn" type="button">Create</button>
+          </div>
+          <ul id="dmLibraryList" class="dm-list"></ul>
+          <div id="dmModelForm" class="dm-form" hidden>
+            <div class="dm-form-head">
+              <h4 id="dmModelFormTitle">Loudspeaker</h4>
+              <button id="btnDmDeleteModel" class="dm-mini dm-danger" type="button">Delete</button>
+            </div>
+            <div class="dm-grid">
+              <label>Name<input id="dmEditName" class="dm-text" type="text" maxlength="80" /></label>
+              <label>Manufacturer<input id="dmEditManufacturer" class="dm-text" type="text" maxlength="60" /></label>
+              <label>Model no.<input id="dmEditNumber" class="dm-text" type="text" maxlength="60" /></label>
+              <label>Type<select id="dmEditType" class="dm-select"></select></label>
+              <label>Impedance Ω<input id="dmEditImpedance" class="dm-number" type="number" step="0.1" min="0.5" max="64" /></label>
+              <label>Sensitivity dB<input id="dmEditSensitivity" class="dm-number" type="number" step="0.5" min="50" max="150" /></label>
+              <label>Distance m<input id="dmEditDistance" class="dm-number" type="number" step="0.1" min="0" max="200" /></label>
+              <label>Reference delay ms<input id="dmEditDelay" class="dm-number" type="number" step="0.01" min="-100" max="100" /></label>
+              <label>Provenance<select id="dmEditProvenance" class="dm-select"></select></label>
+              <label>Crossover<input id="dmEditCrossover" class="dm-text" type="text" maxlength="120" placeholder="e.g. 24 dB/oct LR at 80 Hz" /></label>
+              <label>Directivity<input id="dmEditDirectivity" class="dm-text" type="text" maxlength="120" placeholder="e.g. 90° × 60°" /></label>
+              <label>Manufacturer specs<input id="dmEditSpecs" class="dm-text" type="text" maxlength="400" /></label>
+              <label class="dm-wide">Notes<input id="dmEditNotes" class="dm-text" type="text" maxlength="400" /></label>
+            </div>
+            <button id="btnDmApplyModel" class="btn" type="button">Apply details</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="import" data-dock="left">
+        <div class="dm-card-head">
+          <h3>Import measured data</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="row btns">
+            <button id="btnDmImportFile" class="btn" type="button">Import file</button>
+            <button id="btnDmImportLive" class="btn" type="button">From live measurement</button>
+          </div>
+          <div class="row">
+            <label for="dmCaptureSelect">Capture library</label>
+            <select id="dmCaptureSelect" class="dm-select"></select>
+          </div>
+          <button id="btnDmImportCapture" class="btn" type="button">Import that capture</button>
+          <p class="source-hint" id="dmImportMessage" hidden></p>
+          <input id="dmFile" type="file" accept=".frd,.txt,.csv,.wav,.cal,text/plain,text/csv" hidden />
+          <p class="source-hint">
+            FRD, TXT and CSV responses are read by column, with a mapping for a file laid out
+            differently. A WAV file is read as a measured impulse and transformed. Phase is only taken
+            where the file really carries it — a magnitude-only file stays magnitude-only.
+          </p>
+          <div id="dmMapBlock" class="dm-form" hidden>
+            <h4 id="dmMapTitle">Map the columns</h4>
+            <div class="dm-grid">
+              <label>Frequency<select id="dmMapFrequency" class="dm-select"></select></label>
+              <label>Level<select id="dmMapMagnitude" class="dm-select"></select></label>
+              <label>Phase<select id="dmMapPhase" class="dm-select"></select></label>
+              <label>Coherence<select id="dmMapCoherence" class="dm-select"></select></label>
+              <label>Frequency unit<select id="dmMapFrequencyUnit" class="dm-select"><option value="Hz">Hz</option><option value="kHz">kHz</option></select></label>
+              <label>Level unit<select id="dmMapMagnitudeUnit" class="dm-select"><option value="dB">dB</option><option value="linear">Linear</option></select></label>
+              <label>Phase unit<select id="dmMapPhaseUnit" class="dm-select"><option value="deg">Degrees</option><option value="rad">Radians</option></select></label>
+            </div>
+            <div id="dmMapPreview" class="dm-map-preview"></div>
+            <div class="dm-grid">
+              <label>Name<input id="dmDatasetName" class="dm-text" type="text" maxlength="80" placeholder="Response name" autocomplete="off" /></label>
+              <label>Source<select id="dmDatasetProvenance" class="dm-select"></select></label>
+              <label>Loudspeaker<select id="dmDatasetModel" class="dm-select"></select></label>
+            </div>
+            <div class="row btns">
+              <button id="btnDmMapApply" class="btn btn-power" type="button">Import with these columns</button>
+              <button id="btnDmMapCancel" class="btn" type="button">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="sources" data-dock="left">
+        <div class="dm-card-head">
+          <h3>Model workspace</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <p class="dm-sub" id="dmSourceSummary">no sources yet</p>
+          <div class="row">
+            <select id="dmAddModel" class="dm-select" aria-label="Loudspeaker to add"></select>
+            <select id="dmAddDataset" class="dm-select" aria-label="Measured response to add"></select>
+            <button id="btnDmAddSource" class="btn" type="button">Add source</button>
+          </div>
+          <ul id="dmSourceList" class="dm-list"></ul>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="groups" data-dock="left">
+        <div class="dm-card-head">
+          <h3>Groups and positions</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="row">
+            <input id="dmGroupName" class="dm-text" type="text" maxlength="40" placeholder="Sub array, mains, delays…" autocomplete="off" />
+            <button id="btnDmAddGroup" class="btn" type="button">Add group</button>
+          </div>
+          <ul id="dmGroupList" class="dm-list"></ul>
+          <p class="source-hint">
+            A group adds its gain, delay and polarity to every source in it. The source keeps its own
+            values, so removing the group gives back exactly what the cabinet carried.
+          </p>
+          <div class="row">
+            <input id="dmPositionName" class="dm-text" type="text" maxlength="40" placeholder="Left, right, rear…" autocomplete="off" />
+            <button id="btnDmAddPosition" class="btn" type="button">Add position</button>
+          </div>
+          <ul id="dmPositionList" class="dm-list"></ul>
+          <div id="dmPositionMatrix" class="dm-matrix" hidden></div>
+          <p class="source-hint">
+            Each measuring position can use its own measured response for a source. A prediction is made
+            per position — one curve is never treated as the whole room.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <div class="dm-column" data-column="centre" id="dmColCentre">
+      <section class="dm-card" data-card="chart" data-dock="centre">
+        <div class="dm-card-head">
+          <h3>Frequency response · phase</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="dm-chart-wrap">
+            <canvas id="dmChart" aria-label="Modelled magnitude, phase, group delay and impulse"></canvas>
+          </div>
+          <p class="cursor-readout" id="dmReadout">move the cursor over the graph to read it</p>
+          <div class="row dm-span-row">
+            <span class="dm-sub" id="dmSpanText">20 Hz – 20 kHz · drag to zoom</span>
+            <button id="btnDmZoomReset" class="link-btn" type="button">Reset zoom</button>
+            <span class="dm-sub">wheel zooms · shift-drag pans · double-click resets</span>
+          </div>
+          <div class="dm-chips" id="dmTraceChips"></div>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="view" data-dock="centre">
+        <div class="dm-card-head">
+          <h3>View</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="dm-grid">
+            <label>Graph<select id="dmView" class="dm-select">
+              <option value="transfer">Magnitude &amp; phase</option>
+              <option value="groupdelay">Group delay</option>
+              <option value="impulse">Impulse response</option>
+              <option value="difference">Predicted − measured</option>
+            </select></label>
+            <label>Phase<select id="dmPhaseMode" class="dm-select">
+              <option value="wrapped">Wrapped</option>
+              <option value="unwrapped">Unwrapped</option>
+            </select></label>
+            <label>Scale dB<select id="dmDbSpan" class="dm-select">
+              <option value="0">Auto</option><option value="30">30</option><option value="40">40</option>
+              <option value="50">50</option><option value="60">60</option><option value="80">80</option>
+            </select></label>
+            <label>Smoothing<select id="dmSmoothing" class="dm-select">
+              <option value="0">None</option><option value="0.041667">1/24 oct</option>
+              <option value="0.083333">1/12 oct</option><option value="0.166667">1/6 oct</option>
+              <option value="0.333333">1/3 oct</option>
+            </select></label>
+            <label>Position<select id="dmPositionSelect" class="dm-select"></select></label>
+          </div>
+          <div class="row toggles">
+            <label class="chk"><input type="checkbox" id="chkDmIndividual" checked /> Sources</label>
+            <label class="chk"><input type="checkbox" id="chkDmSum" checked /> Sum</label>
+            <label class="chk"><input type="checkbox" id="chkDmPropagation" /> Free-field distance</label>
+          </div>
+          <div class="dm-grid">
+            <label>Reference distance m<input id="dmRefDistance" class="dm-number" type="number" step="0.1" min="0.1" max="100" /></label>
+            <label>Sound speed m/s<input id="dmSoundSpeed" class="dm-number" type="number" step="1" min="200" max="500" /></label>
+          </div>
+          <p class="source-hint">
+            The free-field switch applies the inverse-square level and the travel time of each source's
+            distance against the reference distance. It is free-field propagation, not a room simulation:
+            reflections and directivity are not predicted here.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="summation" data-dock="centre">
+        <div class="dm-card-head">
+          <h3>Complex summation at <span id="dmSumNumber">1.00 kHz</span></h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div id="dmSumTable" class="dm-table"></div>
+          <p class="source-hint" id="dmSumMessage" hidden></p>
+          <div class="dm-card-head dm-sub-head"><h3>Cancellation nulls</h3></div>
+          <ul id="dmNullList" class="dm-nulls"></ul>
+          <p class="source-hint">
+            The levels are added as complex pressure, not as decibel numbers: two curves that read the
+            same can add to +6 dB, cancel, or anything between.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <div class="dm-column" data-column="right" id="dmColRight">
+      <section class="dm-card" data-card="chain" data-dock="right">
+        <div class="dm-card-head">
+          <h3>DSP processing · <span id="dmChainTitle">no source selected</span></h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div id="dmChainList" class="dm-chain"></div>
+          <div class="row">
+            <select id="dmFilterKind" class="dm-select" aria-label="Filter kind"></select>
+            <button id="btnDmAddFilter" class="btn" type="button">Add filter</button>
+          </div>
+          <div class="dm-grid">
+            <label>Family<select id="dmCrossFamily" class="dm-select"></select></label>
+            <label>Slope<select id="dmCrossSlope" class="dm-select"></select></label>
+            <label>Type<select id="dmCrossType" class="dm-select">
+              <option value="highPass">High-pass</option><option value="lowPass">Low-pass</option>
+              <option value="bandPass">Band-pass</option>
+            </select></label>
+            <label>Frequency Hz<input id="dmCrossFrequency" class="dm-number" type="number" step="1" min="10" max="20000" value="80" /></label>
+            <label>Upper edge Hz<input id="dmCrossHigh" class="dm-number" type="number" step="1" min="10" max="20000" placeholder="band-pass" /></label>
+          </div>
+          <button id="btnDmDesignCrossover" class="btn" type="button">Design crossover sections</button>
+          <div class="row btns">
+            <button id="btnDmBypassChain" class="btn" type="button">Bypass</button>
+            <button id="btnDmClearChain" class="btn" type="button">Clear</button>
+            <button id="btnDmExportChain" class="btn" type="button">Export</button>
+            <button id="btnDmCopyChain" class="btn" type="button">Copy</button>
+            <button id="btnDmRemoveSource" class="btn" type="button">Remove source</button>
+          </div>
+          <p class="source-hint" id="dmChainMessage" hidden></p>
+          <p class="source-hint">
+            Every filter is a real biquad at the model's sample rate, so its magnitude and phase are
+            the complex transfer function, not an EQ sketch. Export writes a REW list and the same
+            filters as biquad coefficients.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="optimizer" data-dock="right">
+        <div class="dm-card-head">
+          <h3>Alignment optimizer</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="dm-grid">
+            <label>Reference<select id="dmOptReference" class="dm-select"></select></label>
+            <label>Target<select id="dmOptTarget" class="dm-select"></select></label>
+            <label>Band low Hz<input id="dmOptBandLow" class="dm-number" type="number" step="1" min="20" max="20000" value="1000" /></label>
+            <label>Band high Hz<input id="dmOptBandHigh" class="dm-number" type="number" step="1" min="20" max="20000" value="2000" /></label>
+            <label>Search from ms<input id="dmOptDelayMin" class="dm-number" type="number" step="0.5" min="-50" max="50" value="-20" /></label>
+            <label>Search to ms<input id="dmOptDelayMax" class="dm-number" type="number" step="0.5" min="-50" max="50" value="20" /></label>
+            <label>Step ms<input id="dmOptDelayStep" class="dm-number" type="number" step="0.01" min="0.005" max="1" value="0.05" /></label>
+            <label>Crossover Hz<input id="dmOptFocus" class="dm-number" type="number" step="1" min="20" max="20000" value="1414" /></label>
+            <label>Polarity<select id="dmOptPolarity" class="dm-select">
+              <option value="auto">Try both</option><option value="normal">Normal only</option><option value="inverted">Inverted only</option>
+            </select></label>
+            <label>Objective<select id="dmOptObjective" class="dm-select"></select></label>
+            <label>Low weight<input id="dmOptLow" class="dm-number" type="number" step="0.1" min="0" max="1" value="0.3" /></label>
+            <label>Mid weight<input id="dmOptMid" class="dm-number" type="number" step="0.1" min="0" max="1" value="1" /></label>
+            <label>High weight<input id="dmOptHigh" class="dm-number" type="number" step="0.1" min="0" max="1" value="0.3" /></label>
+          </div>
+          <div class="row btns">
+            <button id="btnDmRunOptimizer" class="btn btn-power" type="button">Find the alignment</button>
+            <label class="chk"><input type="checkbox" id="chkDmApplyPolarity" checked /> Apply polarity too</label>
+          </div>
+          <div id="dmOptResult" class="dm-opt-result"></div>
+          <p class="dm-sub">Other solutions in the search</p>
+          <div id="dmOptAlternatives" class="dm-opt-result"></div>
+          <p class="source-hint" id="dmOptTradeoff" hidden></p>
+          <button id="btnDmApplyOptimizer" class="btn" type="button" disabled>Apply the delay to the target</button>
+          <p class="source-hint" id="dmOptMessage" hidden></p>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="compare" data-dock="right">
+        <div class="dm-card-head">
+          <h3>Prediction vs measurement</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="row">
+            <select id="dmCompareSelect" class="dm-select" aria-label="Measured response to compare"></select>
+            <button id="btnDmCompare" class="btn" type="button">Compare</button>
+            <button id="btnDmClearCompare" class="btn" type="button">Clear</button>
+          </div>
+          <div class="dm-grid">
+            <label>From Hz<input id="dmCompareLow" class="dm-number" type="number" step="10" min="20" max="20000" value="100" /></label>
+            <label>To Hz<input id="dmCompareHigh" class="dm-number" type="number" step="10" min="20" max="20000" value="10000" /></label>
+          </div>
+          <div id="dmCompareSummary" class="dm-opt-result"></div>
+          <div id="dmCompareTable" class="dm-table"></div>
+          <p class="source-hint" id="dmCompareMessage" hidden></p>
+          <p class="source-hint">
+            The predicted sum is drawn over the measured curve and their difference is a trace of its
+            own. Phase is only compared where both curves carry it and the coherence is usable.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="snapshots" data-dock="right">
+        <div class="dm-card-head">
+          <h3>Snapshots</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="row">
+            <input id="dmSnapshotName" class="dm-text" type="text" maxlength="60" placeholder="e.g. Sub delay +3.5 ms" autocomplete="off" />
+            <button id="btnDmSaveSnapshot" class="btn" type="button">Save snapshot</button>
+          </div>
+          <ul id="dmSnapshotList" class="dm-list"></ul>
+          <p class="source-hint">
+            A snapshot keeps the whole arrangement — sources, groups, positions and settings — so two
+            scenarios can be compared without losing the original.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="report" data-dock="right">
+        <div class="dm-card-head">
+          <h3>Export and reporting</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <div class="row btns">
+            <button id="btnDmExportCsv" class="btn" type="button">System CSV</button>
+            <button id="btnDmExportFrd" class="btn" type="button">Sum FRD</button>
+            <button id="btnDmExportReport" class="btn" type="button">Report</button>
+          </div>
+          <p class="source-hint" id="dmReportMessage" hidden></p>
+          <p class="source-hint">
+            The CSV carries every modelled source and the sum; the FRD carries the sum as one curve; the
+            report collects the model, the alignment and the comparison in plain text.
+          </p>
+        </div>
+      </section>
+    </div>
   </div>
 </section>
 
