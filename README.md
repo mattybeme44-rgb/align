@@ -466,7 +466,9 @@ same synthetic checks with known answers: the FFT round trip, delay at 48 kHz
 and 44.1 kHz, a known −6.02 dB magnitude, coherence of identical and unrelated
 signals, all three averaging modes, matching sign, limits and refusal, and the
 channel-separation measure. `node tests/modeler.mjs` does the same for the System
-Data Modeler: complex summation and cancellation, delay, crossovers, imports, the
-derived impulse and the alignment optimizer. These are DSP tests, never
+Data Modeler — complex summation and cancellation, delay, crossovers, imports,
+the derived impulse and the alignment optimizer — and `node tests/modeler-ui.mjs`
+runs the modeler's screen against a stub document, so its wiring and every
+element it names are checked too. These are DSP and wiring tests, never
 measurements: what they cannot prove is that a particular interface hands the
 browser four real channels — the app reports that at capture time.

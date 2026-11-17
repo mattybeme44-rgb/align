@@ -269,6 +269,11 @@ again with `node tests/modeler.mjs`:
   all-pass unity; peaking gain; bypass; complex-vs-dB summation.
 - **In-app validation page (`validate.html`)**: **29 passed · 0 failed**,
   executed under Node with a DOM stub, so the same list the page runs is green.
+- **Screen wiring (`node tests/modeler-ui.mjs`)**: **8 passed · 0 failed** — the
+  workspace opens, a project of two subwoofers with real datasets is loaded, all
+  four graph modes are drawn, every one of the 135 elements the screen reads is
+  present in `index.html` with no duplicate ids, and it closes. It runs against a
+  stub document, so it proves the wiring and the names, not the layout.
 - **Benchmark** (Node, 48 kHz, 400-point grid): a 12-filter chain over the whole
   grid ≈ 1 ms; a 16-source complex sum ≈ 0.25 ms; group delay ≈ 0.2 ms; an 8192
   impulse ≈ 2 ms; a 4001-step two-polarity optimizer ≈ 17 ms. The chart draws on
@@ -276,9 +281,10 @@ again with `node tests/modeler.mjs`:
 
 Not verified here, and named rather than claimed:
 
-- **The screen itself was not clicked**: this environment proves the scripts
-  parse and the maths runs; it cannot open a browser and press the buttons. Tap
-  **Data Modeler** and try one import before trusting the layout.
+- **The screen itself was not clicked in a browser**: the scripts parse, the
+  maths runs, and the screen's wiring was run against a stub document; no button
+  was pressed and no pointer moved. Tap **Data Modeler** and try one import
+  before trusting the layout on your own phone.
 - **The live/held import with a real microphone or interface** was not exercised;
   it reads the app's own results and can only be verified at the desk.
 - **A Smaart `.trf`** was not available and is not read.
