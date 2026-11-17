@@ -6,7 +6,7 @@
  * back by an old copy. The cache is what lets the app start from the Home Screen
  * in a room with no usable signal.
  */
-const CACHE = 'align-shell-v30';
+const CACHE = 'align-shell-v31';
 
 const SHELL = [
   './',
@@ -83,12 +83,23 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  // The page asks for this when it has found a newer build: taking over ends
+  // the old worker, so the next load is served by the new one.
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  // The build stamp is how the page learns a new build exists. Caching it would
+  // let an old copy answer forever, so the banner would never clear: it is
+  // never stored and never served from the cache.
+  if (url.pathname.endsWith('/version.json')) return;
 
   event.respondWith(
     fetch(request)

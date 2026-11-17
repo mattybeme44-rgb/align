@@ -6,7 +6,7 @@
  * Why this exists: js/app.js once held its own BUILD literal. It drifted from
  * version.json, so every reload compared the page against the published stamp,
  * found them different, and showed "a new build is published" again. Pressing
- * Restart reloaded the same page, the same mismatch was found, and the banner
+ * Reload reloaded the same page, the same mismatch was found, and the banner
  * came back — the button looked dead. These checks make that drift a failure
  * before it can ship.
  */
@@ -46,21 +46,19 @@ report('app.js reads the build from the document',
     ? 'reads the meta tag'
     : 'app.js still holds its own literal, which can drift');
 
-/* 4. The fallback literal inside app.js, if it is used at all, matches too. */
-const fallback = app.match(/const BUILD = \([\s\S]*?\|\|\s*'([^']+)'\s*\)/);
-const fallbackValue = fallback ? fallback[1].trim() : '';
-report('The fallback build in app.js matches the published one',
-  fallbackValue === published,
-  fallbackValue ? 'fallback "' + fallbackValue + '"' : 'no fallback literal found');
+/* 4. app.js holds no build literal at all: a literal is what drifted before. */
+const literal = app.match(/const BUILD\s*=\s*'(\d{4}-\d{2}-\d{2}-\d{2})'/);
+report('app.js holds no build literal that could drift', !literal,
+  literal ? 'found a literal "' + literal[1] + '" — remove it' : 'no build literal in app.js');
 
-/* 5. The worker answers the message Restart sends. */
+/* 5. The worker answers the message Reload sends. */
 report('The service worker honours SKIP_WAITING',
   /addEventListener\('message'/.test(sw) && sw.includes('SKIP_WAITING'),
   /addEventListener\('message'/.test(sw)
     ? 'a message handler is present'
     : 'no message handler: a waiting worker can never take over');
 
-/* 6. The worker's cache name moves with the build, so the shell is refreshed. */
+/* 6. The worker's cache name is versioned, so the shell is refreshed. */
 const cache = sw.match(/const CACHE = '([^']+)'/);
 report('The shell cache is named and versioned', !!cache,
   cache ? cache[1] : 'no CACHE constant');
@@ -72,12 +70,19 @@ report('app.js posts the message the worker answers',
     ? 'both sides agree on the message'
     : 'app.js asks for something the worker does not handle');
 
-/* 8. Restart cannot leave the page sitting there doing nothing. */
-report('Restart always navigates, even if the worker does not answer',
+/* 8. Reload cannot leave the page sitting there doing nothing. */
+report('Reload always navigates, even if the worker does not answer',
   /setTimeout\(go, 2500\)/.test(app),
   /setTimeout\(go, 2500\)/.test(app)
     ? 'a 2.5 s fallback navigation is in place'
     : 'no fallback: a silent worker would leave the button dead');
+
+/* 9. version.json is never cached by the worker: an old copy would hide the update. */
+report('The worker never caches version.json',
+  /pathname\.endsWith\('\/version\.json'\)/.test(sw),
+  /pathname\.endsWith\('\/version\.json'\)/.test(sw)
+    ? 'bypassed in the fetch handler'
+    : 'version.json can be served from the cache, so the banner would never clear');
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exitCode = 1;
