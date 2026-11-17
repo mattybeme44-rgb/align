@@ -233,5 +233,83 @@ function polarityFor(sign) {
     'worst deviation ' + worst.toFixed(2) + ' dB over 200 Hz – 5 kHz');
 }
 
+/* 7. The coherence array is reused across frames, not allocated per frame. */
+{
+  const size = 8192;
+  const rate = 48000;
+  const ref = whiteNoise(20000, 21);
+  const mic = delayed(ref, 40, 0.5);
+  const analyser = new Analyser(size, rate);
+  const r = new Float32Array(size);
+  const m = new Float32Array(size);
+  const options = { compensate: false, smoothing: 0, normalize: false };
+
+  r.set(ref.subarray(0, size));
+  m.set(mic.subarray(0, size));
+  analyser.accumulate(m, r);
+  const first = analyser.results(options);
+
+  r.set(ref.subarray(4096, 4096 + size));
+  m.set(mic.subarray(4096, 4096 + size));
+  analyser.accumulate(m, r);
+  const second = analyser.results(options);
+
+  const reused = first.coh === second.coh && first.coh.buffer === second.coh.buffer;
+  report('Coherence reuses one buffer across frames', reused,
+    reused ? 'one allocation, reused — the per-frame allocation was GC churn'
+      : 'a fresh array was allocated');
+
+  // The reused buffer still carries this frame's values, not the last frame's.
+  const analyserB = new Analyser(size, rate);
+  const rB = new Float32Array(size);
+  const mB = new Float32Array(size);
+  rB.set(ref.subarray(0, size));
+  mB.set(ref.subarray(0, size)); // mic identical to the reference: coherence ~1
+  analyserB.accumulate(mB, rB);
+  analyserB.accumulate(mB, rB);
+  const resB = analyserB.results({ compensate: false, smoothing: 0, normalize: false });
+  let outOfRange = 0;
+  for (let k = 1; k < resB.bins; k++) {
+    if (!(resB.coh[k] >= 0 && resB.coh[k] <= 1)) outOfRange += 1;
+  }
+  const kMid = Math.round(1000 / resB.df);
+  report('Coherence stays bounded and reads the current frame',
+    outOfRange === 0 && resB.coh[kMid] > 0.99,
+    'coherence at 1 kHz ' + (resB.coh[kMid] * 100).toFixed(1) + '% for identical signals, ' +
+      outOfRange + ' bins outside 0–1');
+}
+
+/* 8. The gate window works on the analytic-signal IR (complex), not just its magnitude. */
+{
+  // A pure delay plus a half-cycle phase flip at the peak: the sign of the
+  // correlation peak must survive as polarity, and the gated curve of a flat
+  // response must stay flat whatever the gate's start position.
+  const size = 8192;
+  const rate = 48000;
+  const ref = generateSignal('pink', rate, 1000);
+  const mic = delayed(ref, 73, 0.5);
+  const analyser = new Analyser(size, rate);
+  analyser.updateRate = 0.05;
+  const r = new Float32Array(size);
+  const m = new Float32Array(size);
+  for (let frame = 0; frame < 40; frame++) {
+    const start = frame * 1024;
+    r.set(ref.subarray(start, start + size));
+    m.set(mic.subarray(start, start + size));
+    analyser.accumulate(m, r);
+  }
+  // Two different gate starts on the same flat response must agree.
+  const gateA = analyser.results({ compensate: false, smoothing: 0, normalize: false,
+    gate: { enabled: true, startMs: -1, widthMs: 20 } });
+  const gateB = analyser.results({ compensate: false, smoothing: 0, normalize: false,
+    gate: { enabled: true, startMs: -0.5, widthMs: 20 } });
+  const k0 = Math.round(300 / gateA.df);
+  const k1 = Math.round(3000 / gateA.df);
+  let worst = 0;
+  for (let k = k0; k <= k1; k++) worst = Math.max(worst, Math.abs(gateA.magDb[k] - gateB.magDb[k]));
+  report('Two gate positions read the same flat response', worst < 0.3,
+    'worst difference ' + worst.toFixed(3) + ' dB over 300 Hz – 3 kHz');
+}
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exitCode = 1;

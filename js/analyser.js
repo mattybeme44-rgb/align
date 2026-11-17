@@ -195,6 +195,12 @@ export class Analyser {
     this.scratchSmoothed = new Float64Array(this.bins);
     this.scratchGatedPower = new Float64Array(this.bins);
     this.scratchCumulative = new Float64Array(this.bins + 1);
+    // The coherence array handed out in the result. It is reused every frame —
+    // allocating it fresh was the GC churn that used to run alongside the
+    // audio. Callers may hold the result object only until the next frame: the
+    // traces a capture freezes are copied out (captureTrace), and the impulse
+    // chart's Hold works because irDb stays a fresh allocation per frame.
+    this.scratchCoh = new Float32Array(this.bins);
     this.gateRe = new Float64Array(size);
     this.gateIm = new Float64Array(size);
     // The cross spectrum after the delay rotation computeIR() applied, so the
@@ -506,6 +512,16 @@ export class Analyser {
     const start = peak + Math.round((gate.startMs / 1000) * this.sampleRate);
     const width = Math.min(n, Math.max(16, Math.round((gate.widthMs / 1000) * this.sampleRate)));
     const taper = Math.min(Math.max(8, Math.floor(width / 10)), Math.floor(width / 2));
+    // The onset ramp must finish at the impulse peak, not wherever the ramp
+    // happens to be when the peak arrives. A gate opening 0.5 ms before the
+    // peak used to weigh the direct sound down to a fraction of its amplitude,
+    // which put a gain on the gated curve that moved with the gate's start
+    // position — a level error the measurement did not contain. The ramp now
+    // squeezes into the lead-in the gate actually has, and the peak always
+    // enters at full weight. The decay-side taper keeps its full length: it
+    // softens the truncation edge, which is what it is there for.
+    const lead = Math.max(0, -Math.round((gate.startMs / 1000) * this.sampleRate));
+    const onset = Math.min(taper, lead);
 
     const re = this.gateRe;
     const im = this.gateIm;
@@ -517,8 +533,8 @@ export class Analyser {
       if (index < 0) index += n;
 
       let weight = 1;
-      if (offset < taper) {
-        weight = 0.5 * (1 - Math.cos((Math.PI * offset) / taper));
+      if (offset < onset) {
+        weight = 0.5 * (1 - Math.cos((Math.PI * offset) / onset));
       } else if (offset >= width - taper) {
         weight = 0.5 * (1 - Math.cos((Math.PI * (width - offset - 1)) / taper));
       }
@@ -575,7 +591,7 @@ export class Analyser {
     const rotated = compensate && shift !== 0;
     const power = this.scratchPower;
     const rawPhase = this.scratchRawPhase;
-    const coh = new Float32Array(bins);
+    const coh = this.scratchCoh;
 
     let hRe = this.scratchHRe;
     let hIm = this.scratchHIm;
