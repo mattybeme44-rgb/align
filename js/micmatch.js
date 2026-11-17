@@ -236,12 +236,20 @@ export function combineCorrections(a, b) {
   return out;
 }
 
-/** A correction curve from a manufacturer calibration file, over the bins. */
+/**
+ * A manufacturer calibration file as an ADDITIVE correction over the bins.
+ *
+ * A calibration file states the microphone's own deviation from flat, so it is
+ * removed by subtracting it. applyCorrection() and the matching profile both add
+ * their curves, so the file's deviation is negated here; without that the
+ * multi-microphone workspace applied it the opposite way to the single-microphone
+ * measurement and doubled the error instead of cancelling it.
+ */
 export function calibrationCurve(cal, bins, df) {
   if (!cal || !Array.isArray(cal.points) || !cal.points.length) return null;
   const out = new Float32Array(bins);
   for (let k = 1; k < bins; k++) {
-    out[k] = correctionDb(cal, k * df) || 0;
+    out[k] = -(correctionDb(cal, k * df) || 0);
   }
   return out;
 }

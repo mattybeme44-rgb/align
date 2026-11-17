@@ -17,6 +17,7 @@ import {
   persistMicCalibrations,
 } from './micmatch.js';
 import { parseCalibration } from './calibration.js';
+import { createDiagnostics } from './diagnostics.js';
 import { shareOrDownload } from './sharing.js';
 
 /**
@@ -79,6 +80,17 @@ export function createMultiView(options) {
   let bound = false;
   let observerBound = false;
   let levels = [0, 0, 0];
+
+  // Reads the engine and the analysers; it never starts or changes audio.
+  const diagnostics = createDiagnostics({
+    engine,
+    getState: () => ({
+      fftSize: analyser ? analyser.fftSize : state.fftSize,
+      frames: analyser ? analyser.frames : 0,
+      routing: state.routing,
+      running: state.running,
+    }),
+  });
 
   const mics = MATCH_LETTERS.map((letter) => ({
     letter,
@@ -523,6 +535,9 @@ export function createMultiView(options) {
     });
 
     recomputeAverage();
+    // Only a frame that actually reached the analysers counts towards the
+    // analysis rate, so the figure is not the display's refresh rate.
+    diagnostics.noteAnalysis(Date.now());
     lastUi = Date.now();
   }
 
@@ -721,7 +736,12 @@ export function createMultiView(options) {
         }
         if (state.bypassCorrections && (calibration || profile)) notes.push('corrections bypassed');
         if (card.note) card.note.textContent = notes.join(' · ');
-        if (card.warn) {
+        if (result.silent) {
+          if (card.warn) {
+            card.warn.hidden = false;
+            card.warn.textContent = 'no signal on this input — the curve is averaging down to nothing';
+          }
+        } else if (card.warn) {
           const clipped = engine && engine.channelClippedUntil
             && engine.channelClippedUntil[channelFor(letter)] > Date.now();
           const missing = state.running && !mics[i].available;
@@ -1048,6 +1068,7 @@ export function createMultiView(options) {
     requestAnimationFrame(() => {
       if (chart) chart.resize();
       updateUI(true);
+      diagnostics.render();
       drawNow();
     });
     setStatus('multi-microphone workspace ready — start listening', 'ok');
@@ -1073,6 +1094,7 @@ export function createMultiView(options) {
       }
     }
     updateUI(false);
+    diagnostics.render();
     drawNow();
   }
 

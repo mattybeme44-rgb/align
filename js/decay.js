@@ -368,9 +368,13 @@ export function buildRoomDecay(res, gate) {
   const sampleRate = res.sampleRate;
   const gated = !!(gate && gate.enabled);
   const offset = gated ? Math.max(0, Math.round((gate.startMs / 1000) * sampleRate)) : 0;
-  const wholeWindow = Math.min(n - 1, Math.round(1.5 * sampleRate));
+  // The impulse response is circular: a window that runs past the end would come
+  // back round to the samples before the impulse and read them as its decay.
+  const startIndex = peak + offset;
+  if (startIndex >= n) return null;
+  const wholeWindow = Math.min(n - startIndex, Math.round(1.5 * sampleRate));
   const requested = gated ? Math.round((gate.widthMs / 1000) * sampleRate) : wholeWindow;
-  const length = Math.max(64, Math.min(wholeWindow, requested));
+  const length = Math.min(wholeWindow, requested);
   if (!(length > 64)) return null;
 
   const spectrumRe = new Float64Array(n);
@@ -379,8 +383,7 @@ export function buildRoomDecay(res, gate) {
   // the decay the fit is reading.
   const fade = Math.min(Math.floor(length / 2), Math.max(8, Math.floor(length / 10)));
   for (let k = 0; k < length; k++) {
-    let index = (peak + offset + k) % n;
-    if (index < 0) index += n;
+    const index = startIndex + k;
     let weight = 1;
     if (k >= length - fade) {
       weight = 0.5 * (1 + Math.cos(Math.PI * (k - (length - fade)) / fade));

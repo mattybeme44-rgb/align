@@ -1442,3 +1442,80 @@ body.validation-page {
 .validation-list b {
   color: var(--text-soft);
 }
+
+
+/* ---------- input diagnostics ---------- */
+.diag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.diag-table th {
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: top;
+  padding: 3px 10px 3px 0;
+  color: var(--dim, rgba(180, 190, 172, 0.6));
+}
+
+.diag-table td {
+  padding: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.diag-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.45;
+  padding-left: 8px;
+}
+
+.diag-warn {
+  color: #ff9b6b;
+}
+
+.diag-meters {
+  margin: 10px 0 6px;
+}
+
+.diag-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+.diag-meter b {
+  width: 48px;
+  font-weight: 500;
+  color: var(--dim, rgba(180, 190, 172, 0.6));
+}
+
+.diag-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(160, 190, 150, 0.12);
+}
+
+.diag-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #8ff06a;
+}
+
+.diag-bar i.clip {
+  background: #ff6b6b;
+}
+
+.diag-meter span:last-child {
+  width: 74px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

@@ -17,6 +17,13 @@ export class MultiAnalyser {
     for (let i = 0; i < this.count; i++) {
       this.analysers.push(new Analyser(fftSize, sampleRate));
     }
+    // A microphone with no signal is fed this instead of being skipped. Skipping
+    // it froze its accumulators while the reference's kept updating, so its
+    // curve stayed on screen at a stale value, computed across two different
+    // averaging timebases. Feeding silence keeps every analyser on the one
+    // timebase: coherence falls and the curve goes quiet, which is what the
+    // measurement actually did.
+    this.silence = new Float32Array(fftSize);
     this.updateRate = 0.1;
   }
 
@@ -34,6 +41,7 @@ export class MultiAnalyser {
 
   setFftSize(size) {
     this.fftSize = size;
+    this.silence = new Float32Array(size);
     for (const analyser of this.analysers) analyser.setFftSize(size);
   }
 
@@ -59,14 +67,15 @@ export class MultiAnalyser {
 
   /**
    * One window pair per microphone, all against the same reference window.
-   * A microphone that is not connected is passed as null and is not fed.
+   * A microphone that is not connected or has no signal is passed as null and
+   * is fed silence, so its result says "no signal" rather than repeating an old
+   * one.
    */
   accumulate(windows, ref) {
     if (!ref) return;
     for (let i = 0; i < this.analysers.length; i++) {
       const mic = windows && windows[i] ? windows[i] : null;
-      if (!mic || !hasEnergy(mic)) continue;
-      this.analysers[i].accumulate(mic, ref);
+      this.analysers[i].accumulate(mic || this.silence, ref);
     }
   }
 
@@ -74,11 +83,4 @@ export class MultiAnalyser {
   results(options) {
     return this.analysers.map((analyser) => analyser.results(options));
   }
-}
-
-/** Silence is not a measurement, so a dead input never enters the average. */
-function hasEnergy(window) {
-  let sum = 0;
-  for (let i = 0; i < window.length; i++) sum += window[i] * window[i];
-  return Math.sqrt(sum / Math.max(1, window.length)) > 1e-7;
 }

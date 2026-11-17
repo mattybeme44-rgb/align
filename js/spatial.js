@@ -24,10 +24,16 @@ function finite(value) {
  * results  — per-microphone result sets, in A/B/C order
  * enabled  — which microphones take part
  * mode     — 'power' | 'db' | 'coherence'
- * correct  — per-microphone correction curves in dB, or null
+ * correct  — per-microphone additive correction curves in dB, or null
  *
  * Returns { magDb, contributions, usable }: the averaged curve, each
  * microphone's share of it (0…1) and how many microphones contributed.
+ *
+ * A bin no enabled microphone could contribute to is NaN, not a number: a
+ * curve that reads "no data" in the gap is honest, one that reads −140 dB is a
+ * measurement the app never made. Each mode divides by its own count of the
+ * microphones that actually had a value there, so an input that dropped out
+ * cannot bias the average downwards.
  */
 export function spatialAverage(results, enabled, mode, correct) {
   const first = results && results[0];
@@ -44,6 +50,7 @@ export function spatialAverage(results, enabled, mode, correct) {
   }
 
   if (!bins || active.length === 0) {
+    for (let k = 0; k < values.length; k++) values[k] = NaN;
     return { magDb: values, contributions, usable: 0 };
   }
 
@@ -52,6 +59,7 @@ export function spatialAverage(results, enabled, mode, correct) {
 
   for (let k = 1; k < bins; k++) {
     let power = 0;
+    let powerCount = 0;
     let dbSum = 0;
     let dbCount = 0;
     let weightedPower = 0;
@@ -80,21 +88,24 @@ export function spatialAverage(results, enabled, mode, correct) {
         if (weight <= 0) continue;
         weightedPower += value * weight;
         weightSum += weight;
+        totalWeight += weight;
         share[index] += weight;
       } else {
         power += value;
+        powerCount += 1;
       }
     }
 
     if (mode === 'db') {
-      values[k] = dbCount ? dbSum / dbCount : -140;
+      values[k] = dbCount ? dbSum / dbCount : NaN;
     } else if (mode === 'coherence') {
-      values[k] = weightSum > 0 ? 10 * Math.log10(weightedPower / weightSum) : -140;
-      totalWeight += weightSum;
+      values[k] = weightSum > 0 ? 10 * Math.log10(weightedPower / weightSum) : NaN;
     } else {
-      values[k] = 10 * Math.log10(Math.max(power / active.length, 1e-24));
+      values[k] = powerCount ? 10 * Math.log10(power / powerCount) : NaN;
     }
   }
+
+  values[0] = NaN;
 
   if (mode === 'coherence' && totalWeight > 0) {
     for (let i = 0; i < count; i++) contributions[i] = share[i] / totalWeight;

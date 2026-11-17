@@ -218,6 +218,9 @@ export class Analyser {
     this.polarity = 1;
     this.polarityVotes = 0;
     this.polarityDecided = false;
+    /** RMS of the most recent measurement window, so a dead input can be told
+     * apart from one that is merely quiet. */
+    this.lastEnergy = 0;
   }
 
   reset() {
@@ -237,6 +240,7 @@ export class Analyser {
     this.polarity = 1;
     this.polarityVotes = 0;
     this.polarityDecided = false;
+    this.lastEnergy = 0;
   }
 
   /** Accumulate one window pair. mic = measured, ref = reference. */
@@ -247,6 +251,13 @@ export class Analyser {
     const xi = this.xi;
     const yr = this.yr;
     const yi = this.yi;
+
+    let energy = 0;
+    for (let i = 0; i < n; i++) {
+      const sample = mic[i];
+      energy += sample * sample;
+    }
+    this.lastEnergy = Math.sqrt(energy / n);
 
     for (let i = 0; i < n; i++) {
       const gain = w[i];
@@ -690,6 +701,9 @@ export class Analyser {
       polarity: this.polarity,
       polarityKnown: polarityKnown,
       frames: this.frames,
+      // True when the last window carried no usable signal: the curve on screen
+      // is the average running down towards nothing, not a live measurement.
+      silent: !(this.lastEnergy > 1e-6),
       gated: gated,
       // The complex impulse response, for the waterfall's slices.
       irRe: this.irRe,
