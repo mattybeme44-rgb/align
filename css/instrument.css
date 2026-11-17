@@ -152,6 +152,39 @@ body {
   box-shadow: none;
 }
 
+/* On a phone the strip cannot hold all nine buttons and its scrollbar is
+   hidden, so the last ones — Multi-mic, Speakers, Hardware — sit past the
+   right edge with nothing hinting they exist. The strip wraps instead, and
+   the right-hand cluster (Manual, Share, status, Start) wraps with it so the
+   Start button is never pushed past the screen edge. This block sits after
+   the base toolbar rules, so its declarations win the cascade. */
+@media (max-width: 640px) {
+  .tb-menus {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    row-gap: 2px;
+    overflow-x: visible;
+  }
+
+  .tb-btn {
+    padding: 3px 7px;
+    font-size: 11px;
+  }
+
+  .tb-right {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .status {
+    /* A truncated status with no ellipsis reads mid-word; let it wrap. */
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
 /* ---------- setup popovers ---------- */
 
 .popover {
@@ -1525,7 +1558,9 @@ body.validation-page {
 .hw-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  /* min() lets a column shrink under 320px, so the values on its right
+     are not clipped off the screen edge on a phone. */
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   align-items: start;
 }
 

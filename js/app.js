@@ -278,6 +278,30 @@ const multiView = createMultiView({
   },
 });
 
+/**
+ * The hardware verification screen. While it is open it holds the audio graph
+ * itself — a four-channel capture for the interface, loopback and microphone
+ * checks — so the single-microphone measurement steps aside behind it.
+ */
+const hardwareCheck = createHardwareCheck({
+  engine,
+  setStatus,
+  sourceOptions: () => sourceOptions(),
+  onOpen: () => {
+    if (multiView.active) {
+      multiView.close();
+      $('btnMulti').classList.remove('on');
+    }
+    if (state.running) stopAll();
+    const start = $('btnPower');
+    if (start) start.disabled = true;
+  },
+  onClose: () => {
+    const start = $('btnPower');
+    if (start) start.disabled = false;
+  },
+});
+
 /* ---------- storage ---------- */
 
 function readString(key, fallback) {
@@ -7771,6 +7795,10 @@ $('btnCopySafari').addEventListener('click', () => {
 /* ---------- the multi-microphone workspace ---------- */
 
 $('btnMulti')?.addEventListener('click', () => {
+  if (hardwareCheck.active) {
+    hardwareCheck.close();
+    $('btnHardware').classList.remove('on');
+  }
   if (multiView.active) {
     multiView.close();
     $('btnMulti').classList.remove('on');
@@ -7783,6 +7811,28 @@ $('btnMulti')?.addEventListener('click', () => {
 $('btnMultiClose')?.addEventListener('click', () => {
   multiView.close();
   $('btnMulti').classList.remove('on');
+});
+
+/* ---------- the hardware verification screen ---------- */
+
+$('btnHardware')?.addEventListener('click', () => {
+  if (hardwareCheck.active) {
+    hardwareCheck.close();
+    $('btnHardware').classList.remove('on');
+  } else {
+    hardwareCheck.open();
+    $('btnHardware').classList.add('on');
+  }
+});
+
+$('btnHwStart')?.addEventListener('click', () => {
+  if (hardwareCheck.running) hardwareCheck.stop();
+  else hardwareCheck.start();
+});
+
+$('btnHwClose')?.addEventListener('click', () => {
+  hardwareCheck.close();
+  $('btnHardware').classList.remove('on');
 });
 
 $('btnTryHere').addEventListener('click', () => {
