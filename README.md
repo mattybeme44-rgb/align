@@ -331,9 +331,47 @@ the crossover period), and use the phase trace to confirm they track through the
   table, and leaves phase, coherence and the impulse response as measured. The **cal** badge on the
   transfer card names what is loaded and offers to replace or remove it. It is separate from the dB SPL
   level offset.
+- **Routing panel** — the whole signal chain in one place, at the foot of the **Input** menu: the input device
+  and channel count actually in use, the mic-reported and engine-running sample rates, which input is the
+  reference and which is the microphone, and a plain warning when the microphone and the output route are two
+  independently clocked devices, whose delay will drift. **Run loopback check** re-routes the analysis for a few
+  seconds to read the app's own output patched back into input 2, and reports the chain's ripple and round-trip
+  delay — the interface itself, before the room has anything to do with it. The last ten checks are kept with
+  their times (**Clear history** drops them), and a storage failure is reported rather than hidden.
 - **Export CSV** — one row per frequency bin with frequency, magnitude, phase, coherence and the
-  impulse response, plus a header naming the sample rate, FFT size, smoothing, delay, polarity and
-  gate; it downloads as a file.
+  impulse response, plus a header naming the sample rate, FFT size, smoothing, delay, polarity, gate, the
+  interface and the latest loopback check; it downloads as a file.
+
+## Where everything lives
+
+Every screen hangs off a named entry point, so nothing has to be hunted for:
+
+- **Input menu** — source and channel choice, the **Routing panel** (chain, two-clock warning, loopback check
+  and history), **Large SPL meter**, **Level log**, **RTA**, the **Live spectrograph** toggle, **Restart** and
+  **Demo**.
+- **Reference menu** — generated reference or input 2 loopback. **Generator menu** — signal, level and
+  **Check noise**, which silences the output for three seconds and measures the room's noise floor.
+- **Impulse tab** — the impulse response with its zoom, hold, refresh rate and gate, and **Decay view**
+  (the decay as a heat map or a waterfall).
+- **Room tab** — **Reflections**, the room's **RT60** with C50/C80 clarity figures, and **Measurement quality**.
+- **Traces tab** — the capture slots and their delay previews, peak hold, the running average, the **Capture
+  library**, **Sum preview** (a delayed, gained or flipped prediction of how two captures would add), the
+  **Alignment guide** (the manual's main + sub procedure as five checked steps), the **Subwoofer array** (pick
+  cabinets, store each one's capture, read every box's arrival against the others) and **Alignment analysis**
+  (a band-by-band reading of Capture A against Capture B with labelled findings).
+- **Analysis tab** — the target curve with its editor, microphone calibration import, dB SPL calibration and
+  **Set from meter**, the EQ suggestions, and **Presets**.
+- **Share tab** — share the app or the measurement as text, **Export CSV**, the **chart image** and the one-page
+  **PDF report** (which records the interface and the latest loopback check).
+- **Graph footer** — **Bands** (the third-octave table), **Group delay**, the **EQ designer**, **THD**
+  (distortion), and **Expand** for the full-width chart.
+- **Toolbar screens** — **Multi-mic** (four-channel measurement), **Speakers** (individual loudspeaker
+  captures), **Hardware** (the guided interface verification), the **Data Modeler**, the **Room Designer** and
+  the **Manual**.
+
+None of these change the measurement underneath: every panel reads the same averaged transfer function, and the
+checks that drive the output (Check noise, the loopback check, the SPL calibration tone) put back exactly what
+was playing when they finish.
 
 ## EQ suggestions
 
