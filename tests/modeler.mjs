@@ -23,6 +23,7 @@ import {
 import { chainResponse, designCrossover } from '../js/modeler/filters.js';
 import { parseClf, clfResponse } from '../js/modeler/clf.js';
 import { buildLpif, lpifText } from '../js/modeler/lpif.js';
+import { analysePair } from '../js/modeler/analysis.js';
 import {
   effectiveSettings,
   evaluateSnapshot,
@@ -613,6 +614,97 @@ function nearest(response, frequency) {
     liveIndex >= 0 && savedIndex >= 0 &&
       approx(live.sum.magDb[liveIndex], saved.sum.magDb[savedIndex], 1e-9),
     liveIndex >= 0 ? 'both read ' + live.sum.magDb[liveIndex].toFixed(3) + ' dB at 1 kHz' : 'no sum');
+}
+
+/* ---------- the alignment analysis card ---------- */
+
+const analysisBins = 2049;
+const analysisDf = 48000 / 4096;
+
+/** A capture with a known delay, level and polarity. */
+function analysisCapture(label, delaySeconds, options = {}) {
+  const magDb = new Float64Array(analysisBins);
+  const phaseDeg = new Float64Array(analysisBins);
+  const coh = new Float64Array(analysisBins).fill(options.coherence !== undefined ? options.coherence : 0.9);
+  for (let k = 1; k < analysisBins; k += 1) {
+    const frequency = k * analysisDf;
+    magDb[k] = 0;
+    phaseDeg[k] = -360 * frequency * delaySeconds;
+  }
+  return {
+    label,
+    trace: {
+      magDb, phaseDeg: options.phase === false ? null : phaseDeg, coh,
+      bins: analysisBins, df: analysisDf, fftSize: 4096, sampleRate: 48000,
+    },
+    arrivalMs: (delaySeconds * 1000),
+    polarity: options.polarity || 'normal',
+  };
+}
+
+/* 41. Two captures that arrive together need no arrival advice. */
+{
+  const result = analysePair(
+    analysisCapture('Capture A', 0),
+    analysisCapture('Capture B', 0),
+    { band: 'crossover' });
+  const summation = result.findings.find((finding) => finding.kind === 'summation');
+  report('Captures that arrive together give no arrival advice',
+    result.findings.every((finding) => finding.kind !== 'arrival') && !!summation &&
+      /within 0.05 ms/.test(result.headline),
+    result.usableBands + ' usable bands, headline “' + result.headline + '”');
+}
+
+/* 42. A known 2 ms arrival is read with its evidence and a way to verify it. */
+{
+  const result = analysePair(
+    analysisCapture('Capture A', 0),
+    analysisCapture('Capture B', 0.002),
+    { band: 'crossover' });
+  const arrival = result.findings.find((finding) => finding.kind === 'arrival');
+  report('A known 2 ms arrival is read and a verification is offered',
+    !!arrival && /2\.00 ms/.test(arrival.headline) && arrival.evidence.length >= 2 &&
+      /Delay Capture A by 2\.00 ms/.test(arrival.proposal) &&
+      !!arrival.expected && !!arrival.verification && /High/.test(arrival.confidence),
+    arrival ? arrival.headline + ' · ' + arrival.confidence : 'no arrival finding');
+}
+
+/* 43. Opposite polarities are called out as their own finding. */
+{
+  const result = analysePair(
+    analysisCapture('Capture A', 0, { polarity: 'normal' }),
+    analysisCapture('Capture B', 0, { polarity: 'inverted' }),
+    { band: 'subs' });
+  const polarity = result.findings.find((finding) => finding.kind === 'polarity');
+  report('Opposite polarities become a finding of their own',
+    !!polarity && /opposite polarity/.test(polarity.headline) &&
+      /wiring/.test(polarity.proposal) && /summation/.test(polarity.verification),
+    polarity ? polarity.headline : 'no polarity finding');
+}
+
+/* 44. Low coherence refuses to advise rather than guess. */
+{
+  const result = analysePair(
+    analysisCapture('Capture A', 0, { coherence: 0.1 }),
+    analysisCapture('Capture B', 0.002, { coherence: 0.1 }),
+    { band: 'crossover' });
+  const refusal = result.findings.find((finding) => finding.kind === 'quality');
+  report('Low coherence refuses to advise',
+    !!refusal && /Not enough usable overlap/.test(refusal.headline) &&
+      refusal.confidence === 'Insufficient' && result.findings.length === 1 &&
+      /Capture again/.test(result.headline),
+    refusal ? refusal.headline + ' — ' + result.usableBands + ' of ' + result.totalBands + ' bands' : 'no refusal');
+}
+
+/* 45. A magnitude-only capture is not given an invented phase. */
+{
+  const result = analysePair(
+    analysisCapture('Capture A', 0, { phase: false }),
+    analysisCapture('Capture B', 0.002),
+    { band: 'lowEnd' });
+  report('A magnitude-only capture is not given a phase',
+    result.findings.length === 1 && /Not enough usable overlap/.test(result.findings[0].headline),
+    result.findings.length + ' finding(s), ' + result.usableBands + ' usable bands');
 }
 
 /* ---------- CLF, LPIF, spatial average and the modes ---------- */

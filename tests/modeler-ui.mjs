@@ -109,6 +109,24 @@ const savedEntry = {
 
 let opened = false;
 
+/** A held capture with a known arrival, for the analysis card. */
+function heldTrace(delaySeconds) {
+  const bins = 2049;
+  const df = 48000 / 4096;
+  const magDb = new Float64Array(bins);
+  const phaseDeg = new Float64Array(bins);
+  const coh = new Float64Array(bins).fill(0.9);
+  for (let k = 1; k < bins; k += 1) {
+    const frequency = k * df;
+    magDb[k] = 0;
+    phaseDeg[k] = -360 * frequency * delaySeconds;
+  }
+  return {
+    magDb, phaseDeg, coh, bins, df, fftSize: 4096, sampleRate: 48000,
+    delayMs: delaySeconds * 1000, polarity: 'normal',
+  };
+}
+
 const dataset = {
   id: 'd1',
   label: 'Sub 1 measured',
@@ -143,7 +161,10 @@ const modeler = createDataModeler({
   setStatus() {},
   library: () => [savedEntry],
   live: () => null,
-  held: () => [],
+  held: () => [
+    { label: 'A', trace: heldTrace(0) },
+    { label: 'B', trace: heldTrace(0.002) },
+  ],
   persist: () => true,
   share() {},
   onOpen: () => { opened = true; },
@@ -288,6 +309,18 @@ try {
     demos.length + ' demo sources, every demo dataset labelled');
 } catch (error) {
   report('Demonstration data is labelled as demonstration', false, 'threw: ' + (error && error.message));
+}
+
+try {
+  const analysis = modeler.analyseAlignment('crossover');
+  const arrival = analysis && analysis.findings.find((finding) => finding.kind === 'arrival');
+  report('Capture A against Capture B is analysed in the card',
+    !!arrival && /2\.00 ms before Capture B/.test(arrival.headline) &&
+      !!arrival.proposal && !!arrival.expected && !!arrival.verification &&
+      !!arrival.confidence,
+    arrival ? arrival.headline + ' · ' + arrival.confidence : 'no arrival finding');
+} catch (error) {
+  report('Capture A against Capture B is analysed in the card', false, 'threw: ' + (error && error.message));
 }
 
 /* Every element the screen asks for must be named in index.html. */

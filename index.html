@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-14" />
+<meta name="align-build" content="2026-11-19-19" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -12,12 +12,11 @@
 <meta name="format-detection" content="telephone=no" />
 <meta name="robots" content="noindex, nofollow, noarchive" />
 <link rel="manifest" href="manifest.webmanifest" />
-<link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
-<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
 <title>Align — loudspeaker measurement</title>
 <link rel="stylesheet" href="css/styles.css" />
 <link rel="stylesheet" href="css/instrument.css" />
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
 </head>
 <body>
 <header class="topbar">
@@ -37,6 +36,7 @@
     <button class="tb-btn" type="button" id="btnSpeakers">Speakers</button>
     <button class="tb-btn" type="button" id="btnHardware">Hardware</button>
     <button class="tb-btn" type="button" id="btnModeler">Data Modeler</button>
+    <button class="tb-btn" type="button" id="btnRoomDesigner">Room Designer</button>
   </nav>
 
   <div class="tb-right">
@@ -545,6 +545,10 @@
           <button id="btnSaved" class="btn" type="button">Capture library</button>
           <button id="btnSumPreview" class="btn" type="button">Sum preview</button>
           <button id="btnGuide" class="btn" type="button">Alignment guide</button>
+          <button id="btnSubArray" class="btn" type="button">Subwoofer array</button>
+        </div>
+        <div class="row btns">
+          <button id="btnAlignmentAnalysis" class="btn btn-power" type="button">Alignment analysis</button>
         </div>
         <div class="row btns">
           <button id="btnSendModeler" class="btn btn-power" type="button">Send to Data Modeler</button>
@@ -865,6 +869,10 @@
             <label for="dmLibrarySearch">Search</label>
             <input id="dmLibrarySearch" type="search" placeholder="Name, maker or note" />
           </div>
+          <div class="row">
+            <label for="dmLibraryManufacturer">Manufacturer</label>
+            <select id="dmLibraryManufacturer" class="dm-select" aria-label="Filter the library by manufacturer"></select>
+          </div>
           <div class="dm-create">
             <input id="dmNewName" class="dm-text" type="text" maxlength="80" placeholder="New loudspeaker name" autocomplete="off" />
             <input id="dmNewManufacturer" class="dm-text" type="text" maxlength="60" placeholder="Manufacturer" autocomplete="off" />
@@ -893,6 +901,22 @@
             </div>
             <button id="btnDmApplyModel" class="btn" type="button">Apply details</button>
           </div>
+        </div>
+      </section>
+
+      <section class="dm-card" data-card="builder" data-dock="left">
+        <div class="dm-card-head">
+          <h3>Custom speaker builder</h3>
+          <div class="dm-card-tools">
+            <select class="dm-dock" aria-label="Dock this panel">
+              <option value="left">Left</option><option value="centre">Centre</option><option value="right">Right</option>
+            </select>
+            <button class="dm-collapse" type="button" aria-label="Collapse this panel">–</button>
+          </div>
+        </div>
+        <div class="dm-card-body">
+          <p class="dm-sub" id="dmBuilderSummary">Build a loudspeaker from its published specifications</p>
+          <div id="dmBuilder"></div>
         </div>
       </section>
 
@@ -1331,6 +1355,315 @@
   </div>
 </section>
 
+<!-- ============ the Room Designer and acoustic prediction ============ -->
+<section id="rdWorkspace" class="rd-workspace" hidden>
+  <header class="rd-head">
+    <div class="rd-head-title">
+      <h2>Room Designer &amp; Acoustic Prediction</h2>
+      <p class="source-hint" id="rdStatus">
+        Draw the room, place the loudspeakers and read the predicted direct sound over the audience.
+        Every level is computed from the geometry and the modeler's own responses — nothing here is a
+        coloured circle drawn around a cabinet.
+      </p>
+    </div>
+    <div class="row btns rd-head-actions">
+      <button id="btnRdSave" class="btn" type="button">Save room</button>
+      <button id="btnRdExport" class="btn" type="button">Export room</button>
+      <button id="btnRdImport" class="btn" type="button">Import room</button>
+      <button id="btnRdModeler" class="btn" type="button">Data Modeler</button>
+      <button id="btnRdClose" class="btn" type="button">Close</button>
+    </div>
+  </header>
+  <input id="rdFile" type="file" accept=".json,application/json,text/plain" hidden />
+
+  <div class="rd-layout">
+    <aside class="rd-side">
+
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Room geometry</h3></div>
+        <div class="dm-card-body">
+          <p class="dm-sub" id="rdRoomSummary">no room yet</p>
+          <div class="row">
+            <select id="rdTemplate" class="dm-select" aria-label="Room template"></select>
+            <button id="btnRdApplyTemplate" class="btn" type="button">Apply</button>
+          </div>
+          <button id="btnRdWarehouse" class="btn" type="button">Pioneer warehouse example</button>
+          <div class="dm-grid">
+            <label>Units<select id="rdUnits" class="dm-select"></select></label>
+            <label>Shape<select id="rdShape" class="dm-select"></select></label>
+            <label>Width<input id="rdWidth" class="dm-number" type="number" step="0.1" min="1" /></label>
+            <label>Length<input id="rdLength" class="dm-number" type="number" step="0.1" min="1" /></label>
+            <div class="rd-inline" id="rdNotchRow" hidden>
+              <label>Notch width<input id="rdNotchWidth" class="dm-number" type="number" step="0.1" min="0" /></label>
+              <label>Notch length<input id="rdNotchLength" class="dm-number" type="number" step="0.1" min="0" /></label>
+            </div>
+            <label>Wall height<input id="rdWallHeight" class="dm-number" type="number" step="0.1" min="1" /></label>
+            <label>Ceiling<select id="rdCeiling" class="dm-select"></select></label>
+            <div class="rd-inline" id="rdCeilingRows" hidden>
+              <label>Peak above wall<input id="rdRise" class="dm-number" type="number" step="0.1" min="0" /></label>
+              <label id="rdRidgeRow">Ridge from left<input id="rdRidge" class="dm-number" type="number" step="0.1" min="0" /></label>
+            </div>
+          </div>
+          <button id="btnRdApplyGeometry" class="btn btn-power" type="button">Apply the geometry</button>
+          <div class="row btns">
+            <button id="btnRdAddVertex" class="btn" type="button">Add a corner</button>
+            <button id="btnRdRemoveVertex" class="btn" type="button">Remove the last corner</button>
+          </div>
+          <p class="source-hint" id="rdOutlineNote" hidden></p>
+          <p class="source-hint">
+            A rectangle or an L is generated from its dimensions; a custom plan keeps the polygon you
+            drag with the Vertex tool. A sloped or A-frame ceiling sets the height above every point,
+            which the section and the 3D view read from the same function.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Stages, platforms and audience</h3></div>
+        <div class="dm-card-body">
+          <div class="row">
+            <select id="rdAddKind" class="dm-select" aria-label="What to add"></select>
+            <button id="btnRdAddStructure" class="btn" type="button">Add</button>
+          </div>
+          <ul id="rdStructureList" class="dm-list"></ul>
+          <div id="rdStructForm" class="dm-form" hidden>
+            <div class="dm-form-head">
+              <h4 id="rdStructTitle">Structure</h4>
+              <button id="btnRdDeleteStructure" class="dm-mini dm-danger" type="button">Delete</button>
+            </div>
+            <div class="dm-grid">
+              <label>Name<input id="rdStructName" class="dm-text" type="text" maxlength="40" /></label>
+              <label>From x<input id="rdStructX0" class="dm-number" type="number" step="0.1" /></label>
+              <label>From y<input id="rdStructY0" class="dm-number" type="number" step="0.1" /></label>
+              <label>To x<input id="rdStructX1" class="dm-number" type="number" step="0.1" /></label>
+              <label>To y<input id="rdStructY1" class="dm-number" type="number" step="0.1" /></label>
+              <label><span id="rdStructHeightWord">Height</span><input id="rdStructHeight" class="dm-number" type="number" step="0.1" min="0" /></label>
+              <div class="rd-inline" id="rdRakedRow" hidden>
+                <label class="chk"><input id="chkRdRaked" type="checkbox" /> Raked seating</label>
+                <label>Rise per metre<input id="rdRakedRise" class="dm-number" type="number" step="0.01" min="0" /></label>
+              </div>
+            </div>
+            <button id="btnRdApplyStructure" class="btn" type="button">Apply</button>
+          </div>
+          <p class="source-hint">
+            A stage or a platform raises the floor, so a listening height on it is that much higher.
+            An audience area is where the map and the mean are computed. Obstacles are drawn for
+            scale and are not occluders: this prediction models the direct sound only, so a column
+            casts no acoustic shadow.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Loudspeakers in the room</h3></div>
+        <div class="dm-card-body">
+          <p class="dm-sub" id="rdSourceSummary">no sources yet</p>
+          <div class="row">
+            <select id="rdAddModel" class="dm-select" aria-label="Loudspeaker from the library"></select>
+            <select id="rdAddRole" class="dm-select" aria-label="Role in the system"></select>
+          </div>
+          <div class="row btns">
+            <button id="btnRdAddSpeaker" class="btn" type="button">Place a cabinet</button>
+            <button id="btnRdPlaceSelected" class="btn" type="button">Place selected</button>
+          </div>
+          <ul id="rdSourceList" class="dm-list"></ul>
+          <div class="row">
+            <select id="rdGroupMove" class="dm-select" aria-label="What to move together"></select>
+            <input id="rdGroupDx" class="dm-number" type="number" step="0.1" value="0" aria-label="Move x" />
+            <input id="rdGroupDy" class="dm-number" type="number" step="0.1" value="0" aria-label="Move y" />
+            <button id="btnRdMoveGroup" class="btn" type="button">Move group</button>
+          </div>
+          <button id="btnRdDemoResponses" class="btn" type="button">Attach demonstration responses (DEMO)</button>
+          <p class="source-hint">
+            The library is the Data Modeler's own: the same loudspeakers, measured responses and DSP.
+            A cabinet with no response is listed as having no acoustic data and is left out of the sum.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Subwoofer array</h3></div>
+        <div class="dm-card-body">
+          <div class="dm-grid">
+            <label>Preset<select id="rdArrayPreset" class="dm-select"></select></label>
+            <label>Group<select id="rdArrayGroup" class="dm-select"></select></label>
+            <label>Count<input id="rdArrayCount" class="dm-number" type="number" step="1" min="1" max="32" value="8" /></label>
+            <label>Spacing m<input id="rdArraySpacing" class="dm-number" type="number" step="0.05" min="0.1" max="10" value="1.2" /></label>
+            <label>Design Hz<input id="rdArrayFreq" class="dm-number" type="number" step="1" min="20" max="200" value="80" /></label>
+            <label>Gain dB<input id="rdArrayGain" class="dm-number" type="number" step="0.5" min="-24" max="24" value="0" /></label>
+            <label>Polarity<select id="rdArrayPolarity" class="dm-select"><option value="normal">Normal</option><option value="inverted">Inverted</option></select></label>
+          </div>
+          <div class="row btns">
+            <button id="btnRdApplyArray" class="btn btn-power" type="button">Apply the arrangement</button>
+            <button id="btnRdCompareArray" class="btn" type="button">Compare</button>
+          </div>
+          <p class="source-hint" id="rdArrayNote"></p>
+          <div class="rd-compare"><canvas id="rdCompareChart" aria-label="Coverage before and after the array change"></canvas></div>
+          <p class="source-hint" id="rdCompareNote"></p>
+          <p class="source-hint">
+            Applying writes position, delay, polarity and gain onto the cabinets themselves, through the
+            Data Modeler's undo history. No setting is sent to a processor.
+          </p>
+        </div>
+      </section>
+    </aside>
+
+    <div class="rd-centre">
+      <div class="rd-viewbar">
+        <div class="rd-group">
+          <button id="btnRdViewPlan" class="rd-view-btn on" type="button">Plan</button>
+          <button id="btnRdViewSection" class="rd-view-btn" type="button">Section</button>
+          <button id="btnRdView3d" class="rd-view-btn" type="button">3D</button>
+        </div>
+        <div class="rd-group">
+          <button id="btnRdToolSelect" class="rd-tool-btn on" type="button">Select</button>
+          <button id="btnRdToolMic" class="rd-tool-btn" type="button">Mic</button>
+          <button id="btnRdToolRuler" class="rd-tool-btn" type="button">Ruler</button>
+          <button id="btnRdToolVertex" class="rd-tool-btn" type="button">Vertex</button>
+        </div>
+        <div class="rd-group">
+          <label class="chk"><input id="chkRdHeatmap" type="checkbox" checked /> Map</label>
+          <label class="chk"><input id="chkRdCoverage" type="checkbox" /> Coverage</label>
+          <label for="rdSnap">Snap</label>
+          <select id="rdSnap" class="dm-select" aria-label="Snap the pointer to a grid"></select>
+          <button id="btnRdZoomFit" class="btn" type="button">Fit</button>
+        </div>
+      </div>
+      <div class="rd-canvas-wrap"><canvas id="rdCanvas" aria-label="Room plan, section and 3D view"></canvas></div>
+      <p class="cursor-readout" id="rdReadout">move the pointer over the plan to read a position</p>
+      <p class="source-hint" id="rdRulerNote">
+        Ruler: choose the Ruler tool and drag across the plan to measure a distance and the time sound
+        takes to cross it.
+      </p>
+      <div class="rd-chips" id="rdSourceStrip"></div>
+    </div>
+
+    <aside class="rd-side">
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Selected · <span id="rdSpeakerTitle">none</span></h3></div>
+        <div class="dm-card-body">
+          <div id="rdSpeakerForm" hidden>
+            <p class="dm-sub" id="rdSpeakerData"></p>
+            <p class="dm-sub" id="rdSpeakerPlacement"></p>
+            <div class="dm-grid">
+              <label>Role<select id="rdSpeakerRole" class="dm-select"></select></label>
+              <label>Group<select id="rdSpeakerGroup" class="dm-select"></select></label>
+              <label>x<input id="rdSpeakerX" class="dm-number" type="number" step="0.05" /></label>
+              <label>y<input id="rdSpeakerY" class="dm-number" type="number" step="0.05" /></label>
+              <label>Height<input id="rdSpeakerZ" class="dm-number" type="number" step="0.05" min="0" /></label>
+              <label>H aim °<input id="rdSpeakerAimH" class="dm-number" type="number" step="1" min="-180" max="180" /></label>
+              <label>V aim °<input id="rdSpeakerAimV" class="dm-number" type="number" step="1" min="-90" max="90" /></label>
+              <label>Roll °<input id="rdSpeakerRoll" class="dm-number" type="number" step="1" min="-180" max="180" /></label>
+              <label>Gain dB<input id="rdSpeakerGain" class="dm-number" type="number" step="0.1" min="-30" max="30" /></label>
+              <label>Delay ms<input id="rdSpeakerDelay" class="dm-number" type="number" step="0.01" min="-50" max="100" /></label>
+              <label>Polarity<select id="rdSpeakerPolarity" class="dm-select"></select></label>
+              <label>Timing<select id="rdSpeakerTiming" class="dm-select"></select></label>
+              <label id="rdTimingOffsetRow" hidden>Measured offset ms<input id="rdSpeakerTimingOffset" class="dm-number" type="number" step="0.01" min="-50" max="50" /></label>
+            </div>
+            <p class="source-hint" id="rdSpeakerDirectivity"></p>
+            <div class="row btns">
+              <button id="btnRdApplySpeaker" class="btn btn-power" type="button">Apply</button>
+              <button id="btnRdDeleteSpeaker" class="btn" type="button">Remove</button>
+            </div>
+            <p class="source-hint">
+              Gain, delay, polarity and EQ are the Data Modeler's source settings: changing them here
+              changes them there. Position and aim are stored on the same source, so moving a cabinet
+              never makes a second copy of it.
+            </p>
+          </div>
+          <p class="source-hint" id="rdSpeakerEmpty">
+            Select a loudspeaker in the list to place, aim and process it.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Prediction</h3></div>
+        <div class="dm-card-body">
+          <div class="dm-grid">
+            <label>Mode<select id="rdPredictionMode" class="dm-select"></select></label>
+            <label>Map<select id="rdMetric" class="dm-select"></select></label>
+            <label>Band<select id="rdBandMode" class="dm-select"></select></label>
+            <label>Frequency<select id="rdFrequency" class="dm-select"></select></label>
+            <label>Normalise<select id="rdNormalize" class="dm-select"></select></label>
+            <label>Level display<select id="rdLevelMode" class="dm-select"></select></label>
+            <label>Level offset dB<input id="rdLevelOffset" class="dm-number" type="number" step="0.5" min="-60" max="60" value="0" /></label>
+            <label>Left group<select id="rdLeftGroup" class="dm-select"></select></label>
+            <label>Right group<select id="rdRightGroup" class="dm-select"></select></label>
+          </div>
+          <button id="btnRdCalculate" class="btn btn-power" type="button">Calculate the prediction</button>
+          <p class="source-hint" id="rdAcousticNote"></p>
+          <p class="source-hint" id="rdPredictionMessage"></p>
+          <div id="rdStatistics"></div>
+          <p class="source-hint">
+            Levels are relative unless you enter an offset: without a known drive level and a calibrated
+            sensitivity an absolute SPL would be a guess, so the map's own numbers stay in the model's
+            decibels and are labelled that way.
+          </p>
+        </div>
+      </section>
+
+      <section class="dm-card">
+        <div class="dm-card-head"><h3>Virtual microphones</h3></div>
+        <div class="dm-card-body">
+          <div class="row btns">
+            <button id="btnRdAddMic" class="btn" type="button">Add at the centre</button>
+            <button id="btnRdAddStandardMics" class="btn" type="button">Left / centre / right / front / rear</button>
+          </div>
+          <ul id="rdMicList" class="dm-list"></ul>
+          <div id="rdMicForm" class="dm-form" hidden>
+            <div class="dm-form-head"><h4 id="rdMicTitle">Microphone</h4></div>
+            <div class="dm-grid">
+              <label>Name<input id="rdMicName" class="dm-text" type="text" maxlength="40" /></label>
+              <label>x<input id="rdMicX" class="dm-number" type="number" step="0.1" /></label>
+              <label>y<input id="rdMicY" class="dm-number" type="number" step="0.1" /></label>
+              <label>Height<input id="rdMicZ" class="dm-number" type="number" step="0.1" min="0.1" /></label>
+              <label class="dm-wide">Note<input id="rdMicNote" class="dm-text" type="text" maxlength="200" /></label>
+            </div>
+            <button id="btnRdApplyMic" class="btn" type="button">Move the microphone</button>
+            <div class="row">
+              <label for="rdMicCapture">Measured capture</label>
+              <select id="rdMicCapture" class="dm-select"></select>
+            </div>
+            <button id="btnRdAssociateCapture" class="btn" type="button">Associate</button>
+            <p class="source-hint" id="rdMicCaptureNote"></p>
+            <div class="row">
+              <label for="rdRefMic">Map reference</label>
+              <select id="rdRefMic" class="dm-select"></select>
+            </div>
+            <button id="btnRdSendMic" class="btn" type="button">Send this position to the Data Modeler</button>
+            <p class="source-hint">
+              A microphone is a listening position. Drag it on the plan and the prediction follows; send
+              it on to compare the prediction with a measurement taken at that place.
+            </p>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <div class="rd-bottom">
+    <div class="rd-bottom-head">
+      <h3>Predicted response · <span id="rdMicHeading">no microphone</span></h3>
+      <span class="dm-sub" id="rdLevelReadout">—</span>
+    </div>
+    <div class="rd-chart-wrap">
+      <canvas id="rdChart" aria-label="Predicted magnitude and phase at the selected position"></canvas>
+    </div>
+    <div class="rd-bottom-grid">
+      <div>
+        <p class="dm-sub">Each source at this position</p>
+        <div id="rdMicTable" class="rd-table"></div>
+      </div>
+      <div>
+        <p class="dm-sub">Arrivals and the delay that would line them up</p>
+        <div id="rdArrivalTable" class="rd-table"></div>
+        <p class="source-hint" id="rdArrivalNote"></p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <footer class="foot">
   <p>Align · runs locally in the browser · no audio leaves the device · <a href="manual.html">Illustrated manual</a> · <a href="validate.html">Validation tests</a> · <a href="https://precisionaudioalignment.com/" target="_blank" rel="noopener noreferrer">System tuning</a></p>
   <p class="copyright">© <span id="copyrightYear">2026</span> Mathew Steven / Precision Audio Alignment. All rights reserved.</p>
@@ -1442,6 +1775,108 @@
     <p class="source-hint" id="spkSumSummary">Choose two saved speaker captures that carry phase.</p>
     <p class="sheet-foot-note">A prediction from the stored captures — how the pair would add once B is delayed, gained or flipped. It is not a measurement and changes nothing.</p>
   </div>
+</section>
+
+<section id="subArraySheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Subwoofer array</h2>
+      <p class="sheet-sub" id="subArraySubtitle">2 × 4 · 8 cabinets</p>
+    </div>
+    <button id="btnCloseSubArray" class="btn" type="button">Done</button>
+  </div>
+  <p class="muted" id="subArrayIntro">
+    Tap the cabinets that are playing now — one box, a pair, a row or all of them — then store the
+    live measurement in a capture slot.
+  </p>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Layout</h2>
+      <span class="card-detail" id="subNumberingTag">numbered from the right</span>
+    </div>
+    <div class="row">
+      <label for="subRows">Rows</label>
+      <select id="subRows">
+        <option value="1">1</option><option value="2">2</option>
+        <option value="3">3</option><option value="4">4</option>
+      </select>
+      <label for="subColumns">Columns</label>
+      <select id="subColumns">
+        <option value="1">1</option><option value="2">2</option>
+        <option value="3">3</option><option value="4">4</option>
+        <option value="5">5</option><option value="6">6</option>
+        <option value="7">7</option><option value="8">8</option>
+      </select>
+    </div>
+    <p class="source-hint" id="subNumbering">
+      Two rows are numbered in pairs from the right: cabinet 1 is the right-most box of the top row, so
+      each column is a pair.
+    </p>
+    <div id="subArrayGrid" class="sub-grid"></div>
+    <div class="row btns">
+      <button id="btnSubAll" class="btn" type="button">All</button>
+      <button id="btnSubNone" class="btn" type="button">None</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Selection</h2>
+      <span class="card-detail" id="subSelection">nothing selected</span>
+    </div>
+    <div id="subSelectionEmpty">
+      <p class="source-hint">
+        Tap the cabinets that are playing now — one box, a pair, a row, or all of them — then store
+        the live measurement in a capture slot.
+      </p>
+    </div>
+    <div id="subSelectionBody" hidden>
+      <p class="source-hint" id="subSelectionSummary"></p>
+      <div class="row">
+        <label for="subSlot">Capture slot</label>
+        <select id="subSlot">
+          <option value="A">A</option><option value="B">B</option><option value="C">C</option>
+          <option value="D">D</option><option value="E">E</option><option value="F">F</option>
+        </select>
+      </div>
+      <button id="btnSubStore" class="btn btn-power" type="button">Store capture in A</button>
+      <p class="source-hint">
+        Storing replaces whatever that slot held, and attaches the slot to every selected cabinet.
+      </p>
+      <div id="subCabinetFields" hidden>
+        <p class="source-hint" id="subCabinetTitle">Cabinet</p>
+        <div class="row">
+          <label for="subCabinetName">Name</label>
+          <input id="subCabinetName" type="text" maxlength="24" placeholder="Sub 1" autocomplete="off" />
+        </div>
+        <div class="row">
+          <label for="subCabinetGroup">Group</label>
+          <input id="subCabinetGroup" type="text" maxlength="24" placeholder="front row, left hang…" autocomplete="off" />
+        </div>
+        <button id="btnSubSaveCabinet" class="btn" type="button">Save cabinet</button>
+      </div>
+    </div>
+    <p id="subMessage" class="source-hint" hidden></p>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Arrivals</h2>
+      <span class="card-detail" id="subArrivalCount">no cabinets measured</span>
+    </div>
+    <div id="subArrivals" class="sub-arrivals"></div>
+    <p class="sheet-foot-note" id="subArrivalNote" hidden>
+      Δ is against the first measured box. A positive figure means that box arrives later; to align the
+      pair, delay the earlier one by that amount in the processor.
+    </p>
+  </div>
+
+  <p class="sheet-foot-note">
+    A cabinet's capture slot holds that cabinet's own measurement, so a group can be summed and
+    compared without losing the individual traces. Names, groups, the size and the slots are kept
+    between launches; nothing here changes the measurement, the gate or the audio path.
+  </p>
 </section>
 
 <section id="spectrogramSheet" class="sheet spectrogram-sheet" hidden>
@@ -1874,6 +2309,33 @@
     The correction is taken off the displayed magnitude and the band table's levels; phase, coherence
     and the impulse response are left exactly as measured. It is remembered between launches, and the
     point count and range above say how much of the band it covers.
+  </p>
+</section>
+
+<section id="alignmentSheet" class="sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Alignment analysis</h2>
+      <p class="sheet-sub" id="analysisSub">Capture A against Capture B · third-octave bands</p>
+    </div>
+    <button id="btnCloseAnalysis" class="btn" type="button">Done</button>
+  </div>
+  <div class="row">
+    <label for="selAnalysisBand">Band</label>
+    <select id="selAnalysisBand" class="dm-select">
+      <option value="subs">Subs 40–120</option>
+      <option value="crossover" selected>Crossover 60–250</option>
+      <option value="lowEnd">Low end 40–320</option>
+    </select>
+    <button id="btnRunAnalysis" class="btn btn-power" type="button">Analyse the pair</button>
+  </div>
+  <div id="analysisHead" class="analysis-head"></div>
+  <div id="analysisFindings" class="analysis-findings"></div>
+  <p id="analysisMessage" class="source-hint" hidden></p>
+  <p class="sheet-foot-note">
+    Read from Capture A and Capture B as they were taken. Every finding says what the data shows, the
+    evidence behind it, what a change would predict, how far the measurement supports it and the
+    measurement that would verify it. Nothing is proposed that the two captures cannot support.
   </p>
 </section>
 

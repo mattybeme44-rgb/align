@@ -458,6 +458,44 @@ far the data can be trusted.
 Modeler documents, the status of every requested capability, and what could not be
 verified.
 
+The **Custom speaker builder**, in the same workspace, turns a published
+specification sheet into a library loudspeaker: type, frequency range and
+tolerance, both sensitivity ratings (converted through the nominal impedance),
+continuous and peak SPL, coverage with its reference definition and angular
+taper, frequency-dependent beamwidth or an imported beamwidth table, dimensions
+in mm/cm/m/in/ft, a multi-way section list with crossovers, and a subwoofer
+enclosure block. It generates a clearly labelled theoretical magnitude curve and
+6 dB widths, refuses to invent phase, acoustic offsets or crossover behaviour,
+can be upgraded with measured or manufacturer data without losing what was
+typed, and the result is placed, aimed, delayed, equalised and mapped in the
+Room Designer exactly like any other loudspeaker. `SPEAKER-BUILDER.md` documents
+the behaviour, the accuracy labels and the `align.custom-speaker/1` JSON schema.
+
+## Room Designer and acoustic prediction
+
+The `Room Designer` button opens a second workspace on the same project: draw a
+room (rectangle, L, or a custom polygon you drag corner by corner, with flat,
+sloped or A-frame ceilings, stages, platforms, audience areas and obstacles) in
+metres or feet, then place the modeler's own loudspeakers in it — x, y, height,
+horizontal and vertical aim, roll, gain, delay, polarity and group. Plan, section
+and 3D are three views of one geometry.
+
+The prediction is a real direct-sound calculation, not a drawing: for every point
+it takes the straight-line distance to each cabinet, the travel time that
+distance means, the inverse-distance level against the distance the response was
+measured at, the level the off-axis angle costs where the dataset carries 6 dB
+beamwidths, and the complex sum with each cabinet's phase rotated by its arrival.
+The coverage map is computed point by point across the audience — broadband, an
+octave, a third octave or a single frequency, plus first arrival, deviation from
+the mean, left − right and sub-to-sub interference. Click anywhere to place a
+virtual microphone and read the predicted magnitude and phase there; drag it and
+the curve follows; send it to the Data Modeler as a prediction, stored apart from
+measured data.
+
+Reflections, absorption, modes and reverberation are **not** implemented, and the
+screen says so rather than drawing a plausible room sound. `MODELER.md`'s Phase 4
+section lists exactly what is computed, what is refused, and the tests behind it.
+
 The measurement screen sends a real measurement into the modeler: `Send to Data
 Modeler` in the Traces card takes the running measurement (or held Capture A),
 and `Send to modeler` on a saved capture row takes that capture, with its delay,

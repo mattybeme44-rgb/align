@@ -2,6 +2,7 @@ import { AudioEngine } from './audio-engine.js';
 import { createMultiView } from './multiview.js';
 import { createHardwareCheck } from './hardware.js';
 import { createDataModeler } from './modeler/ui.js';
+import { createRoomDesigner } from './modeler/roomui.js';
 import { persistProject as persistModelProject } from './modeler/store.js';
 import { Analyser, suggestEq } from './analyser.js';
 import { TransferChart, ImpulseChart, wrapDegrees } from './charts.js';
@@ -76,6 +77,20 @@ import { chartImageBlob, reportPdfBlob, shareOrDownload } from './sharing.js';
 import { buildSumPreview, bestOverlap, drawSumChart } from './sum-preview.js';
 import { parseMeasurementCsv } from './measurement-import.js';
 import { EQ_SET_LIMIT, loadEqSets, persistEqSets, newEqSet } from './eq-sets.js';
+import {
+  SUB_ARRAY_SLOTS,
+  assignSubArraySlot,
+  loadSubArray,
+  makeSubArray,
+  normalizeSubArray,
+  persistSubArray,
+  setSubCabinet,
+  subArrayArrivals,
+  subArrayOrdered,
+  subArrayRow,
+  subArraySlot,
+  subCabinetName,
+} from './sub-array.js';
 import { drawLevelLog, levelLogCsv, LEVEL_LOG_WINDOW_SECONDS } from './level-log.js';
 
 const $ = (id) => document.getElementById(id);
@@ -344,6 +359,7 @@ const dataModeler = createDataModeler({
       hardwareCheck.close();
       $('btnHardware').classList.remove('on');
     }
+    if (roomDesigner.active) roomDesigner.close();
     if (state.running) stopAll();
     const start = $('btnPower');
     if (start) start.disabled = true;
@@ -354,6 +370,44 @@ const dataModeler = createDataModeler({
     const start = $('btnPower');
     if (start) start.disabled = false;
     const button = $('btnModeler');
+    if (button) button.classList.remove('on');
+  },
+});
+
+/**
+ * The room designer: the same project, drawn in a room and predicted over the
+ * audience. It reads and writes the modeler's sources through the modeler's own
+ * commit path, so a gain, delay or EQ change is one setting in one place.
+ *
+ * It only computes. Nothing here starts audio, changes the routing or writes a
+ * setting into a processor, and no reflection or room-acoustic result is
+ * claimed: the prediction is the direct sound.
+ */
+const roomDesigner = createRoomDesigner({
+  modeler: dataModeler,
+  library: () => state.saved,
+  setStatus,
+  share: (blob, filename, title) => { shareOrDownload(blob, filename, title); },
+  onOpen: () => {
+    if (multiView.active) {
+      multiView.close();
+      $('btnMulti').classList.remove('on');
+    }
+    if (hardwareCheck.active) {
+      hardwareCheck.close();
+      $('btnHardware').classList.remove('on');
+    }
+    if (dataModeler.active) dataModeler.close();
+    if (state.running) stopAll();
+    const start = $('btnPower');
+    if (start) start.disabled = true;
+    const button = $('btnRoomDesigner');
+    if (button) button.classList.add('on');
+  },
+  onClose: () => {
+    const start = $('btnPower');
+    if (start) start.disabled = false;
+    const button = $('btnRoomDesigner');
     if (button) button.classList.remove('on');
   },
 });
@@ -744,7 +798,7 @@ function updateSheetLock() {
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
     !$('sumSheet').hidden || !$('levelLogSheet').hidden ||
     !$('rtaSheet').hidden || !$('distortionSheet').hidden || !$('guideSheet').hidden ||
-    !$('speakerSheet').hidden;
+    !$('speakerSheet').hidden || !$('subArraySheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -2216,12 +2270,15 @@ function mergePeakHold(held, res) {
 }
 
 /** Capture the live result into one of the six slots, A through F. */
-function captureSlot(label) {
+function captureSlot(label, options = {}) {
+  // The subwoofer array replaces a slot, so its group's own frame can be
+  // stored again without clearing it first; the manual buttons keep refusing.
+  const replace = !!(options && options.replace === true);
   const res = state.results;
-  if (!res) return;
-  if (heldSnapshot(label)) {
+  if (!res) return false;
+  if (heldSnapshot(label) && !replace) {
     setStatus('capture ' + label + ' already holds a measurement — use Replace or Clear', 'err');
-    return;
+    return false;
   }
   const slot = { A: 'snapshot', B: 'snapshotB', C: 'snapshotC', D: 'snapshotD', E: 'snapshotE', F: 'snapshotF' }[label];
   state[slot] = Object.assign(captureTrace(res), {
@@ -2245,6 +2302,7 @@ function captureSlot(label) {
   setStatus('captured ' + label + ' at ' + state.totalDelayMs.toFixed(2) + ' ms', 'ok');
   updateTraceSummary();
   draw();
+  return true;
 }
 
 function clearSlot(label) {
@@ -7366,6 +7424,364 @@ function wireSpeakerSheet() {
 
 wireSpeakerSheet();
 
+/* ---------- subwoofer array ---------- */
+
+/**
+ * The array as it stands in the room. Only the layout is kept here — the boxes,
+ * their names, groups and slot letters. A slot's measurement is one of the six
+ * held captures, so the screen reads and stores captures and never touches the
+ * measurement, the gate or the audio path.
+ */
+let subArray = loadSubArray();
+const subArraySelection = new Set();
+let subArrayStoreSlot = 'A';
+let subArrayEditingNumber = 0;
+
+function subArrayMessage(text, bad) {
+  const line = $('subMessage');
+  if (!line) return;
+  line.textContent = text || '';
+  line.hidden = !text;
+  line.classList.toggle('clip-warning', !!bad);
+}
+
+/** What each measured cabinet reads, in cabinet order, from its slot. */
+function subArrayMeasured(layout) {
+  const entries = [];
+  for (const cabinet of subArrayOrdered(layout)) {
+    const letter = subArraySlot(layout, cabinet.number);
+    if (!letter) continue;
+    const trace = heldSnapshot(letter);
+    if (!trace) continue;
+    entries.push({
+      number: cabinet.number,
+      name: subCabinetName(cabinet),
+      slot: letter,
+      captureName: 'Capture ' + letter,
+      delayMs: trace.delayMs,
+      coherence: meanCoherence(trace),
+    });
+  }
+  return subArrayArrivals(entries);
+}
+
+function subArrayTile(layout, cabinet) {
+  const on = subArraySelection.has(cabinet.number);
+  const tile = document.createElement('button');
+  tile.type = 'button';
+  tile.className = 'sub-tile' + (on ? ' on' : '');
+  tile.setAttribute('aria-pressed', on ? 'true' : 'false');
+  tile.setAttribute('aria-label', 'Subwoofer ' + cabinet.number + ', ' + subCabinetName(cabinet));
+
+  const head = document.createElement('span');
+  head.className = 'sub-tile-head';
+  const number = document.createElement('span');
+  number.className = 'sub-tile-number';
+  number.textContent = String(cabinet.number);
+  head.appendChild(number);
+  const slot = subArraySlot(layout, cabinet.number);
+  if (slot) {
+    const badge = document.createElement('span');
+    badge.className = 'sub-tile-slot';
+    badge.textContent = slot;
+    head.appendChild(badge);
+  }
+  tile.appendChild(head);
+
+  const name = document.createElement('span');
+  name.className = 'sub-tile-name';
+  name.textContent = subCabinetName(cabinet);
+  tile.appendChild(name);
+
+  if (cabinet.group) {
+    const group = document.createElement('span');
+    group.className = 'sub-tile-group';
+    group.textContent = cabinet.group;
+    tile.appendChild(group);
+  }
+
+  tile.addEventListener('click', () => {
+    if (subArraySelection.has(cabinet.number)) subArraySelection.delete(cabinet.number);
+    else subArraySelection.add(cabinet.number);
+    renderSubArray();
+  });
+  return tile;
+}
+
+function renderSubArray() {
+  const sheet = $('subArraySheet');
+  if (!sheet) return;
+  const layout = normalizeSubArray(subArray);
+
+  const subtitle = $('subArraySubtitle');
+  if (subtitle) {
+    subtitle.textContent = layout.rows + ' × ' + layout.columns + ' · ' +
+      layout.cabinets.length + ' cabinets' +
+      (subArraySelection.size ? ' · ' + subArraySelection.size + ' selected' : '');
+  }
+  if ($('subRows') && $('subRows').value !== String(layout.rows)) {
+    $('subRows').value = String(layout.rows);
+  }
+  if ($('subColumns') && $('subColumns').value !== String(layout.columns)) {
+    $('subColumns').value = String(layout.columns);
+  }
+  const numbering = $('subNumbering');
+  if (numbering) {
+    numbering.textContent = layout.rows === 2
+      ? 'Two rows are numbered in pairs from the right: cabinet 1 is the right-most box of the top ' +
+        'row, so each column is a pair.'
+      : 'Numbering runs from the right of each row, so cabinet 1 is the right-most box of the top row.';
+  }
+
+  const grid = $('subArrayGrid');
+  if (grid) {
+    grid.replaceChildren();
+    for (let row = 0; row < layout.rows; row += 1) {
+      const line = document.createElement('div');
+      line.className = 'sub-row';
+      for (const cabinet of subArrayRow(layout, row)) {
+        line.appendChild(subArrayTile(layout, cabinet));
+      }
+      grid.appendChild(line);
+    }
+  }
+
+  renderSubArraySelection(layout);
+  renderSubArrayArrivals(layout);
+}
+
+function renderSubArraySelection(layout) {
+  const chosen = [...subArraySelection].sort((left, right) => left - right);
+  const summary = $('subSelection');
+  if (summary) summary.textContent = chosen.length ? chosen.length + ' selected' : 'nothing selected';
+  if ($('subSelectionEmpty')) $('subSelectionEmpty').hidden = chosen.length > 0;
+  if ($('subSelectionBody')) $('subSelectionBody').hidden = chosen.length === 0;
+  if ($('subSelectionSummary')) {
+    $('subSelectionSummary').textContent = chosen.length
+      ? chosen.map((number) => {
+          const cabinet = layout.cabinets.find((entry) => entry.number === number);
+          return cabinet ? subCabinetName(cabinet) : 'Sub ' + number;
+        }).join(' + ')
+      : '';
+  }
+  if ($('btnSubStore')) $('btnSubStore').textContent = 'Store capture in ' + subArrayStoreSlot;
+  if ($('subSlot') && $('subSlot').value !== subArrayStoreSlot) {
+    $('subSlot').value = subArrayStoreSlot;
+  }
+
+  const holder = $('subCabinetFields');
+  if (holder) holder.hidden = chosen.length !== 1;
+  if (chosen.length === 1) {
+    const cabinet = layout.cabinets.find((entry) => entry.number === chosen[0]);
+    if (cabinet && $('subCabinetTitle')) {
+      $('subCabinetTitle').textContent = 'Cabinet ' + cabinet.number;
+    }
+    if (cabinet && subArrayEditingNumber !== cabinet.number) {
+      subArrayEditingNumber = cabinet.number;
+      if ($('subCabinetName')) $('subCabinetName').value = cabinet.label;
+      if ($('subCabinetGroup')) $('subCabinetGroup').value = cabinet.group;
+    }
+  } else {
+    subArrayEditingNumber = 0;
+  }
+}
+
+function renderSubArrayArrivals(layout) {
+  const host = $('subArrivals');
+  if (!host) return;
+  host.replaceChildren();
+
+  const rows = subArrayMeasured(layout);
+  const slotted = layout.cabinets.filter((entry) => subArraySlot(layout, entry.number)).length;
+
+  if (!rows.length) {
+    const line = document.createElement('p');
+    line.className = 'source-hint';
+    line.textContent = slotted
+      ? slotted + ' cabinet slot' + (slotted === 1 ? ' is' : 's are') + ' set, but no capture from ' +
+        'this session is in ' + (slotted === 1 ? 'it' : 'them') + ' — store the live frame again.'
+      : 'Store a capture for a cabinet and its arrival appears here, with the difference to the ' +
+        'first measured box.';
+    host.appendChild(line);
+    if ($('subArrivalCount')) $('subArrivalCount').textContent = 'no cabinets measured';
+    if ($('subArrivalNote')) $('subArrivalNote').hidden = true;
+    return;
+  }
+
+  if ($('subArrivalCount')) {
+    $('subArrivalCount').textContent = rows.length + ' measured';
+  }
+  if ($('subArrivalNote')) $('subArrivalNote').hidden = false;
+
+  for (const row of rows) {
+    const line = document.createElement('div');
+    line.className = 'sub-arrival';
+
+    const slot = document.createElement('span');
+    slot.className = 'sub-arrival-slot';
+    slot.textContent = row.slot;
+    line.appendChild(slot);
+
+    const main = document.createElement('span');
+    main.className = 'sub-arrival-main';
+    const name = document.createElement('span');
+    name.className = 'sub-arrival-name';
+    name.textContent = row.name || 'Sub ' + row.number;
+    main.appendChild(name);
+    const capture = document.createElement('span');
+    capture.className = 'sub-arrival-capture';
+    capture.textContent = row.captureName || 'capture ' + row.slot;
+    main.appendChild(capture);
+    line.appendChild(main);
+
+    const delay = document.createElement('span');
+    delay.className = 'sub-arrival-delay';
+    delay.textContent = row.delayMs.toFixed(2) + ' ms';
+    line.appendChild(delay);
+
+    const difference = document.createElement('span');
+    difference.className = 'sub-arrival-diff';
+    difference.textContent = (row.differenceMs >= 0 ? '+' : '') + row.differenceMs.toFixed(2);
+    line.appendChild(difference);
+
+    const coherence = document.createElement('span');
+    coherence.className = 'sub-arrival-coh';
+    if (Number.isFinite(row.coherence)) {
+      coherence.textContent = Math.round(row.coherence * 100) + '%';
+      if (row.coherence < 0.6) coherence.classList.add('bad');
+    } else {
+      coherence.textContent = '—';
+      coherence.classList.add('bad');
+    }
+    line.appendChild(coherence);
+
+    line.title = (row.name || 'Sub ' + row.number) + ' · ' + (row.captureName || 'capture') +
+      ' · ' + row.delayMs.toFixed(2) + ' ms';
+    host.appendChild(line);
+  }
+}
+
+function openSubArray() {
+  subArray = normalizeSubArray(subArray);
+  subArraySelection.clear();
+  subArrayEditingNumber = 0;
+  subArrayMessage('');
+  renderSubArray();
+  $('subArraySheet').hidden = false;
+  updateSheetLock();
+}
+
+function resizeSubArray(rows, columns) {
+  const next = makeSubArray(rows, columns, subArray);
+  subArray = next;
+  for (const number of [...subArraySelection]) {
+    if (!next.cabinets.some((entry) => entry.number === number)) {
+      subArraySelection.delete(number);
+    }
+  }
+  subArrayEditingNumber = 0;
+  const stored = persistSubArray(subArray);
+  renderSubArray();
+  if (!stored) {
+    subArrayMessage('The array was resized, but the layout could not be stored — browser storage is ' +
+      'full or blocked, so it lasts until the page reloads.', true);
+  }
+}
+
+function saveSubArrayCabinet() {
+  const chosen = [...subArraySelection];
+  if (chosen.length !== 1) return;
+  const number = chosen[0];
+  subArray = setSubCabinet(subArray, number, $('subCabinetName').value, $('subCabinetGroup').value);
+  const stored = persistSubArray(subArray);
+  renderSubArray();
+  const cabinet = subArray.cabinets.find((entry) => entry.number === number);
+  if (cabinet) {
+    if ($('subCabinetName')) $('subCabinetName').value = cabinet.label;
+    if ($('subCabinetGroup')) $('subCabinetGroup').value = cabinet.group;
+  }
+  subArrayMessage('Saved ' + (cabinet ? subCabinetName(cabinet) : 'the cabinet') + '.' +
+    (stored ? '' : ' It could not be stored — browser storage is full or blocked.'), !stored);
+}
+
+function storeSubArrayCapture() {
+  const chosen = [...subArraySelection].sort((left, right) => left - right);
+  if (!chosen.length) {
+    subArrayMessage('Pick at least one cabinet before storing a capture.', true);
+    return;
+  }
+  if (!state.results) {
+    subArrayMessage('Start the measurement before storing a capture.', true);
+    return;
+  }
+  const letter = subArrayStoreSlot;
+  if (!captureSlot(letter, { replace: true })) {
+    subArrayMessage('The live frame could not be stored in capture ' + letter + '.', true);
+    return;
+  }
+  subArray = assignSubArraySlot(subArray, chosen, letter);
+  const stored = persistSubArray(subArray);
+  renderSubArray();
+  const names = chosen.map((number) => {
+    const cabinet = subArray.cabinets.find((entry) => entry.number === number);
+    return cabinet ? subCabinetName(cabinet) : 'Sub ' + number;
+  }).join(' + ');
+  subArrayMessage('Stored the live frame in capture ' + letter + ' for ' + names + '.' +
+    (stored
+      ? ''
+      : ' The slot could not be stored — browser storage is full or blocked, so it lasts until the ' +
+        'page reloads.'), !stored);
+  setStatus('subwoofer array: capture ' + letter + ' stored' + (stored ? '' : ' (not stored)'),
+    stored ? 'ok' : 'err');
+}
+
+function wireSubArraySheet() {
+  if (!$('subArraySheet') || !$('btnSubArray')) return;
+
+  $('btnSubArray').addEventListener('click', openSubArray);
+  $('btnCloseSubArray').addEventListener('click', () => closeSheet('subArraySheet'));
+
+  $('subRows').addEventListener('change', () => {
+    resizeSubArray(Number($('subRows').value), Number($('subColumns').value));
+  });
+  $('subColumns').addEventListener('change', () => {
+    resizeSubArray(Number($('subRows').value), Number($('subColumns').value));
+  });
+
+  $('btnSubAll').addEventListener('click', () => {
+    for (const cabinet of subArray.cabinets) subArraySelection.add(cabinet.number);
+    renderSubArray();
+  });
+  $('btnSubNone').addEventListener('click', () => {
+    subArraySelection.clear();
+    renderSubArray();
+  });
+
+  $('subSlot').addEventListener('change', () => {
+    const value = $('subSlot').value;
+    subArrayStoreSlot = SUB_ARRAY_SLOTS.includes(value) ? value : 'A';
+    renderSubArray();
+  });
+
+  $('btnSubStore').addEventListener('click', storeSubArrayCapture);
+  $('btnSubSaveCabinet').addEventListener('click', saveSubArrayCabinet);
+
+  $('subCabinetName').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    $('subCabinetName').blur();
+  });
+  $('subCabinetGroup').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    saveSubArrayCabinet();
+  });
+
+  subArray = normalizeSubArray(subArray);
+}
+
+wireSubArraySheet();
+
 /* ---------- level log ---------- */
 
 const levelLogState = {
@@ -7909,6 +8325,14 @@ $('btnModeler')?.addEventListener('click', () => {
   }
 });
 
+$('btnRoomDesigner')?.addEventListener('click', () => {
+  if (roomDesigner.active) {
+    roomDesigner.close();
+  } else {
+    roomDesigner.open();
+  }
+});
+
 /* Sending the current measurement, or a held capture, into the modeler. */
 $('btnSendModeler')?.addEventListener('click', () => {
   const note = $('sendModelerNote');
@@ -8107,6 +8531,7 @@ window.addEventListener('resize', () => {
   if (state.groupDelayOpen) drawGroupDelay();
   if (state.eqOpen) drawEQChart();
   if (state.targetOpen) drawTargetChart();
+  if (roomDesigner.active) roomDesigner.resize();
   draw();
 });
 

@@ -63,8 +63,11 @@ import {
 } from './filters.js';
 import { ModelerChart, TRACE_COLORS } from './chart.js';
 import { impulseToResponse, parseWav } from './wav.js';
+import { ANALYSIS_BANDS, analysePair } from './analysis.js';
 import { loadLayout, loadProject, persistLayout } from './store.js';
 import { reportPdfBlob } from '../sharing.js';
+import { createSpeakerBuilder } from './builder-ui.js';
+import { accuracyBadge, accuracyOf } from './speaker-builder.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -235,6 +238,10 @@ export function createDataModeler(options = {}) {
   let comparison = null;
   let pendingFile = null;
   let pendingText = '';
+  // A file import can be aimed at one loudspeaker, which is how the custom
+  // speaker builder upgrades a generic model without replacing its specification.
+  let attachTarget = '';
+  let pendingAttachModel = '';
   let editSnapshot = null;
   let pinnedMarkers = [];
   let scenarioOverlayId = null;
@@ -263,6 +270,41 @@ export function createDataModeler(options = {}) {
     if (line && message) line.textContent = message;
     if (message) setStatus(message, kind || 'ok');
   }
+
+  /*
+   * The custom speaker builder: published figures in, a library loudspeaker out.
+   *
+   * It writes through this modeler's own commit path, so a speaker built here is
+   * persisted, undoable and redrawn exactly like an imported one, and the Room
+   * Designer sees it in the same library at once. It never writes to hardware.
+   */
+  const builder = createSpeakerBuilder({
+    getProject: () => project,
+    getSelectedModelId: () => selectedModelId,
+    commit: (fn, message) => commit(fn, message),
+    say: (message, kind) => say(message, kind),
+    share: typeof opts.share === 'function' ? opts.share : null,
+    attachData: (modelId) => {
+      const model = project.models.find((entry) => entry.id === modelId);
+      if (!model) {
+        say('That loudspeaker is not in the library any more.', 'err');
+        return;
+      }
+      attachTarget = modelId;
+      renderFileMappingSelects();
+      const select = $('dmDatasetModel');
+      if (select) select.value = modelId;
+      setImportMessage('Choose a CLF, FRD, TXT, CSV or WAV file to attach to “' + model.name +
+        '”. The entered specification is kept.', false);
+      $('dmFile')?.click();
+    },
+    onSaved: (modelId) => {
+      const model = project.models.find((entry) => entry.id === modelId);
+      selectedModelId = modelId;
+      selectedDatasetId = model && model.datasets[0] ? model.datasets[0].id : null;
+      renderAll();
+    },
+  });
 
   function applyDocks() {
     const columns = {
@@ -329,11 +371,12 @@ export function createDataModeler(options = {}) {
       project = normalizeProject(JSON.parse(before));
       say('Could not save the model project — browser storage is full or blocked. Nothing was changed.', 'err');
       renderAll();
-      return;
+      return false;
     }
     pushHistory(before);
     renderAll();
     if (message) say(message, 'ok');
+    return true;
   }
 
   function undo() {
@@ -376,20 +419,45 @@ export function createDataModeler(options = {}) {
     if (!list) return;
     list.replaceChildren();
 
+    // Manufacturers are a filter of their own, so a library with several makers
+    // can be narrowed without typing a search.
+    const manufacturerSelect = $('dmLibraryManufacturer');
+    if (manufacturerSelect) {
+      const previous = manufacturerSelect.value;
+      const names = [...new Set(project.models
+        .map((model) => String(model.manufacturer || '').trim())
+        .filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      manufacturerSelect.replaceChildren();
+      const all = document.createElement('option');
+      all.value = '';
+      all.textContent = 'All manufacturers';
+      manufacturerSelect.appendChild(all);
+      for (const name of names) {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        manufacturerSelect.appendChild(option);
+      }
+      manufacturerSelect.value = names.includes(previous) ? previous : '';
+    }
+    const manufacturer = manufacturerSelect ? manufacturerSelect.value : '';
+
     const query = ($('dmLibrarySearch') && $('dmLibrarySearch').value || '').trim().toLowerCase();
-    const models = project.models.filter((model) => !query ||
-      (model.name + ' ' + model.manufacturer + ' ' + model.model + ' ' + model.notes).toLowerCase().includes(query));
+    const models = project.models.filter((model) =>
+      (!manufacturer || model.manufacturer === manufacturer) &&
+      (!query ||
+        (model.name + ' ' + model.manufacturer + ' ' + model.model + ' ' + model.notes).toLowerCase().includes(query)));
 
     if (summary) {
       summary.textContent = project.models.length + ' loudspeaker' + (project.models.length === 1 ? '' : 's') +
-        ' · ' + project.models.reduce((sum, model) => sum + model.datasets.length, 0) + ' measured responses';
+        ' · ' + project.models.reduce((sum, model) => sum + model.datasets.length, 0) + ' responses';
     }
 
     if (!models.length) {
       const empty = el('li', 'dm-empty',
         project.models.length
-          ? 'No loudspeaker matches that search.'
-          : 'The library is empty. Import a measured response to create the first loudspeaker.');
+          ? 'No loudspeaker matches that search or manufacturer.'
+          : 'The library is empty. Build a speaker in the custom speaker builder, or import a measured response.');
       list.appendChild(empty);
       return;
     }
@@ -402,7 +470,10 @@ export function createDataModeler(options = {}) {
       const head = el('div', 'dm-model-head');
       const pick = button(model.name, 'dm-model-name', { pick: model.id });
       head.appendChild(pick);
-      const badge = el('span', 'dm-badge', provenanceLabel(model.provenance));
+      const accuracy = accuracyOf(model);
+      const badge = el('span', 'dm-badge' + (accuracy.id === 'generic' ? ' dm-badge-generic' : ''),
+        accuracyBadge(model));
+      badge.title = accuracy.note;
       head.appendChild(badge);
       const meta = el('span', 'dm-model-meta',
         [model.manufacturer, model.model, model.type,
@@ -422,6 +493,7 @@ export function createDataModeler(options = {}) {
         row.appendChild(label);
         const info = el('span', 'dm-dataset-meta',
           [provenanceLabel(dataset.provenance),
+            dataset.generated ? 'generic estimate' : '',
             dataset.hasPhase ? 'phase' : 'magnitude only',
             formatRangeText(dataset.fMin, dataset.fMax),
             dataset.conditions && dataset.conditions.venue,
@@ -435,6 +507,7 @@ export function createDataModeler(options = {}) {
 
       const actions = el('div', 'dm-model-actions');
       actions.appendChild(button('Edit', 'dm-mini', { edit: model.id }));
+      actions.appendChild(button('Builder', 'dm-mini', { builder: model.id }));
       const exportButton = button('Export dataset', 'dm-mini', { export: model.id });
       exportButton.disabled = !model.datasets.length;
       actions.appendChild(exportButton);
@@ -2448,6 +2521,42 @@ export function createDataModeler(options = {}) {
     };
   }
 
+  /**
+   * A curve computed elsewhere — the Room Designer's virtual microphone —
+   * imported as a prediction. It is never stored as a measurement: the
+   * provenance is theoretical and the note says where it came from, so a
+   * predicted response can be examined beside a measured one without the two
+   * ever being confused.
+   */
+  function sendResponse(response, meta) {
+    const details = meta && typeof meta === 'object' ? meta : {};
+    if (!response || (!Array.isArray(response.magDb) && !ArrayBuffer.isView(response.magDb))) {
+      return { ok: false, message: 'That prediction carries no curve to send.' };
+    }
+    const dataset = importDataset(response, {
+      label: details.label || 'Predicted response',
+      provenance: 'theoretical',
+      importedFrom: details.importedFrom || 'Sent to the modeler',
+      sampleRate: 0,
+      fftSize: 0,
+      delayMs: 0,
+      conditions: {
+        micLabel: details.positionLabel || '',
+        venue: details.venue || '',
+        phaseCompensated: false,
+      },
+      origin: null,
+      note: details.note || 'predicted, not measured',
+    });
+    if (!dataset) return { ok: false, message: 'That prediction could not be modelled.' };
+    return {
+      ok: true,
+      message: 'Sent “' + dataset.label + '” to the Data Modeler as a prediction' +
+        (dataset.hasPhase ? ' with its predicted phase.' : ' without phase.'),
+      dataset,
+    };
+  }
+
   /** Read a linked response again from the capture it came from. */
   function refreshDataset(modelId, datasetId) {
     const found = findDataset(project, modelId, datasetId);
@@ -2490,13 +2599,16 @@ export function createDataModeler(options = {}) {
 
   /* ---------- import ---------- */
 
-  function importManufacturer(clf, fileName) {
+  function importManufacturer(clf, fileName, targetModelId) {
     const projected = clfResponse(clf);
     if (!projected.ok) {
       setImportMessage(projected.message, true);
       return;
     }
     const meta = clf.manufacturer;
+    const attached = targetModelId
+      ? project.models.find((entry) => entry.id === targetModelId) || null
+      : null;
     let model = null;
     commit(() => {
       const dataset = normalizeDataset({
@@ -2517,27 +2629,37 @@ export function createDataModeler(options = {}) {
         note: [meta.description, projected.message, clf.message].filter(Boolean).join(' · '),
       });
       if (!dataset) return;
-      model = newModel({
-        name: meta.name || String(fileName || 'CLF loudspeaker').replace(/\.[^.]+$/, ''),
-        manufacturer: meta.maker || '',
-        type: 'Custom',
-        provenance: 'manufacturer',
-        sensitivityDb: 96,
-        directivityText: projected.directivity.length
-          ? projected.directivity.length + ' band widths from the file'
-          : '',
-        specs: [meta.description, meta.sensitivityInfo, meta.impedanceInfo]
-          .filter(Boolean).join(' · ').slice(0, 400),
-        notes: meta.measurementDistance
-          ? 'Measured at ' + meta.measurementDistance + ' m, as the file states.'
-          : '',
-      });
-      model.datasets = [dataset];
-      project.models.unshift(model);
+      if (attached) {
+        attached.datasets.unshift(dataset);
+        attached.datasets = attached.datasets.slice(0, 24);
+        attached.updatedAt = new Date().toISOString();
+        model = attached;
+      } else {
+        model = newModel({
+          name: meta.name || String(fileName || 'CLF loudspeaker').replace(/\.[^.]+$/, ''),
+          manufacturer: meta.maker || '',
+          type: 'Custom',
+          provenance: 'manufacturer',
+          sensitivityDb: 96,
+          directivityText: projected.directivity.length
+            ? projected.directivity.length + ' band widths from the file'
+            : '',
+          specs: [meta.description, meta.sensitivityInfo, meta.impedanceInfo]
+            .filter(Boolean).join(' · ').slice(0, 400),
+          notes: meta.measurementDistance
+            ? 'Measured at ' + meta.measurementDistance + ' m, as the file states.'
+            : '',
+        });
+        model.datasets = [dataset];
+        project.models.unshift(model);
+      }
       selectedModelId = model.id;
       selectedDatasetId = dataset.id;
-    }, 'Imported “' + (meta.name || fileName) + '” as manufacturer data: magnitude only, no phase, ' +
-      projected.directivity.length + ' 6 dB widths. ' + (projected.message || ''));
+    }, attached
+      ? 'Attached manufacturer data to “' + attached.name + '”: magnitude only, no phase, ' +
+        projected.directivity.length + ' 6 dB widths. The entered specification is kept.'
+      : 'Imported “' + (meta.name || fileName) + '” as manufacturer data: magnitude only, no phase, ' +
+        projected.directivity.length + ' 6 dB widths. ' + (projected.message || ''));
 
     if (model) renderAll();
     setImportMessage('Read ' + clf.readings.length + ' bands from CLF ' +
@@ -2610,9 +2732,10 @@ export function createDataModeler(options = {}) {
     line.classList.toggle('clip-warning', !!bad);
   }
 
-  function showMapping(described, name, text) {
+  function showMapping(described, name, text, attachModel) {
     pendingFile = described;
     pendingText = text;
+    pendingAttachModel = attachModel || '';
     const block = $('dmMapBlock');
     if (!block) return;
     block.hidden = false;
@@ -2704,12 +2827,13 @@ export function createDataModeler(options = {}) {
       label: name,
       provenance,
       importedFrom: parsed.labels.length ? 'Imported file' : 'Imported file',
-      modelId: modelSelect && modelSelect.value !== 'new' ? modelSelect.value : '',
+      modelId: pendingAttachModel || (modelSelect && modelSelect.value !== 'new' ? modelSelect.value : ''),
       sampleRate: 0,
       fftSize: 0,
       delayMs: 0,
       note: parsed.message,
     });
+    pendingAttachModel = '';
     if (dataset) {
       setImportMessage('Read ' + parsed.points + ' points from ' + formatRangeText(parsed.response.fMin, parsed.response.fMax) +
         '.' + (parsed.message ? ' ' + parsed.message + '.' : ''), false);
@@ -2736,6 +2860,8 @@ export function createDataModeler(options = {}) {
   function handleFile(input) {
     const file = input.files && input.files[0];
     if (!file) return;
+    const targetModel = attachTarget;
+    attachTarget = '';
     const name = file.name || 'response';
     const lower = name.toLowerCase();
 
@@ -2764,7 +2890,7 @@ export function createDataModeler(options = {}) {
           setImportMessage(clf.message, true);
           return;
         }
-        importManufacturer(clf, name);
+        importManufacturer(clf, name, targetModel);
       };
       reader.onerror = () => setImportMessage('That file could not be read.', true);
       reader.readAsText(file);
@@ -2777,7 +2903,7 @@ export function createDataModeler(options = {}) {
         setImportMessage(described.message, true);
         return;
       }
-      showMapping(described, name, text);
+      showMapping(described, name, text, targetModel);
       setImportMessage('Read ' + described.rowCount + ' rows — check the columns below before importing.', false);
     };
 
@@ -2803,8 +2929,8 @@ export function createDataModeler(options = {}) {
           label,
           provenance: 'measured',
           importedFrom: 'WAV impulse · ' + Math.round(parsed.sampleRate) + ' Hz',
-          modelId: $('dmDatasetModel') && $('dmDatasetModel').value !== 'new'
-            ? $('dmDatasetModel').value : '',
+          modelId: targetModel || ($('dmDatasetModel') && $('dmDatasetModel').value !== 'new'
+            ? $('dmDatasetModel').value : ''),
           sampleRate: parsed.sampleRate,
           fftSize: transformed.fftSize,
           delayMs: 0,
@@ -3206,6 +3332,109 @@ export function createDataModeler(options = {}) {
     });
   }
 
+  /* ---------- alignment analysis ---------- */
+
+  function analysisCapture(letter) {
+    const held = heldProvider().find((entry) => entry && entry.label === letter);
+    if (!held || !held.trace) return null;
+    const trace = held.trace;
+    const df = Number(trace.df) > 0
+      ? Number(trace.df)
+      : Number(trace.sampleRate) > 0 && Number(trace.fftSize) > 0
+        ? Number(trace.sampleRate) / Number(trace.fftSize)
+        : 0;
+    return {
+      label: 'Capture ' + letter,
+      trace: {
+        magDb: trace.magDb,
+        phaseDeg: trace.phaseDeg,
+        coh: trace.coh,
+        bins: trace.bins,
+        df,
+        fftSize: trace.fftSize,
+        sampleRate: trace.sampleRate,
+      },
+      arrivalMs: Number(trace.delayMs) || 0,
+      polarity: trace.polarity || 'unknown',
+    };
+  }
+
+  /**
+   * Read Capture A against Capture B across the chosen band, and show every
+   * finding with its evidence, proposed change, prediction, confidence and the
+   * measurement that would verify it.
+   */
+  function runAnalysis() {
+    const head = $('analysisHead');
+    const holder = $('analysisFindings');
+    const message = $('analysisMessage');
+    const sub = $('analysisSub');
+    if (!head || !holder) return null;
+
+    const captureA = analysisCapture('A');
+    const captureB = analysisCapture('B');
+    const bandId = $('selAnalysisBand') ? $('selAnalysisBand').value : 'crossover';
+    const band = ANALYSIS_BANDS.find((entry) => entry.id === bandId) || ANALYSIS_BANDS[0];
+    head.replaceChildren();
+    holder.replaceChildren();
+
+    if (!captureA || !captureB) {
+      if (sub) sub.textContent = band.title + ' · ' + band.label;
+      if (message) {
+        message.textContent = 'Hold Capture A and Capture B before analysing: this card reads those ' +
+          'two captures, and no advice is given for data that is not held.';
+        message.hidden = false;
+        message.classList.add('clip-warning');
+      }
+      head.appendChild(el('p', 'dm-empty', 'Nothing to analyse yet.'));
+      return null;
+    }
+
+    const report = analysePair(captureA, captureB, { band: bandId });
+    if (sub) {
+      sub.textContent = report.bandLabel + ' · ' + report.usableBands + ' of ' +
+        report.totalBands + ' usable bands';
+    }
+    if (message) {
+      message.textContent = '';
+      message.hidden = true;
+      message.classList.remove('clip-warning');
+    }
+
+    head.appendChild(el('p', 'analysis-headline', report.headline));
+    if (report.confidence) {
+      head.appendChild(el('p', 'analysis-confidence', 'Confidence — ' + report.confidence));
+    }
+
+    for (const finding of report.findings) {
+      const card = el('div', 'analysis-finding');
+      if (finding.kind === 'quality') card.classList.add('warn');
+      card.appendChild(el('p', 'analysis-eyebrow',
+        finding.kind.charAt(0).toUpperCase() + finding.kind.slice(1) + ' · ' + finding.band));
+      card.appendChild(el('h3', 'analysis-title', finding.headline));
+
+      const evidence = el('ul', 'analysis-evidence');
+      for (const line of finding.evidence) evidence.appendChild(el('li', null, line));
+      card.appendChild(evidence);
+
+      if (finding.proposal) {
+        card.appendChild(el('p', 'analysis-step', 'What could change — ' + finding.proposal));
+      }
+      if (finding.expected) {
+        card.appendChild(el('p', 'analysis-step', 'Predicted — ' + finding.expected));
+      }
+      card.appendChild(el('p', 'analysis-step', 'Confidence — ' + finding.confidence));
+      card.appendChild(el('p', 'analysis-step', 'Verify — ' + finding.verification));
+      holder.appendChild(card);
+    }
+
+    if (!report.findings.length) {
+      holder.appendChild(el('p', 'dm-empty',
+        'No finding is worth acting on: the two captures agree within the band and nothing is proposed.'));
+    }
+    return report;
+  }
+
   /* ---------- the report/status line ---------- */
 
   function setReportMessage(message, bad) {
@@ -3255,6 +3484,7 @@ export function createDataModeler(options = {}) {
 
   function renderAll() {
     renderLibrary();
+    builder.render();
     renderModelForm();
     renderAddSelects();
     renderSources();
@@ -3446,6 +3676,7 @@ export function createDataModeler(options = {}) {
     });
 
     $('dmLibrarySearch')?.addEventListener('input', renderLibrary);
+    $('dmLibraryManufacturer')?.addEventListener('change', renderLibrary);
 
     $('dmLibraryList')?.addEventListener('click', (event) => {
       const target = event.target.closest('button');
@@ -3476,6 +3707,13 @@ export function createDataModeler(options = {}) {
         selectedModelId = data.edit;
         renderLibrary();
         renderModelForm();
+        return;
+      }
+      if (data.builder) {
+        selectedModelId = data.builder;
+        renderLibrary();
+        renderModelForm();
+        builder.edit(data.builder);
         return;
       }
       if (data.export) {
@@ -3557,7 +3795,11 @@ export function createDataModeler(options = {}) {
       addSourceFromModel(modelSelect ? modelSelect.value : '', datasetSelect ? datasetSelect.value : '');
     });
 
-    $('btnDmImportFile')?.addEventListener('click', () => $('dmFile')?.click());
+    $('btnDmImportFile')?.addEventListener('click', () => {
+      attachTarget = '';
+      pendingAttachModel = '';
+      $('dmFile')?.click();
+    });
     $('dmFile')?.addEventListener('change', (event) => {
       handleFile(event.target);
       event.target.value = '';
@@ -3567,6 +3809,7 @@ export function createDataModeler(options = {}) {
     $('btnDmMapApply')?.addEventListener('click', applyMapping);
     $('btnDmMapCancel')?.addEventListener('click', () => {
       pendingFile = null;
+      pendingAttachModel = '';
       const block = $('dmMapBlock');
       if (block) block.hidden = true;
       setImportMessage('', false);
@@ -3578,6 +3821,18 @@ export function createDataModeler(options = {}) {
     $('btnDmExportLpif')?.addEventListener('click', exportLpif);
     $('btnDmExportSettings')?.addEventListener('click', exportSettings);
     $('btnDmWorksheet')?.addEventListener('click', exportWorksheet);
+
+    $('btnAlignmentAnalysis')?.addEventListener('click', () => {
+      const sheet = $('alignmentSheet');
+      if (sheet) sheet.hidden = false;
+      runAnalysis();
+    });
+    $('btnCloseAnalysis')?.addEventListener('click', () => {
+      const sheet = $('alignmentSheet');
+      if (sheet) sheet.hidden = true;
+    });
+    $('btnRunAnalysis')?.addEventListener('click', runAnalysis);
+    $('selAnalysisBand')?.addEventListener('change', runAnalysis);
 
     $('dmSourceList')?.addEventListener('click', (event) => {
       const target = event.target.closest('button');
@@ -4310,7 +4565,31 @@ export function createDataModeler(options = {}) {
     },
     lpif: () => lpifText(project, { sampleRate: 48000 }),
     worksheet: () => exportWorksheet(),
+    analyseAlignment: (bandId) => {
+      const select = $('selAnalysisBand');
+      if (select && bandId) select.value = bandId;
+      return runAnalysis();
+    },
     get project() { return project; },
+    getProject: () => project,
+    /**
+     * Change the project from another workspace — the Room Designer — through
+     * this modeler's own commit path, so the change is persisted, undoable and
+     * redrawn here exactly as if it had been made on this screen.
+     */
+    mutate: (fn, message) => {
+      if (typeof fn !== 'function') return;
+      commit((next) => { fn(next); }, message || '');
+      if (active) renderAll();
+    },
+    sendResponse: (response, meta) => sendResponse(response, meta),
+    /** The custom speaker builder, so another workspace or a test can open it. */
+    builder: () => builder,
+    openBuilder: (modelId) => {
+      if (modelId) builder.edit(modelId);
+      else builder.startNew();
+      return active ? null : open();
+    },
     setProject,
     load: (next) => { setProject(next); },
   };

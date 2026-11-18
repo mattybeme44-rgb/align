@@ -24,6 +24,8 @@ import {
   wrapDegrees,
 } from './curve.js';
 import { chainResponse, normalizeFilter } from './filters.js';
+import { emptyRoom, normalizeRoom, SOURCE_ROLES } from './room.js';
+import { normalizeRevision, normalizeSpec } from './speaker-builder.js';
 import { FFT } from '../fft.js';
 
 export const MODEL_TYPES = ['Subwoofer', 'Full-range', 'Top / main', 'Monitor', 'Custom'];
@@ -91,6 +93,12 @@ export function newModel(fields = {}) {
       ? fields.provenance
       : 'measured',
     datasets: [],
+    // The specification a generic loudspeaker was built from, and the versions it
+    // has been through. Both are kept beside the datasets: attaching measured data
+    // later never overwrites what the operator entered.
+    generic: normalizeSpec(fields.generic),
+    revisions: (Array.isArray(fields.revisions) ? fields.revisions : [])
+      .map(normalizeRevision).filter(Boolean).slice(0, 12),
     createdAt: now,
     updatedAt: now,
   };
@@ -190,8 +198,24 @@ export function normalizeDataset(raw) {
           .filter((entry) => entry && Number.isFinite(Number(entry.frequency)) &&
             Number.isFinite(Number(entry.widthDeg)))
           .slice(0, 64)
-          .map((entry) => ({ frequency: Number(entry.frequency), widthDeg: Number(entry.widthDeg) }))
+          .map((entry) => {
+            const point = {
+              frequency: Number(entry.frequency),
+              widthDeg: Number(entry.widthDeg),
+            };
+            // A generic model carries horizontal and vertical widths separately;
+            // an imported CLF file carries the single published width.
+            if (Number(entry.widthHDeg) > 0) point.widthHDeg = Number(entry.widthHDeg);
+            if (Number(entry.widthVDeg) > 0) point.widthVDeg = Number(entry.widthVDeg);
+            if (typeof entry.profile === 'string' && entry.profile) {
+              point.profile = text(entry.profile, 20);
+            }
+            return point;
+          })
       : [],
+    directivityProfile: text(source.directivityProfile, 20),
+    generated: source.generated === true,
+    sectionId: text(source.sectionId, 60),
     note: text(source.note, 200),
     importedAt: text(source.importedAt, 40) || new Date().toISOString(),
   };
@@ -202,6 +226,9 @@ export function normalizeModel(raw) {
   const model = newModel(source);
   const datasets = Array.isArray(source.datasets) ? source.datasets : [];
   model.id = text(source.id, 60) || model.id;
+  model.generic = normalizeSpec(source.generic);
+  model.revisions = (Array.isArray(source.revisions) ? source.revisions : [])
+    .map(normalizeRevision).filter(Boolean).slice(0, 12);
   model.createdAt = text(source.createdAt, 40) || model.createdAt;
   model.updatedAt = text(source.updatedAt, 40) || model.updatedAt;
   if (Number.isFinite(Number(source.impedanceOhm))) model.impedanceOhm = clamp(source.impedanceOhm, 0.5, 64, 8);
@@ -222,6 +249,29 @@ export function normalizeGroup(raw) {
     // Linked channels: a group's DSP chain applies to every source in it, on
     // top of what that source carries itself.
     filters: Array.isArray(source.filters) ? source.filters.map(normalizeFilter).slice(0, 24) : [],
+  };
+}
+
+/**
+ * Where a source stands in the room, when it has been placed. A source that has
+ * never been placed carries `null`, so the Room Designer can list it as waiting
+ * rather than pretending it sits at the origin.
+ */
+function normalizeRoomPlacement(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const x = finiteOrNull(raw.x);
+  const y = finiteOrNull(raw.y);
+  if (x === null || y === null) return null;
+  return {
+    x: clamp(x, -200, 400, 0),
+    y: clamp(y, -200, 600, 0),
+    z: clamp(raw.z, 0, 60, 0),
+    aimH: clamp(raw.aimH, -180, 180, 0),
+    aimV: clamp(raw.aimV, -90, 90, 0),
+    roll: clamp(raw.roll, -180, 180, 0),
+    role: SOURCE_ROLES.some((entry) => entry.id === raw.role) ? raw.role : 'custom',
+    timing: raw.timing === 'measured' ? 'measured' : 'geometric',
+    timingOffsetMs: clamp(raw.timingOffsetMs, -50, 50, 0),
   };
 }
 
@@ -251,6 +301,7 @@ export function normalizeSource(raw) {
     positionDatasets,
     distanceM: finiteOrNull(source.distanceM),
     note: text(source.note, 200),
+    room: normalizeRoomPlacement(source.room),
   };
 }
 
@@ -289,6 +340,7 @@ export function emptyProject() {
     groups: [],
     positions: [{ id: 'centre', label: 'Centre', weight: 1 }],
     snapshots: [],
+    room: emptyRoom('New room'),
     settings: {
       positionId: 'centre',
       view: 'transfer',
@@ -320,6 +372,7 @@ export function normalizeProject(raw) {
       : base.positions),
     snapshots: (Array.isArray(source.snapshots) ? source.snapshots : [])
       .map(normalizeSnapshot).filter(Boolean).slice(0, 30),
+    room: normalizeRoom(source.room || base.room),
     settings: { ...base.settings, ...(source.settings && typeof source.settings === 'object' ? source.settings : {}) },
   };
 }
@@ -337,7 +390,7 @@ export function datasetTrace(dataset) {
   const coherence = Array.isArray(dataset.curve.coherence)
     ? Float64Array.from(dataset.curve.coherence.map(Number))
     : null;
-  return { frequencies, magDb, phaseDeg, coherence, count, datasetId: '', label: '', provenance: dataset.provenance || '', directivity: dataset.directivity || [] };
+  return { frequencies, magDb, phaseDeg, coherence, count, datasetId: '', label: '', provenance: dataset.provenance || '', directivity: dataset.directivity || [], directivityProfile: dataset.directivityProfile || '' };
 }
 
 export function findDataset(project, modelId, datasetId) {
@@ -447,6 +500,7 @@ export function sourceResponse(source, trace, group, options = {}) {
     label: trace.label || source.name,
     provenance: trace.provenance || '',
     directivity: trace.directivity || [],
+    directivityProfile: trace.directivityProfile || '',
   };
 }
 
