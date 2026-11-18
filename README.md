@@ -97,6 +97,42 @@ public repository:
 <https://raw.githack.com/mattybeme44-rgb/align/main/index.html> (tap **Open the page** on its first
 screen). That address is somebody else's service, so treat it as temporary.
 
+## Using it on a Mac — and fully offline at a venue
+
+Everything runs on-device: audio capture, the DSP, the modeler and every stored
+setting live in the browser you run it in. The service worker caches the whole
+app, so once it has been opened online it keeps launching and working with no
+usable signal. Three ways to install it on macOS:
+
+1. **Chrome or Edge** — open the site, then use **Install page as app** (the
+   install icon in the address bar). Align gets its own icon in Launchpad, its
+   own standalone window and its own storage, and runs from the cached copy with
+   no network. Allow the microphone once while online; the permission carries
+   over.
+2. **Safari 17 or newer** — open the site, then **File → Add to Dock** (or
+   Share → Add to Dock). Same deal: an Align icon in the Dock that launches in
+   its own window and keeps working offline.
+3. **A copy on disk (bullet-proof)** — while online, download the repository as
+   a ZIP (<https://github.com/mattybeme44-rgb/align/archive/refs/heads/main.zip>)
+   and unzip it anywhere. At the venue, double-click **mac-offline.command**
+   inside the folder (or run `bash mac-offline.command` in a terminal): it
+   serves the app from the files on disk and opens <http://localhost:8177/>.
+   localhost is a secure context, so the microphone works fully offline. If
+   macOS refuses to open the script the first time ("cannot be opened because
+   it is from an unidentified developer"), right-click it → Open, once, or run
+   `xattr -d com.apple.quarantine mac-offline.command`. The server needs
+   Python 3, which macOS offers to install with the Command Line Tools
+   (`xcode-select --install`) if it is not already there.
+
+Notes for offline work:
+
+- The **Demo** measurement needs no microphone at all, so a broken audio route
+  can always be checked against a synthetic speaker.
+- Keep captures safe across machines with **Export library** / **Import
+  library** in the capture library — that is the backup to carry on a USB stick.
+- The service worker is network-first: with signal it always picks up the newest
+  published build; without signal it falls back to the cached one.
+
 ## What it measures
 
 Two signals are compared sample by sample over overlapping windows:
