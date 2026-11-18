@@ -3244,3 +3244,15 @@ body.validation-page {
     width: 34px;
   }
 }
+
+
+/* ---------- Routing card in the Input popover ---------- */
+
+.routing-title {
+  margin: 10px 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim, rgba(180, 190, 172, 0.6));
+}

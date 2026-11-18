@@ -200,8 +200,9 @@ export function composeReportCanvas(options) {
   ctx.fillText('SETTINGS', margin, y);
   y += 24;
   const settings = options.settings || [];
+  const shown = settings.slice(0, 12);
   const settingWidth = (width - margin * 2 - 20) / 2;
-  settings.slice(0, 10).forEach((item, index) => {
+  shown.forEach((item, index) => {
     const column = index % 2;
     const row = Math.floor(index / 2);
     const x = margin + column * (settingWidth + 20);
@@ -215,6 +216,7 @@ export function composeReportCanvas(options) {
     ctx.font = '14px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.fillText(item[1], x + settingWidth, top);
   });
+  y += Math.ceil(shown.length / 2) * 28;
 
   ctx.textAlign = 'center';
   ctx.fillStyle = 'rgba(120,132,112,0.9)';

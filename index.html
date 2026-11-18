@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-19" />
+<meta name="align-build" content="2026-11-19-21" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -110,6 +110,26 @@
     <p class="source-hint">
       A USB-C interface reopens the stream when chosen. Output over Bluetooth adds 100–300 ms of
       wandering latency, so use a cable or an interface to measure.
+    </p>
+    <div class="routing-title">Routing</div>
+    <div class="hw-row"><span>Input device</span><b id="rtDevice">—</b></div>
+    <div class="hw-row"><span>Channels in use</span><b id="rtChannels">—</b></div>
+    <div class="hw-row"><span>Sample rate</span><b id="rtRate">—</b></div>
+    <div class="hw-row"><span>Reference</span><b id="rtReference" data-kind="app">—</b></div>
+    <div class="hw-row"><span>Microphone</span><b id="rtMic" data-kind="app">—</b></div>
+    <p id="clockWarning" class="clip-warning" hidden>Input and output are two independently clocked
+      devices — the delay between them will drift, so re-read it rather than trusting one number.</p>
+    <div class="row btns">
+      <button id="btnLoopbackCheck" class="btn" type="button">Run loopback check</button>
+    </div>
+    <p id="loopbackReport" class="source-hint" hidden></p>
+    <div id="loopbackHistory" hidden></div>
+    <div class="row btns" id="loopbackClearRow" hidden>
+      <button id="btnLoopbackClear" class="btn" type="button">Clear history</button>
+    </div>
+    <p class="source-hint">
+      The loopback check reads the app's own output patched back into input 2 and reports the ripple
+      and the round-trip delay the chain has, so you know the interface before trusting the room.
     </p>
   </div>
 

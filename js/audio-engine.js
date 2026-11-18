@@ -68,6 +68,28 @@ function looksBuiltIn(label) {
   return /iphone|ipad|ipod|built[- ]?in|internal|macbook|imac|display|android|pixel|galaxy|phone/i.test(label || '');
 }
 
+// Strip the words and numbers that differ between an interface's input and its
+// own output, so two labels of the same physical unit share what remains.
+function deviceTokens(label) {
+  return (label || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(input|output|microphone|mic|analog|digital|stereo|line|headset|speaker|usb|audio|playback|recording|capture|render|communications|system|default|control|channel)\b/g, ' ')
+    .replace(/\b\d+(\.\d+)?\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 2);
+}
+
+/** Whether two device labels plausibly name the same physical unit. */
+function plausibleSameDevice(a, b) {
+  const one = deviceTokens(a);
+  const two = deviceTokens(b);
+  if (!one.length || !two.length) return false;
+  return one.filter((token) => two.includes(token)).length >= 2;
+}
+
 function rmsOf(channel) {
   let sum = 0;
   for (let i = 0; i < channel.length; i++) sum += channel[i] * channel[i];
@@ -120,6 +142,11 @@ export class AudioEngine {
     this.refSamples = [];
     this.interrupted = '';
     this.trackIssue = '';
+    /** The capture stream's own reported rate, beside what the context runs at. */
+    this.streamSampleRate = 0;
+    /** True when the microphone and the output route are two clocked devices. */
+    this.splitClocks = false;
+    this.outputLabel = '';
   }
 
   get sampleRate() {
@@ -320,6 +347,9 @@ export class AudioEngine {
     this.inputMode = mode;
     this.modeSatisfied = this.inputMatchesMode(mode, this.deviceLabel);
 
+    this.streamSampleRate = Number(settings.sampleRate) || 0;
+    await this.assessOutputClock();
+
     const capacity = Math.round(ctx.sampleRate * 4);
     this.rings = [];
     for (let c = 0; c < 4; c++) this.rings.push(new Ring(capacity));
@@ -494,6 +524,30 @@ export class AudioEngine {
     this.refOffset = 0;
     this.refAligned = false;
     this.refSamples = [];
+    this.streamSampleRate = 0;
+    this.splitClocks = false;
+    this.outputLabel = '';
+  }
+
+  /**
+   * The browser plays the stimulus through the system's output route. When the
+   * microphone is an external interface but none of the system's outputs
+   * plausibly belong to that unit, the stimulus and the microphone are on two
+   * independently clocked devices: the measured delay between them will drift.
+   * A device list that cannot be read stays silent rather than guessing.
+   */
+  async assessOutputClock() {
+    this.splitClocks = false;
+    this.outputLabel = '';
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter((device) => device.kind === 'audiooutput' && device.label);
+      this.outputLabel = outputs.length === 1 ? outputs[0].label : '';
+      if (this.builtInInput || !outputs.length) return;
+      this.splitClocks = !outputs.some((device) => plausibleSameDevice(this.deviceLabel, device.label));
+    } catch (err) {
+      /* the device list is not available — say nothing rather than guess */
+    }
   }
 
   /**

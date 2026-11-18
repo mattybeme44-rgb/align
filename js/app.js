@@ -174,6 +174,7 @@ const STORAGE = {
   speaker: 'align.currentSpeaker.v1',
   speakerList: 'align.speakers.v1',
   speakerFields: 'align.speakerFields.v1',
+  loopback: 'align.loopbackHistory.v1',
 };
 
 const state = {
@@ -231,6 +232,11 @@ const state = {
   noiseFloorDb: null,
   noiseHeadroomDb: null,
   checkingNoise: false,
+  /** The last loopback check: ripple, round-trip delay and when it ran. */
+  loopback: null,
+  checkingLoopback: false,
+  /** The loopback checks kept between launches, newest first. */
+  loopbackHistory: loadLoopbackHistory(),
   gate: { enabled: false, startMs: -0.5, widthMs: 20 },
   results: null,
   eq: [],
@@ -1066,6 +1072,8 @@ function measurementCSV(res) {
         ? state.gate.startMs.toFixed(1) + ' to ' + (state.gate.startMs + state.gate.widthMs).toFixed(1) + ' ms'
         : 'off'),
   );
+  lines.push('# Interface,' + (state.demo ? 'demo measurement' : (engine.deviceLabel || 'unknown')));
+  lines.push('# Loopback check,' + loopbackCheckLine());
   lines.push('Frequency (Hz),Magnitude (dB),Phase (deg),Coherence,Impulse (dB)');
 
   for (let k = 0; k < res.bins; k++) {
@@ -1122,6 +1130,8 @@ function reportSettings(res) {
     reportFact('Sampling', (res.sampleRate / 1000).toFixed(1) + ' kHz'),
     reportFact('Calibration', state.calibrationDb.toFixed(1) + ' dB'),
     reportFact('Offset', Number($('numDelay').value || 0).toFixed(2) + ' ms'),
+    reportFact('Interface', state.demo ? 'demo measurement' : (engine.deviceLabel || 'unknown')),
+    reportFact('Loopback', loopbackCheckLine()),
   ];
 }
 
@@ -3997,6 +4007,10 @@ function updateNoiseReadout() {
 
 async function checkNoise() {
   if (state.checkingNoise) return;
+  if (state.checkingLoopback) {
+    setStatus('The loopback check is still running', 'err');
+    return;
+  }
   if (!engine.running || state.demo) {
     setStatus('Start a real microphone measurement to check noise', 'err');
     return;
@@ -4054,6 +4068,263 @@ async function checkNoise() {
   state.noiseHeadroomDb = Number.isFinite(signalDb) ? signalDb - state.noiseFloorDb : null;
   updateNoiseReadout();
   setStatus('Noise floor ' + noiseFloorText() + noiseHeadroomText(), 'ok');
+}
+
+/**
+ * The Routing card: the whole signal chain in one place. It reads the audio
+ * chain and the routing settings only — nothing here changes either.
+ */
+function updateRoutingPanel() {
+  const device = $('rtDevice');
+  const channels = $('rtChannels');
+  const rate = $('rtRate');
+  const reference = $('rtReference');
+  const mic = $('rtMic');
+  const warning = $('clockWarning');
+  const report = $('loopbackReport');
+  if (!device || !channels || !rate || !reference || !mic) return;
+
+  if (state.demo) {
+    device.textContent = engine.deviceLabel || 'demo measurement';
+    channels.textContent = '1 ch';
+    rate.textContent = 'running ' + (DEMO_RATE / 1000).toFixed(1) + ' kHz';
+    reference.textContent = 'generated — the signal this app plays';
+    mic.textContent = 'input 1';
+    if (warning) warning.hidden = true;
+    renderLoopbackReport(report);
+    return;
+  }
+
+  if (!engine.running) {
+    device.textContent = 'no input yet';
+    channels.textContent = '—';
+    rate.textContent = '—';
+    reference.textContent = state.refMode === 'loopback'
+      ? 'input ' + (state.refChannel + 1) + ' (loopback)'
+      : 'generated — the signal this app plays';
+    mic.textContent = 'input ' + (state.micChannel + 1);
+    if (warning) warning.hidden = true;
+    renderLoopbackReport(report);
+    return;
+  }
+
+  device.textContent = engine.deviceLabel || 'audio input';
+  const count = engine.channels || 0;
+  const asked = engine.requestedChannels || 0;
+  channels.textContent = count + ' ch' + (asked > count ? ' (' + asked + ' asked)' : '');
+  const reported = engine.streamSampleRate > 0
+    ? (engine.streamSampleRate / 1000).toFixed(1) + ' kHz' : null;
+  const running = (engine.sampleRate / 1000).toFixed(1) + ' kHz';
+  rate.textContent = reported && reported !== running
+    ? 'mic ' + reported + ' · engine ' + running
+    : 'running ' + running;
+  reference.textContent = state.refMode === 'loopback'
+    ? 'input ' + (state.refChannel + 1) + ' (loopback)'
+    : 'generated — the signal this app plays';
+  mic.textContent = 'input ' + (state.micChannel + 1);
+
+  if (warning) warning.hidden = !engine.splitClocks;
+  renderLoopbackReport(report);
+}
+
+/** The loopback check's last result, with a plain reading of what it means. */
+function renderLoopbackReport(report) {
+  if (!report) return;
+  const check = state.loopback;
+  if (!check) {
+    report.hidden = true;
+    report.textContent = '';
+    report.className = 'source-hint';
+    renderLoopbackHistory();
+    return;
+  }
+
+  const time = check.at instanceof Date
+    ? check.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  report.hidden = false;
+  report.textContent = 'Loopback ' + time + ': ' +
+    check.rippleDb.toFixed(1) + ' dB ripple · ' +
+    check.delayMs.toFixed(1) + ' ms round-trip delay' +
+    (check.rippleDb > 3 ? ' — the chain is not flat; check cabling and the interface' : '');
+  report.className = check.rippleDb > 3 ? 'clip-warning' : 'source-hint';
+  renderLoopbackHistory();
+}
+
+const LOOPBACK_HISTORY_LIMIT = 10;
+
+/** The loopback checks kept between launches, newest first, trimmed to ten. */
+function loadLoopbackHistory() {
+  // The limit stays a literal here: this runs while the state object is being
+  // built, before the named constant further down the file has been created.
+  try {
+    const raw = window.localStorage.getItem(STORAGE.loopback);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry) => entry && typeof entry === 'object' &&
+        Number.isFinite(entry.rippleDb) && Number.isFinite(entry.delayMs))
+      .slice(0, 10);
+  } catch (err) {
+    return [];
+  }
+}
+
+function persistLoopbackHistory() {
+  try {
+    window.localStorage.setItem(STORAGE.loopback, JSON.stringify(state.loopbackHistory || []));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/** Each past check with its time and device, so stability shows across venues. */
+function renderLoopbackHistory() {
+  const holder = $('loopbackHistory');
+  const clearRow = $('loopbackClearRow');
+  if (!holder || !clearRow) return;
+  const entries = state.loopbackHistory || [];
+  holder.hidden = entries.length === 0;
+  clearRow.hidden = entries.length === 0;
+  holder.textContent = '';
+  entries.forEach((check) => {
+    const row = document.createElement('div');
+    row.className = 'hw-row';
+    const label = document.createElement('span');
+    label.textContent = (check.at instanceof Date
+      ? check.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '') +
+      (check.device ? ' · ' + check.device : '');
+    const value = document.createElement('b');
+    value.textContent = check.rippleDb.toFixed(1) + ' dB · ' + check.delayMs.toFixed(1) + ' ms';
+    row.appendChild(label);
+    row.appendChild(value);
+    holder.appendChild(row);
+  });
+}
+
+/** The loopback check as one record line for a CSV header or a report. */
+function loopbackCheckLine() {
+  const check = state.loopback;
+  if (!check) return 'not run';
+  const time = check.at instanceof Date
+    ? check.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  return check.rippleDb.toFixed(2) + ' dB ripple, ' + check.delayMs.toFixed(2) +
+    ' ms round-trip delay' + (time ? ' (' + time + ')' : '');
+}
+
+/**
+ * Patch the app's own output back into input 2 and measure the chain there:
+ * what comes back says what the interface itself does to the signal, before
+ * the room has anything to do with it.
+ */
+async function runLoopbackCheck() {
+  if (state.checkingLoopback) return;
+  if (!engine.running || state.demo) {
+    setStatus(state.demo
+      ? 'the demo has no interface to check — start the audio'
+      : 'Start a real microphone measurement to run the loopback check', 'err');
+    return;
+  }
+  if ((engine.channels || 0) < 2) {
+    setStatus('The loopback check needs an input 2 — connect a two-channel interface and patch its output back into input 2', 'err');
+    return;
+  }
+  if (state.checkingNoise) {
+    setStatus('The noise-floor check is still running', 'err');
+    return;
+  }
+
+  state.checkingLoopback = true;
+  const button = $('btnLoopbackCheck');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Checking…';
+  }
+  setStatus('Loopback check — measuring the output patched into input 2');
+
+  const previousMic = state.micChannel;
+  const previousRefMode = state.refMode;
+  const context = engine.ctx;
+  const switched = state.micChannel !== 1 || state.refMode !== 'internal';
+
+  // The check reads input 2 against the generated reference: comparing what
+  // was played with what came back is the interface's own response.
+  if (switched) {
+    state.micChannel = 1;
+    state.refMode = 'internal';
+    if (analyser) analyser.reset();
+  }
+
+  let interrupted = false;
+  try {
+    // Let the restarted average settle on the loopback before reading it.
+    for (let i = 0; i < 16; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!engine.running || engine.ctx !== context || state.demo) {
+        interrupted = true;
+        break;
+      }
+    }
+  } finally {
+    // Hand the measurement back to the operator's routing.
+    if (switched) {
+      state.micChannel = previousMic;
+      state.refMode = previousRefMode;
+      if (analyser) analyser.reset();
+    }
+    state.checkingLoopback = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Run loopback check';
+    }
+  }
+
+  if (interrupted || !engine.running || engine.ctx !== context || state.demo) return;
+  const frame = state.rawResults || state.results;
+  if (!frame) {
+    setStatus('The loopback check read nothing — restart the measurement and try again', 'err');
+    return;
+  }
+
+  // Ripple: how far the chain's own magnitude wanders from flat, read across
+  // 100 Hz – 10 kHz where the coherence holds. The raw curve is used so a
+  // microphone calibration does not pretend to be interface behaviour.
+  let minDb = Infinity;
+  let maxDb = -Infinity;
+  const df = frame.df > 0 ? frame.df : frame.sampleRate / frame.fftSize;
+  for (let k = 1; k < frame.bins; k++) {
+    const frequency = k * df;
+    if (frequency < 100 || frequency > 10000) continue;
+    if (!frame.coh[k] || frame.coh[k] < 0.35) continue;
+    const db = frame.magDb[k];
+    if (!Number.isFinite(db)) continue;
+    if (db < minDb) minDb = db;
+    if (db > maxDb) maxDb = db;
+  }
+  if (minDb > maxDb) {
+    setStatus('The loopback input stayed unreadable — check that the output is patched into input 2', 'err');
+    return;
+  }
+
+  const ripple = maxDb - minDb;
+  const measuredAt = new Date();
+  state.loopback = {
+    rippleDb: ripple,
+    delayMs: frame.delayMs,
+    at: measuredAt,
+    rate: engine.sampleRate,
+    device: engine.deviceLabel,
+  };
+  state.loopbackHistory = [{ rippleDb: ripple, delayMs: frame.delayMs, at: measuredAt,
+    rate: engine.sampleRate, device: engine.deviceLabel },
+    ...(state.loopbackHistory || [])].slice(0, LOOPBACK_HISTORY_LIMIT);
+  const stored = persistLoopbackHistory();
+  renderLoopbackReport($('loopbackReport'));
+  setStatus('Loopback: ' + ripple.toFixed(1) + ' dB ripple, ' +
+    frame.delayMs.toFixed(1) + ' ms round-trip delay' +
+    (stored ? '' : ' · the history could not be saved to browser storage'),
+    ripple > 3 ? 'err' : 'ok');
 }
 
 /** Keep the spectrograph's labels honest about where the signal comes from. */
@@ -4487,6 +4758,7 @@ function meterPercent(rms) {
 }
 
 function updateInterfaceInfo() {
+  updateRoutingPanel();
   updateChannelLevels();
   updateLargeMeter();
   refreshSpectrographLabels();
@@ -6434,6 +6706,7 @@ $('selRef').addEventListener('change', (event) => {
   state.delayProbedAt = 0;
   state.delayAuto = true;
   $('numDelay').value = '0.00';
+  updateRoutingPanel();
   if (analyser) analyser.reset();
   if (state.refMode === 'loopback') setStatus('reference is input 2', 'ok');
 });
@@ -6535,6 +6808,16 @@ $('selIrRefresh').addEventListener('change', (event) => {
 });
 $('btnFindDelay').addEventListener('click', findDelay);
 $('btnCheckNoise').addEventListener('click', checkNoise);
+$('btnLoopbackCheck').addEventListener('click', () => { runLoopbackCheck(); });
+$('btnLoopbackClear').addEventListener('click', () => {
+  state.loopbackHistory = [];
+  const stored = persistLoopbackHistory();
+  renderLoopbackHistory();
+  setStatus(stored
+    ? 'loopback history cleared'
+    : 'the history was cleared for this session, but browser storage refused the change',
+    stored ? 'ok' : 'err');
+});
 
 $('btnInputAdviceDismiss').addEventListener('click', hideInputAdvice);
 $('btnInputAdviceRestart').addEventListener('click', () => {
@@ -8240,6 +8523,7 @@ $('selMicCh').addEventListener('change', (event) => {
   if (channel === 1 && engine.deviceChannels < 2) {
     event.target.value = '0';
     state.micChannel = 0;
+    updateRoutingPanel();
     setStatus('this input has only one channel', 'err');
     return;
   }
@@ -8247,11 +8531,13 @@ $('selMicCh').addEventListener('change', (event) => {
   state.noiseFloorDb = null;
   state.noiseHeadroomDb = null;
   updateNoiseReadout();
+  updateRoutingPanel();
   if (analyser) analyser.reset();
 });
 
 $('selRefCh').addEventListener('change', (event) => {
   state.refChannel = Number(event.target.value);
+  updateRoutingPanel();
   if (analyser) analyser.reset();
 });
 
