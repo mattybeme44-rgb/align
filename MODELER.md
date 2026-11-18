@@ -259,7 +259,7 @@ suite). The suite is in the repository as `tests/modeler.mjs`, so it can be run
 again with `node tests/modeler.mjs`:
 
 - **Syntax**: every module, `js/app.js`, `js/validation.js`, `sw.js` — OK.
-- **Numerical suite (34 checks, all pass)**: +6.02 dB coherent sum; cancellation;
+- **Numerical suite (40 checks, all pass)**: +6.02 dB coherent sum; cancellation;
   180° polarity; delay→group delay; group-delay blanking; LR4/LR8/Butterworth
   crossovers (−6.02/−3.01 dB at fc, slopes below it); Bessel refusal; optimizer
   known 2 ms; optimizer inverted polarity; objectives/alternatives/confidence;
@@ -270,7 +270,9 @@ again with `node tests/modeler.mjs`:
   48 and 96 kHz; an unsorted file sorted before it is modelled; incompatible
   datasets warned about; one delay across positions; a common delay as a
   compromise; the sweep and the improvement; a scenario evaluating like its
-  project.
+  project; a CLF file read by its published keys; a non-CLF refused; LPIF written
+  to the published schema; positions averaged with circular phase; SER mode's sum
+  before and after the DSP; a group's linked chain on top of the source.
 - **In-app validation page (`validate.html`)**: **29 passed · 0 failed**,
   executed under Node with a DOM stub, so the same list the page runs is green.
 - **Screen wiring (`node tests/modeler-ui.mjs`)**: **13 passed · 0 failed** — the
@@ -278,7 +280,7 @@ again with `node tests/modeler.mjs`:
   four graph modes draw; a saved capture and a live measurement are sent in;
   optimise, apply and a scenario save work; a prediction is compared and the
   scenario recalled; the eight-subwoofer workflow builds and compares; the
-  demonstration data is labelled as demonstration; every one of the 159 elements
+  demonstration data is labelled as demonstration; every one of the 166 elements
   the screen reads is present in `index.html` with no duplicate ids; it closes.
   It runs against a stub document, so it proves the wiring and the names, not
   the layout.
@@ -424,3 +426,87 @@ build `2026-11-19-13`. The public site serves that build once the deploy
 finishes; the build stamp in `version.json` is bumped and the service-worker
 cache is renamed, so an installed Home-Screen copy picks it up and offers
 Reload.
+
+
+
+---
+
+# Phase 3 — EASE and manufacturer data
+
+The research for this pass read the public CLF group pages, AFMG's GLL pages and
+the Eclipse Audio LPIF specification; the findings are below, then what was built.
+
+## E. What is read, and what is not
+
+- **CLF (Common Loudspeaker Format)** — an open text format, tab/space separated
+  `<KEY> value` fields, published by clfgroup.org: CLF v1 (April 2005, octave data on
+  a 10° grid) and CLF2 (September 2011, third-octave data on a 5° grid, with
+  optional phase, filters and multipart files). **Read here**: the published keys
+  (`<MODELNAME>`, `<MANUFACTURER>`, `<MINBAND>`, `<MAXBAND>`, `<SENSITIVITY>`,
+  `<IMPEDANCE>`, `<6DB-WIDTH-HOR>` and the metadata keys). `.cf1`, `.cf2` and
+  `.clf` are accepted. **Not read**: CLF2's polar-balloon blocks, whose key names
+  are only in the licensed authoring kit, so the importer says so and uses only the
+  published band figures. The file does not state the reference its sensitivity
+  list is relative to, so the level is kept as written and never re-referenced.
+- **EASE GLL** — AFMG's compiled Generic Loudspeaker Library. AFMG publishes an
+  SDK only as an annual subscription with AFMG signing for plug-in authors
+  (afmg.eu/en/sdk-gll-plug-api-licensing-manufacturers); there is no public
+  decoder, so **`.gll` is refused with a message naming AFMG's SDK**. No attempt
+  is made to decode it.
+- **EASE SPK** — the legacy format. No public specification exists; the only
+  public description is Electro-Voice's 2015 explanation. **`.spk` is refused**, and
+  the message says to export text/FRD from EASE or use CLF.
+- **Derived data**: a CLF file gives an on-axis level curve at its band centres
+  and a 6 dB beamwidth per band, so the model is manufacturer data, magnitude
+  only (no phase), with directivity limited to that width. The panel and heat map
+  are drawn from those widths and say that a symmetrical pattern about the axis is
+  assumed — a width is not a balloon.
+- **LPIF (Loudspeaker Processing Interchange Format)** — Eclipse Audio's published
+  JSON specification (v3.6, 22 September 2026). **Written here**: `preset` with
+  `title`, `program`, `program-version`, `date-time` and `processing-blocks`; each
+  block has `type`, `channel`, `channel-name`, `sample-rate`, `delay`, `gain`,
+  `mute`, `invert` and `iir` filter objects with `type`, `frequency`, `order`,
+  `gain` and `q`. Rational Acoustics' documented note that Data Modeler presets
+  carry neither FIR filters nor biquad coefficients is why filters are written as
+  IIR specifications. The specification's field table says `iir` while its examples
+  print `iirs`, and a FIR block uses `coefs`; that inconsistency is noted rather
+  than papered over, and this export writes `iir`, as the field table does.
+
+### F. Smaart modes and hybrid modelling
+
+- **Modeler mode** — the workspace's default: individual traces and their sum.
+- **SER mode** — the system EQ above the result, both magnitude-only, phase pane
+  absent; the system EQ is the sum with each channel's DSP left out.
+- **Sum mode** — the complex sum of every source with gain, delay, polarity and
+  group processing.
+- **DSP channel linking** — a group's filter chain applies on top of each source's
+  own chain (as linked channels do), copied by `Link to group`; the source's own
+  filters are untouched. A group's gain, delay and polarity already add on top.
+- **Manufacturer filter emulation** — only four filter families are claimed
+  (peaking, shelves, Butterworth and Linkwitz-Riley sections, all-pass, gain) from
+  the app's own biquad maths; device-specific coefficient sets are **not**
+  implemented, because no manufacturer's coefficients are verified here.
+- **Hybrid modelling** — a CLF model can be used beside measured responses in the
+  same project, each source choosing its dataset; the sum warns when manufacturer
+  and measured data are added together that both are used as stored, no
+  manufacturer processing is applied on top, and their phase references may differ.
+- **Spatial average** — measured responses at several positions are averaged into
+  one reusable model by `Average positions`: power average (default), dB average and
+  coherence-weighted average. Phase is averaged circularly and only when every
+  position carries it; one magnitude-only position makes the average
+  magnitude-only.
+
+### G. Status of this pass
+
+- **Implemented and verified**: the CLF reader, its band/beamwidth projection, the
+  LPIF writer, group-linked chains, spatial averaging and the SER sum
+  (40 numerical checks, 13 wiring checks, 29 in-app checks, all passing).
+- **Implemented, needs a browser/real file**: the new import/export buttons and
+  the polar and directivity views; a real CLF file from a manufacturer was not
+  available, so the reader was checked against the published example's values.
+- **Not implemented**: AFMG GLL and EASE SPK (no public reader — licensing), CLF2
+  balloon blocks (licensed authoring kit), manufacturer-specific DSP coefficients,
+  and horizontal/vertical balloons beyond the stated 6 dB width.
+- **Needs licensing or manufacturer data**: an AFMG SDK subscription and AFMG
+  signing for GLL, a licensed CLF2 authoring kit for balloon data, and verified
+  coefficient sets before any device-specific filter emulation can be claimed.

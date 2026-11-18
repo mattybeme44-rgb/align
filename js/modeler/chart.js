@@ -95,7 +95,8 @@ export class ModelerChart {
   }
 
   setMode(mode) {
-    this.mode = ['transfer', 'groupdelay', 'impulse', 'difference'].includes(mode) ? mode : 'transfer';
+    this.mode = ['transfer', 'groupdelay', 'impulse', 'difference', 'ser', 'polar', 'directivity']
+      .includes(mode) ? mode : 'transfer';
   }
 
   setPhaseMode(mode) {
@@ -187,8 +188,17 @@ export class ModelerChart {
         { id: 'phase', weight: 0.38, unit: '°' },
       ];
     }
+    if (this.mode === 'ser') {
+      // SER mode: no phase plot — the system EQ above, the result below.
+      return [
+        { id: 'system', weight: 0.5, unit: 'dB' },
+        { id: 'result', weight: 0.5, unit: 'dB' },
+      ];
+    }
     if (this.mode === 'groupdelay') return [{ id: 'groupdelay', weight: 1, unit: 'ms' }];
     if (this.mode === 'impulse') return [{ id: 'impulse', weight: 1, unit: 'dB' }];
+    if (this.mode === 'polar') return [{ id: 'polar', weight: 1, unit: '°' }];
+    if (this.mode === 'directivity') return [{ id: 'directivity', weight: 1, unit: '°' }];
     return [{ id: 'difference', weight: 1, unit: 'dB' }];
   }
 
@@ -197,11 +207,15 @@ export class ModelerChart {
     if (this.mode === 'difference') {
       return this.traces.filter((trace) => trace.kind === 'difference' && trace.visible !== false);
     }
+    if (this.mode === 'ser') {
+      return this.traces.filter((trace) => (trace.kind === 'system' || trace.kind === 'sum') &&
+        trace.visible !== false);
+    }
     if (this.mode === 'groupdelay') {
       return this.traces.filter((trace) => trace.groupDelayMs && trace.groupDelayVisible !== false);
     }
     return this.traces.filter((trace) => trace.visible !== false &&
-      (trace.kind !== 'difference'));
+      (trace.kind !== 'difference') && (trace.kind !== 'system'));
   }
 
   /** The dB window: from the traces, or pinned by the span picker. */
@@ -326,8 +340,10 @@ export class ModelerChart {
       top += height + 2;
     }
 
-    this.drawFrequencyGrid(used[used.length - 1].rect, area);
-    this.drawCrossoverBand(used);
+    if (this.mode !== 'polar' && this.mode !== 'directivity') {
+      this.drawFrequencyGrid(used[used.length - 1].rect, area);
+    }
+    if (this.mode === 'transfer') this.drawCrossoverBand(used);
 
     for (const pane of used) {
       if (pane.id === 'magnitude') this.drawMagnitude(pane.rect);
@@ -335,6 +351,14 @@ export class ModelerChart {
       else if (pane.id === 'groupdelay') this.drawGroupDelay(pane.rect);
       else if (pane.id === 'impulse') this.drawImpulsePane(pane.rect);
       else if (pane.id === 'difference') this.drawDifference(pane.rect);
+      else if (pane.id === 'system') this.drawSerPane(pane.rect, 'system');
+      else if (pane.id === 'result') this.drawSerPane(pane.rect, 'sum');
+      else if (pane.id === 'polar') this.drawPolar(pane.rect);
+      else if (pane.id === 'directivity') this.drawDirectivity(pane.rect);
+    }
+
+    if (this.mode !== 'polar' && this.mode !== 'directivity') {
+      this.drawFrequencyAxis(used[used.length - 1].rect);
     }
 
     this.drawFrequencyAxis(used[used.length - 1].rect);
@@ -859,4 +883,21 @@ function nearestIndex(frequencies, wanted) {
     else hi = mid;
   }
   return Math.abs(frequencies[lo] - wanted) <= Math.abs(frequencies[hi] - wanted) ? lo : hi;
+}
+
+
+
+/** The 6 dB width at a frequency, interpolated in log frequency. */
+function widthAt(directivity, frequency) {
+  if (!directivity || !directivity.length) return NaN;
+  if (frequency <= directivity[0].frequency) return directivity[0].widthDeg;
+  const last = directivity[directivity.length - 1];
+  if (frequency >= last.frequency) return last.widthDeg;
+  let index = 0;
+  while (index < directivity.length - 1 && directivity[index + 1].frequency < frequency) index += 1;
+  const low = directivity[index];
+  const high = directivity[index + 1];
+  const span = Math.log(high.frequency / low.frequency);
+  const t = span > 0 ? Math.log(frequency / low.frequency) / span : 0;
+  return low.widthDeg + (high.widthDeg - low.widthDeg) * t;
 }

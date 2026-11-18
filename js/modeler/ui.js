@@ -45,8 +45,11 @@ import {
   optimizeAlignment,
   optimizeMultiPosition,
   provenanceLabel,
+  spatialAverageResponses,
   synthesizeImpulse,
 } from './model.js';
+import { parseClf, clfResponse } from './clf.js';
+import { lpifText } from './lpif.js';
 import {
   CROSSOVER_FAMILIES,
   CROSSOVER_SLOPES,
@@ -61,6 +64,7 @@ import {
 import { ModelerChart, TRACE_COLORS } from './chart.js';
 import { impulseToResponse, parseWav } from './wav.js';
 import { loadLayout, loadProject, persistLayout } from './store.js';
+import { reportPdfBlob } from '../sharing.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -882,10 +886,10 @@ export function createDataModeler(options = {}) {
     return parts.join('~');
   }
 
-  function evaluationOf() {
-    const key = projectSignature();
+  function evaluationOf(mode = 'sum') {
+    const key = projectSignature() + '|' + mode;
     if (evaluationCache.key === key && evaluationCache.value) return evaluationCache.value;
-    const value = evaluateSystem(project, evaluationOptions());
+    const value = evaluateSystem(project, { ...evaluationOptions(), mode });
     evaluationCache.key = key;
     evaluationCache.value = value;
     return value;
@@ -894,7 +898,7 @@ export function createDataModeler(options = {}) {
   function renderChart() {
     if (!chart) return;
     const settings = project.settings;
-    const evaluation = evaluationOf();
+    const evaluation = evaluationOf(settings.view === 'ser' ? 'ser' : 'sum');
     lastEvaluation = evaluation;
 
     const traces = [];
@@ -915,9 +919,11 @@ export function createDataModeler(options = {}) {
         magDb: response.magDb,
         phaseDeg: response.phaseDeg,
         phaseValid: response.phaseValid,
+        directivity: response.directivity || [],
         groupDelayMs: response.phaseValid ? gd : null,
         frequencies: response.frequencies,
-        visible: layout.visible[id] !== false && (settings.showIndividual !== false),
+        visible: ['polar', 'directivity'].includes(settings.view)
+          ? true : (layout.visible[id] !== false) && (settings.showIndividual !== false),
         phaseVisible: layout.phaseVisible[id] !== false,
         width: 1.4,
       });
@@ -942,6 +948,22 @@ export function createDataModeler(options = {}) {
         visible: layout.visible.sum !== false && settings.showSum !== false,
         phaseVisible: layout.phaseVisible.sum !== false,
         width: 2.3,
+      });
+    }
+
+    if (evaluation.sumBefore) {
+      traces.push({
+        id: 'system',
+        label: 'System EQ',
+        color: layout.colors.system || '#6fd4ca',
+        kind: 'system',
+        magDb: evaluation.sumBefore.magDb,
+        phaseDeg: evaluation.sumBefore.phaseDeg,
+        phaseValid: false,
+        groupDelayMs: null,
+        frequencies: evaluation.sumBefore.frequencies,
+        visible: layout.visible.system !== false,
+        width: 1.8,
       });
     }
 
@@ -1023,7 +1045,8 @@ export function createDataModeler(options = {}) {
       impulse = result.ok ? result.envelope : null;
     }
 
-    chart.setMode(project.settings.view || 'transfer');
+    chart.setMode(['ser', 'polar', 'directivity'].includes(project.settings.view)
+      ? project.settings.view : (project.settings.view || 'transfer'));
     chart.setPhaseMode(project.settings.phaseMode || 'wrapped');
     chart.setDbSpan(project.settings.dbSpan || 0);
     chart.smoothingOctaves = Number(project.settings.smoothing) || 0;
@@ -1839,6 +1862,80 @@ export function createDataModeler(options = {}) {
       '. Nothing was applied.', false);
   }
 
+  /**
+   * Average the measured responses at several positions into one reusable model,
+   * using the same power / dB / coherence-weighted average the app's multi-mic
+   * screen uses. A position without phase makes the average magnitude-only.
+   */
+  function averagePositions() {
+    const list = [];
+    for (const source of project.sources) {
+      const found = findDataset(project, source.modelId, source.datasetId);
+      if (!found.dataset || found.dataset.provenance === 'manufacturer') continue;
+      const trace = datasetTraceOf(found.dataset);
+      if (trace) list.push({ trace, weight: 1, label: source.name });
+    }
+    const mode = $('dmSpatialMode') ? $('dmSpatialMode').value : 'power';
+    const result = spatialAverageResponses(list, { mode });
+    if (!result.ok) {
+      setImportMessage(result.message, true);
+      return;
+    }
+    const model = newModel({
+      name: 'Spatial average · ' + list.length + ' positions',
+      type: 'Custom',
+      provenance: 'measured',
+      notes: result.message,
+    });
+    const dataset = normalizeDataset({
+      label: 'Average of ' + list.length + ' measured positions',
+      provenance: 'measured',
+      importedFrom: 'Spatial average across positions',
+      curve: result.curve,
+      phaseOrigin: result.curve.phaseDeg ? 'measured' : 'none',
+      note: result.message,
+    });
+    if (!dataset) {
+      setImportMessage('That average could not be modelled.', true);
+      return;
+    }
+    model.datasets = [dataset];
+    commit(() => { project.models.unshift(model); }, result.message);
+    selectedModelId = model.id;
+    selectedDatasetId = dataset.id;
+    renderAll();
+    setImportMessage(result.message, false);
+  }
+
+  /**
+   * Link the selected source's chain into its group: the group's DSP applies to
+   * every source in it, on top of each source's own chain, as a linked channel
+   * does. The source keeps its own chain untouched.
+   */
+  function linkToGroup() {
+    const source = selectedSource();
+    if (!source) {
+      say('Select a source to link its chain to a group.', 'err');
+      return;
+    }
+    const group = project.groups.find((entry) => entry.id === source.groupId);
+    if (!group) {
+      say('Assign the source to a group before linking its chain.', 'err');
+      return;
+    }
+    if (!source.filters.length) {
+      say('The source has no filter to link.', 'err');
+      return;
+    }
+    commit(() => {
+      group.filters = source.filters.map((filter) => ({
+        ...filter,
+        id: 'lf' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6),
+      })).slice(0, 24);
+    }, 'Linked ' + source.filters.length + ' filter' + (source.filters.length === 1 ? '' : 's') +
+      ' into ' + group.name + '; they now apply on top of every source in the group.');
+  }
+
   /* ---------- prediction vs measurement ---------- */
 
   function compareOptions() {
@@ -2393,6 +2490,61 @@ export function createDataModeler(options = {}) {
 
   /* ---------- import ---------- */
 
+  function importManufacturer(clf, fileName) {
+    const projected = clfResponse(clf);
+    if (!projected.ok) {
+      setImportMessage(projected.message, true);
+      return;
+    }
+    const meta = clf.manufacturer;
+    let model = null;
+    commit(() => {
+      const dataset = normalizeDataset({
+        label: (meta.name || 'CLF loudspeaker') + ' · manufacturer',
+        provenance: 'manufacturer',
+        importedFrom: 'CLF ' + (meta.version || '') + ' · ' + (meta.maker || fileName || ''),
+        curve: { magDb: projected.magDb, phaseDeg: null, coherence: null },
+        fMin: projected.fMin,
+        fMax: projected.fMax,
+        phaseOrigin: 'none',
+        directivity: projected.directivity,
+        conditions: {
+          reference: '',
+          phaseCompensated: false,
+          micLabel: meta.measurementDistance ? meta.measurementDistance + ' m' : '',
+          venue: meta.environment || '',
+        },
+        note: [meta.description, projected.message, clf.message].filter(Boolean).join(' · '),
+      });
+      if (!dataset) return;
+      model = newModel({
+        name: meta.name || String(fileName || 'CLF loudspeaker').replace(/\.[^.]+$/, ''),
+        manufacturer: meta.maker || '',
+        type: 'Custom',
+        provenance: 'manufacturer',
+        sensitivityDb: 96,
+        directivityText: projected.directivity.length
+          ? projected.directivity.length + ' band widths from the file'
+          : '',
+        specs: [meta.description, meta.sensitivityInfo, meta.impedanceInfo]
+          .filter(Boolean).join(' · ').slice(0, 400),
+        notes: meta.measurementDistance
+          ? 'Measured at ' + meta.measurementDistance + ' m, as the file states.'
+          : '',
+      });
+      model.datasets = [dataset];
+      project.models.unshift(model);
+      selectedModelId = model.id;
+      selectedDatasetId = dataset.id;
+    }, 'Imported “' + (meta.name || fileName) + '” as manufacturer data: magnitude only, no phase, ' +
+      projected.directivity.length + ' 6 dB widths. ' + (projected.message || ''));
+
+    if (model) renderAll();
+    setImportMessage('Read ' + clf.readings.length + ' bands from CLF ' +
+      (meta.version || '') + '. ' + (clf.message || projected.message || ''), false);
+  }
+
+  /** A measured model saved as a reusable loudspeaker, from the capture library. */
   function importDataset(response, meta) {
     const built = buildDataset(response, meta);
     if (!built.ok) {
@@ -2590,6 +2742,32 @@ export function createDataModeler(options = {}) {
     if (lower.endsWith('.trf')) {
       setImportMessage('A Smaart .trf file is not read here — the format is proprietary. ' +
         'Export the trace from Smaart as text or FRD, or import the running measurement directly.', true);
+      return;
+    }
+
+    if (lower.endsWith('.gll') || lower.endsWith('.spk') || lower.endsWith('.dll')) {
+      const kind = lower.slice(-3).toUpperCase();
+      setImportMessage('An EASE ' + kind + ' file is not read here. ' +
+        (kind === 'GLL'
+          ? 'GLL is AFMG’s compiled Generic Loudspeaker Library; decoding needs AFMG’s licensed SDK, ' +
+            'which is an annual subscription with AFMG signing for plug-in authors, and no public reader exists. '
+          : 'The EASE SPK format has no public specification — only vendor descriptions exist. ') +
+        'Export the loudspeaker data from EASE as text or FRD, or import a CLF (.cf1/.cf2) file.', true);
+      return;
+    }
+
+    if (lower.endsWith('.cf1') || lower.endsWith('.cf2') || lower.endsWith('.clf')) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const clf = parseClf(String(reader.result || ''), name);
+        if (!clf.ok) {
+          setImportMessage(clf.message, true);
+          return;
+        }
+        importManufacturer(clf, name);
+      };
+      reader.onerror = () => setImportMessage('That file could not be read.', true);
+      reader.readAsText(file);
       return;
     }
 
@@ -2934,6 +3112,98 @@ export function createDataModeler(options = {}) {
     };
     download(JSON.stringify(payload, null, 2), 'align-model-project.json', 'System Data Modeler project');
     setReportMessage('Exported the complete project.', false);
+  }
+
+  function exportLpif() {
+    const built = lpifText(project, { sampleRate: 48000, title: $('dmEditName') ? project.models.find((model) => model.id === selectedModelId)?.name : '' });
+    if (!built.ok) {
+      setReportMessage(built.message, true);
+      return;
+    }
+    download(built.text, 'align-system.lpif', 'LPIF preset');
+    setReportMessage('Exported ' + built.blockCount + ' processing block' +
+      (built.blockCount === 1 ? '' : 's') + ' as LPIF. ' + (built.message || ''), false);
+  }
+
+  function exportSettings() {
+    const text = JSON.stringify({
+      kind: 'align-model-settings',
+      exported: new Date().toISOString(),
+      settings: project.settings,
+      groups: project.groups.map((group) => ({
+        name: group.name, gainDb: group.gainDb, delayMs: group.delayMs,
+        polarity: group.polarity, filters: group.filters,
+      })),
+      sources: project.sources.map((source) => ({
+        name: source.name, gainDb: source.gainDb, delayMs: source.delayMs,
+        polarity: source.polarity, filters: source.filters,
+      })),
+    }, null, 2);
+    download(text, 'align-model-settings.json', 'Model settings');
+    setReportMessage('Exported the settings and every source.', false);
+  }
+
+  function exportWorksheet() {
+    if (!chartCanvas) {
+      setReportMessage('There is nothing to draw on a worksheet yet.', true);
+      return;
+    }
+    const evaluation = evaluationOf('sum');
+    if (!evaluation.responses.length) {
+      setReportMessage('There is no source to put on a worksheet.', true);
+      return;
+    }
+    const facts = [
+      ['Sources', String(evaluation.responses.length)],
+      ['In the sum', String(evaluation.sum ? evaluation.sum.activeIds.length : 0)],
+      ['Band', formatRangeText(100, 10000)],
+      ['Model', project.models.length + ' loudspeakers in the library'],
+      ['Measured positions', String(project.positions.length)],
+      ['Sample rate', '48 kHz'],
+    ];
+    if (evaluation.sum) {
+      const statistics = curveStatisticsOf(evaluation.sum);
+      facts.push(['Mean level', Number.isFinite(statistics.meanDb) ? statistics.meanDb.toFixed(1) + ' dB' : '—']);
+      facts.push(['Deepest null', Number.isFinite(statistics.dipDb)
+        ? formatFrequency(statistics.dipHz) + ' at ' + statistics.dipDb.toFixed(1) + ' dB' : 'none']);
+    }
+    if (optimizerResult) {
+      facts.push(['Alignment', formatDelay(optimizerResult.best.delayMs) + ' · ' + optimizerResult.best.polarity]);
+    }
+    if (comparison) {
+      facts.push(['Predicted − measured', signed(comparison.stats.meanDb) + ' dB mean']);
+    }
+
+    const eqLines = (project.sources || []).flatMap((source) =>
+      (source.filters || []).filter((filter) => filter.enabled !== false)
+        .map((filter) => source.name + ': ' + filterText(filter))).slice(0, 6);
+    const settings = [
+      ['Delay step', delayStep + ' ms'],
+      ['Band', formatRangeText(Number($('dmOptBandLow') && $('dmOptBandLow').value) || 1000,
+        Number($('dmOptBandHigh') && $('dmOptBandHigh').value) || 2000)],
+      ['Position', (project.positions.find((position) => position.id === project.settings.positionId) || { label: 'centre' }).label],
+      ['Reference', (project.sources.find((source) => source.reference) || { name: 'none' }).name],
+    ];
+    if (optimizerResult) {
+      settings.push(['Recommended', formatDelay(optimizerResult.best.delayMs) + ' · ' + optimizerResult.best.polarity]);
+      settings.push(['Improvement', signed(optimizerResult.improvement.summationDb) + ' dB summation']);
+      settings.push(['Confidence', optimizerResult.confidence.level]);
+    }
+    settings.push(['View', project.settings.view || 'transfer']);
+    settings.push(['Phase', project.settings.phaseMode || 'wrapped']);
+
+    reportPdfBlob({
+      chartCanvas,
+      dateText: new Date().toLocaleString(),
+      facts,
+      eqLines,
+      settings,
+    }).then((blob) => {
+      if (typeof opts.share === 'function') opts.share(blob, 'align-model-worksheet.pdf', 'System Data Modeler worksheet');
+      setReportMessage('Built the worksheet PDF: the chart as drawn, the model and what it rests on.', false);
+    }).catch(() => {
+      setReportMessage('The worksheet could not be built in this browser.', true);
+    });
   }
 
   /* ---------- the report/status line ---------- */
@@ -3301,6 +3571,13 @@ export function createDataModeler(options = {}) {
       if (block) block.hidden = true;
       setImportMessage('', false);
     });
+
+    $('btnDmImportEase')?.addEventListener('click', () => $('dmFile')?.click());
+    $('btnDmSpatial')?.addEventListener('click', averagePositions);
+    $('btnDmLinkGroup')?.addEventListener('click', linkToGroup);
+    $('btnDmExportLpif')?.addEventListener('click', exportLpif);
+    $('btnDmExportSettings')?.addEventListener('click', exportSettings);
+    $('btnDmWorksheet')?.addEventListener('click', exportWorksheet);
 
     $('dmSourceList')?.addEventListener('click', (event) => {
       const target = event.target.closest('button');
@@ -4019,6 +4296,20 @@ export function createDataModeler(options = {}) {
     loadDemoData: () => loadDemoData(),
     saveScenario: () => saveSnapshot(),
     recallScenario: (id) => recallSnapshot(id),
+    importClfText: (text, name) => {
+      const clf = parseClf(text, name);
+      if (!clf.ok) return clf;
+      importManufacturer(clf, name);
+      return { ok: true, message: '' };
+    },
+    importClf: (clf, name) => { importManufacturer(clf, name); },
+    spatialAverage: (mode) => {
+      const select = $('dmSpatialMode');
+      if (select && mode) select.value = mode;
+      averagePositions();
+    },
+    lpif: () => lpifText(project, { sampleRate: 48000 }),
+    worksheet: () => exportWorksheet(),
     get project() { return project; },
     setProject,
     load: (next) => { setProject(next); },

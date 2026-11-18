@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-13" />
+<meta name="align-build" content="2026-11-19-14" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -917,7 +917,7 @@
           </div>
           <button id="btnDmImportCapture" class="btn" type="button">Import that capture</button>
           <p class="source-hint" id="dmImportMessage" hidden></p>
-          <input id="dmFile" type="file" accept=".frd,.txt,.csv,.wav,.cal,text/plain,text/csv" hidden />
+          <input id="dmFile" type="file" accept=".frd,.txt,.csv,.wav,.cal,.cf1,.cf2,.clf,.gll,.spk,text/plain,text/csv" hidden />
           <p class="source-hint">
             FRD, TXT and CSV responses are read by column, with a mapping for a file laid out
             differently. A WAV file is read as a measured impulse and transformed. Phase is only taken
@@ -973,6 +973,15 @@
           </div>
           <p class="source-hint" id="dmEightMessage" hidden></p>
           <div id="dmPairTable" class="dm-table"></div>
+          <div class="row">
+            <button id="btnDmImportEase" class="btn" type="button">Import CLF / EASE</button>
+            <select id="dmSpatialMode" class="dm-select" aria-label="Spatial average mode">
+              <option value="power">Power average</option>
+              <option value="db">dB average</option>
+              <option value="coherence">Coherence-weighted</option>
+            </select>
+            <button id="btnDmSpatial" class="btn" type="button">Average positions</button>
+          </div>
         </div>
       </section>
 
@@ -1051,6 +1060,9 @@
           <div class="dm-grid">
             <label>Graph<select id="dmView" class="dm-select">
               <option value="transfer">Magnitude &amp; phase</option>
+              <option value="ser">SER · system EQ above result</option>
+              <option value="polar">Polar · 6 dB width</option>
+              <option value="directivity">Directivity heat map</option>
               <option value="groupdelay">Group delay</option>
               <option value="impulse">Impulse response</option>
               <option value="difference">Predicted − measured</option>
@@ -1170,6 +1182,7 @@
             <button id="btnDmClearChain" class="btn" type="button">Clear</button>
             <button id="btnDmExportChain" class="btn" type="button">Export</button>
             <button id="btnDmCopyChain" class="btn" type="button">Copy</button>
+            <button id="btnDmLinkGroup" class="btn" type="button">Link to group</button>
             <button id="btnDmRemoveSource" class="btn" type="button">Remove source</button>
           </div>
           <p class="source-hint" id="dmChainMessage" hidden></p>
@@ -1301,6 +1314,11 @@
             <button id="btnDmExportCsv" class="btn" type="button">System CSV</button>
             <button id="btnDmExportFrd" class="btn" type="button">Sum FRD</button>
             <button id="btnDmExportReport" class="btn" type="button">Report</button>
+          </div>
+          <div class="row btns">
+            <button id="btnDmExportLpif" class="btn" type="button">LPIF preset</button>
+            <button id="btnDmExportSettings" class="btn" type="button">Settings JSON</button>
+            <button id="btnDmWorksheet" class="btn" type="button">Worksheet PDF</button>
           </div>
           <p class="source-hint" id="dmReportMessage" hidden></p>
           <p class="source-hint">

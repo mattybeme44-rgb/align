@@ -185,6 +185,13 @@ export function normalizeDataset(raw) {
     delayMs: clamp(source.delayMs, -1000, 1000, 0),
     conditions: normalizeConditions(source.conditions),
     origin: normalizeOrigin(source.origin),
+    directivity: Array.isArray(source.directivity)
+      ? source.directivity
+          .filter((entry) => entry && Number.isFinite(Number(entry.frequency)) &&
+            Number.isFinite(Number(entry.widthDeg)))
+          .slice(0, 64)
+          .map((entry) => ({ frequency: Number(entry.frequency), widthDeg: Number(entry.widthDeg) }))
+      : [],
     note: text(source.note, 200),
     importedAt: text(source.importedAt, 40) || new Date().toISOString(),
   };
@@ -212,6 +219,9 @@ export function normalizeGroup(raw) {
     delayMs: clamp(source.delayMs, -100, 100, 0),
     polarity: source.polarity === 'inverted' ? 'inverted' : 'normal',
     muted: source.muted === true,
+    // Linked channels: a group's DSP chain applies to every source in it, on
+    // top of what that source carries itself.
+    filters: Array.isArray(source.filters) ? source.filters.map(normalizeFilter).slice(0, 24) : [],
   };
 }
 
@@ -327,7 +337,7 @@ export function datasetTrace(dataset) {
   const coherence = Array.isArray(dataset.curve.coherence)
     ? Float64Array.from(dataset.curve.coherence.map(Number))
     : null;
-  return { frequencies, magDb, phaseDeg, coherence, count };
+  return { frequencies, magDb, phaseDeg, coherence, count, datasetId: '', label: '', provenance: dataset.provenance || '', directivity: dataset.directivity || [] };
 }
 
 export function findDataset(project, modelId, datasetId) {
@@ -379,16 +389,28 @@ export function effectiveSettings(source, group, propagation) {
   };
 }
 
+export function effectiveFilters(source, group) {
+  const own = source && Array.isArray(source.filters) ? source.filters : [];
+  const linked = group && Array.isArray(group.filters) ? group.filters : [];
+  // Linked channels apply in addition to the source's own chain, as an EQ
+  // overlay does; neither list is overwritten.
+  return linked.length ? own.concat(linked).slice(0, 48) : own;
+}
+
 /**
  * One source as a complex response on the grid: its own curve, its gain, delay
- * and polarity, and its DSP chain multiplied in. A magnitude-only curve is
- * summed with zero phase and flagged, so the caller can say so.
+ * and polarity, and its DSP chain multiplied in. With `bypassFilters` the chain
+ * is left out, which is how SER mode shows the response before the channel's
+ * DSP. A magnitude-only curve is summed with zero phase and flagged, so the
+ * caller can say so.
  */
 export function sourceResponse(source, trace, group, options = {}) {
   const count = trace.magDb.length;
   const frequencies = trace.frequencies;
   const settings = effectiveSettings(source, group, options.propagation);
-  const chain = chainResponse(source.filters, frequencies, options.sampleRate || 48000);
+  const chain = options.bypassFilters
+    ? { magDb: new Float64Array(count), phaseRad: new Float64Array(count) }
+    : chainResponse(effectiveFilters(source, group), frequencies, options.sampleRate || 48000);
   const polarityRad = settings.inverted ? Math.PI : 0;
   const delaySeconds = settings.delayMs / 1000;
 
@@ -417,12 +439,14 @@ export function sourceResponse(source, trace, group, options = {}) {
     phaseDeg,
     re,
     im,
-    filters: source.filters,
+    filters: effectiveFilters(source, group),
     settings,
     phaseValid: !!trace.phaseDeg,
     coherence: trace.coherence,
     datasetId: trace.datasetId || '',
     label: trace.label || source.name,
+    provenance: trace.provenance || '',
+    directivity: trace.directivity || [],
   };
 }
 
@@ -471,6 +495,7 @@ export function evaluateSystem(project, options = {}) {
   const positionId = options.positionId || (project.settings && project.settings.positionId) || 'centre';
   const anySolo = (project.sources || []).some((source) => source.soloed);
   const responses = [];
+  const computed = [];
   const missing = [];
   const warnings = [];
   const sampleRates = new Set();
@@ -501,6 +526,7 @@ export function evaluateSystem(project, options = {}) {
       else if (compensated !== conditions.phaseCompensated) mixedCompensation = true;
     }
     responses.push(sourceResponse(source, trace, group, options));
+    computed.push({ source, trace, group });
   }
 
   // Two datasets that cannot be meaningfully summed together are said so,
@@ -523,7 +549,91 @@ export function evaluateSystem(project, options = {}) {
   }
 
   const sum = sumResponses(responses);
-  return { responses, sum, missing, warnings, positionId };
+  // SER mode shows the response before the channel DSP as well as after it.
+  const sumBefore = options.mode === 'ser'
+    ? sumResponses(computed.map((entry) =>
+        sourceResponse(entry.source, entry.trace, entry.group, { ...options, bypassFilters: true })))
+    : null;
+
+  // A manufacturer model and a measured response rest on different references;
+  // they may be summed, but each is used exactly as stored and said so.
+  const provenances = new Set(responses.map((response) => response.provenance).filter(Boolean));
+  if (provenances.has('manufacturer') && provenances.has('measured')) {
+    warnings.push('A manufacturer model and a measured response are being summed. Each is used ' +
+      'exactly as stored: no manufacturer processing is applied on top, and their phase references ' +
+      'may differ — check both before trusting the sum.');
+  }
+
+  return { responses, sum, sumBefore, missing, warnings, positionId };
+}
+
+/**
+ * One measured response per measuring position, averaged into a single trace.
+ *
+ * Power averaging is the default because levels from different positions add as
+ * energy; the dB average and coherence-weighted average are offered for
+ * comparison. Phase is left absent unless every position carries it, and a
+ * magnitude-only position makes the average magnitude-only — a phase is never
+ * invented for it.
+ */
+export function spatialAverageResponses(list, options = {}) {
+  const mode = options.mode === 'db' || options.mode === 'coherence' ? options.mode : 'power';
+  const entries = (list || []).filter((entry) => entry && entry.trace && entry.trace.magDb);
+  if (!entries.length) {
+    return { ok: false, message: 'No measured position is available to average.' };
+  }
+  const count = entries[0].trace.magDb.length;
+  const magDb = new Float64Array(count);
+  const phaseDeg = new Float64Array(count);
+  const everyPhase = entries.every((entry) => Array.isArray(entry.trace.phaseDeg));
+  let phaseValid = everyPhase;
+
+  for (let i = 0; i < count; i += 1) {
+    let power = 0;
+    let levelSum = 0;
+    let weight = 0;
+    let cosSum = 0;
+    let sinSum = 0;
+    let phaseWeight = 0;
+    for (const entry of entries) {
+      const w = Number(entry.weight) > 0 ? Number(entry.weight) : 1;
+      const level = Number(entry.trace.magDb[i]);
+      if (!Number.isFinite(level)) continue;
+      const coherence = entry.trace.coherence ? Number(entry.trace.coherence[i]) : NaN;
+      const used = mode === 'coherence' && Number.isFinite(coherence)
+        ? w * Math.max(0, Math.min(1, coherence)) : w;
+      power += Math.pow(10, level / 10) * used;
+      levelSum += level * used;
+      weight += used;
+      if (everyPhase) {
+        const phase = (Number(entry.trace.phaseDeg[i]) * Math.PI) / 180;
+        if (Number.isFinite(phase)) {
+          cosSum += Math.cos(phase) * used;
+          sinSum += Math.sin(phase) * used;
+          phaseWeight += used;
+        } else phaseValid = false;
+      }
+    }
+    magDb[i] = weight > 0
+      ? (mode === 'power' ? 10 * Math.log10(Math.max(1e-24, power / weight)) : levelSum / weight)
+      : -240;
+    phaseDeg[i] = phaseValid && phaseWeight > 0
+      ? (Math.atan2(sinSum, cosSum) * 180) / Math.PI
+      : NaN;
+  }
+
+  return {
+    ok: true,
+    message: 'Averaged ' + entries.length + ' measured position' + (entries.length === 1 ? '' : 's') +
+      (phaseValid ? ' with phase.' : ' — the average is magnitude-only.'),
+    curve: {
+      magDb: Array.from(magDb),
+      phaseDeg: phaseValid ? Array.from(phaseDeg) : null,
+      coherence: null,
+    },
+    positions: entries.length,
+    mode,
+  };
 }
 
 /* ---------- timing views of the sum ---------- */

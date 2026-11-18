@@ -21,6 +21,8 @@ import {
   wrapDegrees,
 } from '../js/modeler/curve.js';
 import { chainResponse, designCrossover } from '../js/modeler/filters.js';
+import { parseClf, clfResponse } from '../js/modeler/clf.js';
+import { buildLpif, lpifText } from '../js/modeler/lpif.js';
 import {
   effectiveSettings,
   evaluateSnapshot,
@@ -29,6 +31,7 @@ import {
   normalizeDataset,
   optimizeAlignment,
   optimizeMultiPosition,
+  spatialAverageResponses,
   sumResponses,
   synthesizeImpulse,
 } from '../js/modeler/model.js';
@@ -610,6 +613,156 @@ function nearest(response, frequency) {
     liveIndex >= 0 && savedIndex >= 0 &&
       approx(live.sum.magDb[liveIndex], saved.sum.magDb[savedIndex], 1e-9),
     liveIndex >= 0 ? 'both read ' + live.sum.magDb[liveIndex].toFixed(3) + ' dB at 1 kHz' : 'no sum');
+}
+
+/* ---------- CLF, LPIF, spatial average and the modes ---------- */
+
+const clfText = [
+  '<CLF1>',
+  '<VERSION>   1   <DRAFT> 11',
+  '<MODELNAME>  ETC Ldspk1',
+  '<MANUFACTURER> ETC',
+  '<DESCRIPTION> Full-range Loudspeaker',
+  '<WEB-SITE>   www.etcin.com',
+  '<MINBAND> 63',
+  '<MAXBAND> 16000',
+  '<TYPE> <Passive>',
+  '<SENSITIVITY> 89.9  88.7  94.3  93.9  95.4  97.5  90',
+  '<SENSITIVITY-INFO> Far-field referenced to 1m',
+  '<IMPEDANCE> 3.8  7.5  11.7  10.2  9.8  11.8  17',
+  '<6DB-WIDTH-HOR> 360  180  121  66  55  69  58',
+  '<MEASUREMENT-DISTANCE> 9',
+].join('\n');
+
+/* 35. A CLF file is read by its published keys. */
+{
+  const clf = parseClf(clfText, 'ETC Ldspk1.cf1');
+  const projected = clf.ok ? clfResponse(clf) : null;
+  report('A CLF file is read by its published keys',
+    clf.ok && clf.manufacturer.name === 'ETC Ldspk1' && clf.manufacturer.maker === 'ETC' &&
+      clf.readings.length >= 7 && projected && projected.ok &&
+      projected.directivity.length >= 7 &&
+      !projected.magDb.some((value) => !Number.isFinite(value)),
+    clf.ok ? clf.bands.length + ' bands, ' + clf.readings.length + ' readings, ' +
+      projected.directivity.length + ' 6 dB widths' : clf.message);
+}
+
+/* 36. A file that is not a CLF is refused whole. */
+{
+  const clf = parseClf('100 0\n200 0\n400 0', 'not-a-clf.txt');
+  report('A file that is not a CLF is refused', !clf.ok,
+    clf.ok ? 'accepted a non-CLF file' : clf.message);
+}
+
+/* 37. LPIF is written to the published schema. */
+{
+  const project = {
+    models: [],
+    sources: [{
+      id: 's1', name: 'Low driver', gainDb: -3, delayMs: 1.5, polarity: 'inverted',
+      filters: [{ id: 'f1', kind: 'highPass', frequency: 120, gainDb: 0, q: 0.7071, enabled: true }],
+    }],
+    groups: [],
+    positions: [],
+    settings: {},
+  };
+  const built = lpifText(project, { sampleRate: 48000, title: 'Test loudspeaker' });
+  const parsed = JSON.parse(built.text);
+  const block = parsed.preset['processing-blocks'][0];
+  report('LPIF is written to the published schema',
+    built.ok && parsed.preset.title === 'Test loudspeaker' &&
+      typeof parsed.preset.program === 'string' && !!parsed.preset['date-time'] &&
+      block.type === 'output-b' && block['sample-rate'] === 48000 &&
+      block.delay === 1.5 && block.invert === true && block.iir[0].type === 'highpass-butterworth',
+    built.ok ? block.iir.length + ' IIR filter(s), sample rate ' + block['sample-rate'] : built.message);
+}
+
+/* 38. Measured positions average into one response, phase circularly. */
+{
+  const frequencies = gridFrequencies(GRID_POINTS);
+  const trace = (level, phase) => ({
+    frequencies,
+    magDb: Array.from(frequencies, () => level),
+    phaseDeg: phase === null ? null : Array.from(frequencies, () => phase),
+    coherence: Array.from(frequencies, () => 0.9),
+  });
+  const power = spatialAverageResponses([
+    { trace: trace(-6, 170), weight: 1 },
+    { trace: trace(-6, -170), weight: 1 },
+  ], { mode: 'power' });
+  const onlyLevels = spatialAverageResponses([
+    { trace: trace(-6, null), weight: 1 },
+    { trace: trace(-6, 0), weight: 1 },
+  ], { mode: 'power' });
+  const index = 200;
+  report('Measured positions average into one response',
+    power.ok && approx(power.curve.magDb[index], -6, 0.01) &&
+      Math.abs(wrapDegrees(power.curve.phaseDeg[index]) - 180) < 1 &&
+      onlyLevels.ok && onlyLevels.curve.phaseDeg === null,
+    power.ok ? 'level ' + power.curve.magDb[index].toFixed(2) + ' dB, phase ' +
+      power.curve.phaseDeg[index].toFixed(0) + '°; a magnitude-only position keeps the average magnitude-only'
+      : power.message);
+}
+
+/* 39. SER mode gives the sum before the channel DSP as well as after it. */
+{
+  const frequencies = gridFrequencies(GRID_POINTS);
+  const magnitudeOnly = {
+    id: 'd', label: 'd', sampleRate: 48000,
+    curve: { magDb: Array.from(frequencies, () => -3), phaseDeg: null, coherence: null },
+    conditions: { reference: '' },
+  };
+  const dataset = normalizeDataset(magnitudeOnly);
+  const project = {
+    models: [{ id: 'm', name: 'm', datasets: [dataset] }],
+    sources: [{
+      id: 's', modelId: 'm', datasetId: 'd', name: 'S', gainDb: 0, delayMs: 0, polarity: 'normal',
+      filters: [{ id: 'f', kind: 'lowPass', frequency: 1000, gainDb: 0, q: 0.7071, enabled: true }],
+    }],
+    groups: [], positions: [{ id: 'centre', label: 'Centre', weight: 1 }], settings: {},
+  };
+  const ser = evaluateSystem(project, { mode: 'ser', positionId: 'centre' });
+  const plain = evaluateSystem(project, { positionId: 'centre' });
+  const index = 200;
+  report('SER mode keeps the sum before and after the channel DSP',
+    !!ser.sumBefore && approx(ser.sumBefore.magDb[index], -3, 0.01) &&
+      approx(plain.sum.magDb[index], ser.sum.magDb[index], 1e-9) &&
+      ser.sum.magDb[index] < ser.sumBefore.magDb[index],
+    ser.sumBefore ? 'before ' + ser.sumBefore.magDb[index].toFixed(1) + ' dB, after ' +
+      ser.sum.magDb[index].toFixed(1) + ' dB' : 'no sum before the DSP');
+}
+
+/* 40. A group's linked chain applies on top of the source's own chain. */
+{
+  const frequencies = gridFrequencies(GRID_POINTS);
+  const dataset = normalizeDataset({
+    id: 'd', label: 'd', sampleRate: 48000,
+    curve: { magDb: Array.from(frequencies, () => 0), phaseDeg: Array.from(frequencies, () => 0), coherence: null },
+    conditions: { reference: '' },
+  });
+  const filter = { id: 'g1', kind: 'peaking', frequency: 1000, gainDb: 6, q: 2, enabled: true };
+  const project = {
+    models: [{ id: 'm', name: 'm', datasets: [dataset] }],
+    sources: [{
+      id: 's', modelId: 'm', datasetId: 'd', name: 'S', gainDb: 0, delayMs: 0,
+      polarity: 'normal', groupId: 'g', filters: [],
+    }],
+    groups: [{ id: 'g', name: 'Group', gainDb: 0, delayMs: 0, polarity: 'normal', muted: false, filters: [filter] }],
+    positions: [{ id: 'centre', label: 'Centre', weight: 1 }], settings: {},
+  };
+  const linked = evaluateSystem(project, { positionId: 'centre' });
+  const even = sumResponses([{
+    frequencies,
+    magDb: new Float64Array(GRID_POINTS),
+    phaseDeg: new Float64Array(GRID_POINTS),
+    re: new Float64Array(GRID_POINTS).fill(1),
+    im: new Float64Array(GRID_POINTS),
+    phaseValid: true,
+  }]);
+  const index = nearest({ frequencies }, 1000);
+  report('A group\'s linked chain applies on top of the source',
+    linked.sum && even && linked.sum.magDb[index] > even.magDb[index] + 5,
+    linked.sum ? linked.sum.magDb[index].toFixed(2) + ' dB with the linked chain at 1 kHz' : 'no sum');
 }
 
 console.log('');
