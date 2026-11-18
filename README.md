@@ -458,6 +458,23 @@ far the data can be trusted.
 Modeler documents, the status of every requested capability, and what could not be
 verified.
 
+The measurement screen sends a real measurement into the modeler: `Send to Data
+Modeler` in the Traces card takes the running measurement (or held Capture A),
+and `Send to modeler` on a saved capture row takes that capture, with its delay,
+polarity, coherence, device, reference and calibration. A measurement without
+phase arrives as magnitude-only and says so. Imported responses stay linked to
+the capture they came from and can be refreshed from it.
+
+Inside the workspace, the delay has a slider in 1, 0.1, 0.01 and 0.001 ms steps
+with direct entry; a cursor frequency can be typed and pinned to read every
+source and the sum there; phase crossings are marked and a crossover region can
+be shaded. The optimizer draws its delay sweep, the arrangement as it stands and
+the improvement, and one delay can be optimised across several measuring
+positions at once. Scenarios can be recalled, duplicated, compared, renamed and
+deleted, and the eight-subwoofer template numbers 1–8 around Sub 2 as reference
+(with clearly labelled demonstration data if the library holds no subwoofers).
+
+
 
 ### Validation
 

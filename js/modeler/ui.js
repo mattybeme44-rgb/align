@@ -22,6 +22,7 @@ import {
   formatRangeText,
   fractionalOctaveSmooth,
   gridFrequency,
+  gridFrequencies,
   parseResponseText,
   pathLengthMm,
   resampleResponse,
@@ -39,8 +40,10 @@ import {
   newModel,
   normalizeDataset,
   normalizeProject,
+  evaluateSnapshot,
   normalizeSource,
   optimizeAlignment,
+  optimizeMultiPosition,
   provenanceLabel,
   synthesizeImpulse,
 } from './model.js';
@@ -223,11 +226,17 @@ export function createDataModeler(options = {}) {
   let selectedDatasetId = null;
   let cursorFrequency = 1000;
   let lastEvaluation = null;
+  let lastTraces = [];
   let optimizerResult = null;
   let comparison = null;
   let pendingFile = null;
   let pendingText = '';
   let editSnapshot = null;
+  let pinnedMarkers = [];
+  let scenarioOverlayId = null;
+  let multiResult = null;
+  let delayStep = 0.1;
+  const evaluationCache = { key: '', value: null };
 
   const layout = loadLayout();
   layout.docks = layout.docks || {};
@@ -509,6 +518,11 @@ export function createDataModeler(options = {}) {
       const head = el('div', 'dm-source-head');
       const pick = button((index + 1) + '. ' + source.name, 'dm-source-name', { sourcePick: source.id });
       head.appendChild(pick);
+      const reference = el('button', source.reference ? 'dm-mini on' : 'dm-mini', 'Ref');
+      reference.type = 'button';
+      reference.dataset.reference = source.id;
+      reference.title = 'Use this source as the alignment reference';
+      head.appendChild(reference);
       const swatch = el('input', 'dm-swatch');
       swatch.type = 'color';
       swatch.value = colorFor(source.id, index);
@@ -521,6 +535,8 @@ export function createDataModeler(options = {}) {
       const meta = el('span', 'dm-source-meta',
         [found.dataset ? found.dataset.label : 'no dataset',
           found.dataset && !found.dataset.hasPhase ? 'magnitude only' : '',
+          found.dataset && found.dataset.origin ? 'linked to the capture library' : '',
+          source.reference ? 'reference' : '',
           project.groups.find((group) => group.id === source.groupId)?.name || 'no group',
           source.filters.length + ' filter' + (source.filters.length === 1 ? '' : 's')]
           .filter(Boolean).join(' · '));
@@ -561,6 +577,14 @@ export function createDataModeler(options = {}) {
       controls.appendChild(solo);
       const remove = button('Remove', 'dm-mini dm-danger', { removeSource: source.id });
       controls.appendChild(remove);
+      if (found.dataset && found.dataset.origin) {
+        const refresh = button('Refresh', 'dm-mini', {
+          refreshDataset: found.dataset.id,
+          refreshModel: source.modelId,
+        });
+        refresh.title = 'Read the capture again from the library';
+        controls.appendChild(refresh);
+      }
       row.appendChild(controls);
 
       if (source.muted) row.classList.add('muted');
@@ -672,6 +696,52 @@ export function createDataModeler(options = {}) {
     }
   }
 
+  /* ---------- the delay, in the steps an engineer uses ---------- */
+
+  function renderDelayControls() {
+    const source = selectedSource();
+    const value = $('dmDelayValue');
+    const slider = $('dmDelaySlider');
+    const step = $('dmDelayStep');
+    const note = $('dmDelayNote');
+    if (!value && !slider) return;
+
+    if (!source) {
+      if (value) { value.value = ''; value.disabled = true; }
+      if (slider) slider.disabled = true;
+      if (step) step.disabled = true;
+      if (note) note.textContent = 'Select a source to set its delay.';
+      return;
+    }
+
+    if (step) {
+      step.disabled = false;
+      step.value = String(delayStep);
+    }
+    if (value) {
+      value.disabled = false;
+      value.value = String(Number(source.delayMs).toFixed(3));
+      value.step = String(delayStep);
+    }
+    if (slider) {
+      slider.disabled = false;
+      slider.step = String(delayStep);
+      slider.value = String(source.delayMs);
+    }
+    if (note) {
+      note.textContent = source.name + ' · ' + formatDelay(source.delayMs) + ' · step ' +
+        delayStep + ' ms · ' + (source.polarity === 'inverted' ? 'inverted' : 'normal') +
+        ' — the same engine moves its phase and the sum.';
+    }
+  }
+
+  function applyDelay(value) {
+    const source = selectedSource();
+    if (!source) return;
+    sourceField('delay', source.id, value, true);
+    renderDelayControls();
+  }
+
   /* ---------- the DSP chain ---------- */
 
   function renderChain() {
@@ -679,6 +749,7 @@ export function createDataModeler(options = {}) {
     const title = $('dmChainTitle');
     const source = selectedSource();
     if (title) title.textContent = source ? source.name : 'no source selected';
+    renderDelayControls();
     if (!list) return;
     list.replaceChildren();
 
@@ -787,13 +858,47 @@ export function createDataModeler(options = {}) {
     };
   }
 
+  /**
+   * Everything that changes an answer. A cursor move, a trace colour or a zoom
+   * leaves it identical, so the sum is not computed again for a repaint.
+   */
+  function projectSignature() {
+    const positionId = project.settings.positionId || '';
+    const propagation = project.settings.propagation || {};
+    const parts = [positionId, propagation.enabled ? '1' : '0',
+      propagation.referenceDistanceM || 1, propagation.speedOfSound || SPEED_OF_SOUND];
+    for (const source of project.sources) {
+      const datasetId = (source.positionDatasets && source.positionDatasets[positionId]) || source.datasetId;
+      const found = findDataset(project, source.modelId, datasetId);
+      parts.push([source.id, source.modelId, datasetId, source.groupId, source.gainDb, source.delayMs,
+        source.polarity, source.muted, source.soloed,
+        source.filters.map((filter) =>
+          [filter.kind, filter.frequency, filter.gainDb, filter.q, filter.enabled].join(',')).join(';')].join('|'));
+      parts.push(found.dataset ? found.dataset.id + '@' + found.dataset.importedAt : 'none');
+    }
+    for (const group of project.groups) {
+      parts.push([group.id, group.gainDb, group.delayMs, group.polarity, group.muted].join('|'));
+    }
+    return parts.join('~');
+  }
+
+  function evaluationOf() {
+    const key = projectSignature();
+    if (evaluationCache.key === key && evaluationCache.value) return evaluationCache.value;
+    const value = evaluateSystem(project, evaluationOptions());
+    evaluationCache.key = key;
+    evaluationCache.value = value;
+    return value;
+  }
+
   function renderChart() {
     if (!chart) return;
     const settings = project.settings;
-    const evaluation = evaluateSystem(project, evaluationOptions());
+    const evaluation = evaluationOf();
     lastEvaluation = evaluation;
 
     const traces = [];
+    lastTraces = traces;
     const sources = evaluation.responses;
     for (const [index, response] of sources.entries()) {
       const gd = groupDelay(response.frequencies, response.phaseDeg, response.magDb, {
@@ -870,6 +975,48 @@ export function createDataModeler(options = {}) {
       });
     }
 
+    if (optimizerResult && optimizerResult.before && optimizerResult.before.frequencies) {
+      traces.push({
+        id: 'before',
+        label: 'Before alignment',
+        color: layout.colors.before || '#8c949c',
+        kind: 'before',
+        magDb: optimizerResult.before.sums,
+        phaseDeg: optimizerResult.before.phaseDeg,
+        phaseValid: optimizerResult.before.phaseValid === true,
+        groupDelayMs: null,
+        frequencies: optimizerResult.before.frequencies,
+        visible: layout.visible.before !== false,
+        phaseVisible: layout.phaseVisible.before !== false,
+        width: 1.3,
+        dash: [6, 5],
+      });
+    }
+
+    if (scenarioOverlayId) {
+      const snapshot = project.snapshots.find((entry) => entry.id === scenarioOverlayId);
+      if (snapshot) {
+        const scenario = evaluateSnapshot(snapshot, project.models, evaluationOptions());
+        if (scenario && scenario.sum) {
+          traces.push({
+            id: 'scenario',
+            label: 'Scenario · ' + snapshot.name,
+            color: layout.colors.scenario || '#d9a26c',
+            kind: 'scenario',
+            magDb: scenario.sum.magDb,
+            phaseDeg: scenario.sum.phaseDeg,
+            phaseValid: scenario.sum.assumedPhase === 0,
+            groupDelayMs: null,
+            frequencies: scenario.sum.frequencies,
+            visible: layout.visible.scenario !== false,
+            phaseVisible: layout.phaseVisible.scenario !== false,
+            width: 1.5,
+            dash: [7, 4],
+          });
+        }
+      }
+    }
+
     let impulse = null;
     if (project.settings.view === 'impulse' && sum) {
       const result = synthesizeImpulse(sum, { sampleRate: 48000, bins: 8192 });
@@ -880,13 +1027,75 @@ export function createDataModeler(options = {}) {
     chart.setPhaseMode(project.settings.phaseMode || 'wrapped');
     chart.setDbSpan(project.settings.dbSpan || 0);
     chart.smoothingOctaves = Number(project.settings.smoothing) || 0;
+    chart.setMarkers(phaseIntersections());
+    chart.setCrossover(Number(project.settings.crossoverRegion) || null);
     chart.setTraces(traces);
     chart.setImpulse(impulse);
     chart.draw();
 
     renderTraceChips(traces);
     renderReadout();
+    renderPins();
     return evaluation;
+  }
+
+  /**
+   * Frequencies where two drawn phase traces cross, marked on the phase pane.
+   * Only traces that carry measured phase take part.
+   */
+  function phaseIntersections() {
+    const traces = lastTraces.filter((trace) => trace.phaseValid !== false && trace.phaseDeg &&
+      trace.phaseVisible !== false && (trace.kind === 'source' || trace.kind === 'sum'));
+    const markers = [];
+    for (let a = 0; a < traces.length; a += 1) {
+      for (let b = a + 1; b < traces.length; b += 1) {
+        const first = traces[a];
+        const second = traces[b];
+        const count = Math.min(first.phaseDeg.length, second.phaseDeg.length);
+        for (let i = 1; i < count; i += 1) {
+          const before = wrap(first.phaseDeg[i - 1] - second.phaseDeg[i - 1]);
+          const after = wrap(first.phaseDeg[i] - second.phaseDeg[i]);
+          if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
+          if ((before < 0 && after >= 0) || (before > 0 && after <= 0)) {
+            markers.push({ frequency: first.frequencies[i], phaseDeg: first.phaseDeg[i], color: first.color });
+            if (markers.length >= 24) return markers;
+          }
+        }
+      }
+    }
+    return markers;
+  }
+
+  function renderPins() {
+    const table = $('dmPinTable');
+    const note = $('dmPhaseMarkers');
+    if (table) {
+      table.replaceChildren();
+      const evaluation = lastEvaluation || evaluationOf();
+      if (!pinnedMarkers.length) {
+        table.appendChild(el('p', 'dm-empty', 'No pinned frequency yet. Move the cursor and pin it here.'));
+      } else {
+        const head = el('div', 'dm-sum-row head');
+        for (const label of ['Frequency', 'Sum', 'Sources', '']) head.appendChild(el('span', null, label));
+        table.appendChild(head);
+        for (const marker of pinnedMarkers) {
+          const row = el('div', 'dm-sum-row');
+          row.appendChild(button(formatFrequency(marker), 'dm-mini dm-pin', { pinPick: String(marker) }));
+          const index = evaluation.sum ? nearestIndex(evaluation.sum.frequencies, marker) : -1;
+          row.appendChild(el('span', null, index >= 0 ? formatTraceLevel(evaluation.sum.magDb[index]) : '—'));
+          row.appendChild(el('span', null, evaluation.responses.length + ''));
+          row.appendChild(button('×', 'dm-mini dm-danger', { pinRemove: String(marker) }));
+          table.appendChild(row);
+        }
+      }
+    }
+    if (note) {
+      const markers = phaseIntersections();
+      note.textContent = markers.length
+        ? markers.length + ' phase crossing marker' + (markers.length === 1 ? '' : 's') +
+          ' drawn on the phase pane; the crossover region is shaded if one is set.'
+        : 'No phase crossing between the drawn traces in this span.';
+    }
   }
 
   function renderTraceChips(traces) {
@@ -1042,10 +1251,12 @@ export function createDataModeler(options = {}) {
     const note = $('dmSumMessage');
     if (note) {
       const assumed = evaluation.responses.filter((response) => !response.phaseValid).length;
-      note.textContent = assumed
+      const parts = [assumed
         ? assumed + ' of ' + evaluation.responses.length + ' sources carry no measured phase: the sum ' +
           'assumes zero phase at each of them, so it is a prediction, not a verification.'
-        : 'Every source carries measured phase, so the sum is the coherent complex sum of the curves.';
+        : 'Every source carries measured phase, so the sum is the coherent complex sum of the curves.'];
+      for (const warning of evaluation.warnings || []) parts.push(warning);
+      note.textContent = parts.join(' ');
       note.hidden = false;
     }
   }
@@ -1078,7 +1289,7 @@ export function createDataModeler(options = {}) {
   }
 
   function sourceResponseById(id) {
-    const evaluation = evaluateSystem(project, evaluationOptions());
+    const evaluation = evaluationOf();
     return evaluation.responses.find((response) => response.id === id) || null;
   }
 
@@ -1161,6 +1372,15 @@ export function createDataModeler(options = {}) {
       ['Path length', pathLengthMm(best.delayMs).toFixed(0) + ' mm'],
       ['Polarity', best.polarity],
       ['Predicted summation', formatTraceLevel(best.gainDb) + ' over the louder source'],
+      ['Current arrangement', optimizerResult.before
+        ? formatTraceLevel(optimizerResult.before.gainDb) + ' summation at ' + formatDelay(optimizerResult.before.delayMs) +
+          ' · ' + optimizerResult.before.polarity
+        : '—'],
+      ['Improvement over now', optimizerResult.improvement
+        ? signed(optimizerResult.improvement.summationDb) + ' dB of summation · ' +
+          signed(optimizerResult.improvement.objective) + ' of the objective'
+        : '—'],
+      ['Sweep', optimizerResult.sweep.length + ' evaluated delays, drawn below'],
       ['Worst point in band', formatTraceLevel(best.worstDb)],
       ['Phase error', Number.isFinite(best.phaseErrorDeg) ? best.phaseErrorDeg.toFixed(0) + '°' : 'no phase'],
       ['Confidence', optimizerResult.confidence.level + ' — ' + optimizerResult.confidence.note],
@@ -1197,6 +1417,205 @@ export function createDataModeler(options = {}) {
       tradeoff.textContent = optimizerResult.tradeoff;
       tradeoff.hidden = false;
     }
+
+    const beforeNote = $('dmOptBefore');
+    if (beforeNote) {
+      beforeNote.textContent = optimizerResult.before
+        ? '“Before alignment” is the system as it stands now: ' +
+          formatDelay(optimizerResult.before.delayMs) + ', ' + optimizerResult.before.polarity + ', ' +
+          formatTraceLevel(optimizerResult.before.gainDb) + ' summation. The ghost trace shows it.'
+        : '';
+      beforeNote.hidden = !optimizerResult.before;
+    }
+
+    drawSweep();
+    renderMultiPositionsResult();
+  }
+
+  /**
+   * The delay sweep: the predicted summation at every candidate delay, with the
+   * chosen delay and the arrangement as it stands marked on it.
+   */
+  function drawSweep() {
+    const canvas = $('dmSweep');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2);
+    const w = Math.max(160, rect.width || 320);
+    const h = Math.max(70, rect.height || 96);
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#0f1316';
+    ctx.fillRect(0, 0, w, h);
+
+    const sweep = optimizerResult && optimizerResult.sweep;
+    if (!sweep || sweep.length < 2) {
+      ctx.fillStyle = 'rgba(160,168,176,0.7)';
+      ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('run the optimizer to see the delay sweep', w / 2, h / 2);
+      return;
+    }
+
+    const pad = { left: 30, right: 8, top: 8, bottom: 14 };
+    const plot = { x: pad.left, y: pad.top, w: Math.max(20, w - pad.left - pad.right), h: Math.max(20, h - pad.top - pad.bottom) };
+    let minDelay = Infinity;
+    let maxDelay = -Infinity;
+    let minDb = Infinity;
+    let maxDb = -Infinity;
+    for (const entry of sweep) {
+      minDelay = Math.min(minDelay, entry.delayMs);
+      maxDelay = Math.max(maxDelay, entry.delayMs);
+      minDb = Math.min(minDb, entry.gainDb);
+      maxDb = Math.max(maxDb, entry.gainDb);
+    }
+    if (!(maxDelay > minDelay) || !(maxDb > minDb)) { maxDb = minDb + 1; }
+    const xOf = (delay) => plot.x + ((delay - minDelay) / (maxDelay - minDelay)) * plot.w;
+    const yOf = (db) => plot.y + plot.h - ((db - minDb) / (maxDb - minDb)) * plot.h;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath();
+    ctx.moveTo(plot.x, plot.y + plot.h);
+    ctx.lineTo(plot.x + plot.w, plot.y + plot.h);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(160,168,176,0.7)';
+    ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(minDb.toFixed(1) + ' dB', 2, plot.y + 7);
+    ctx.fillText(minDelay.toFixed(1), plot.x, h - 3);
+    ctx.textAlign = 'right';
+    ctx.fillText(maxDelay.toFixed(1) + ' ms', plot.x + plot.w, h - 3);
+
+    ctx.beginPath();
+    for (let i = 0; i < sweep.length; i += 1) {
+      const x = xOf(sweep[i].delayMs);
+      const y = yOf(sweep[i].gainDb);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#6fd4ca';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    const best = optimizerResult.best;
+    const bestX = xOf(best.delayMs);
+    ctx.strokeStyle = 'rgba(255,177,93,0.9)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(bestX, plot.y);
+    ctx.lineTo(bestX, plot.y + plot.h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ffb15d';
+    ctx.beginPath();
+    ctx.arc(bestX, yOf(best.gainDb), 2.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (optimizerResult.before) {
+      const beforeX = xOf(optimizerResult.before.delayMs);
+      ctx.strokeStyle = 'rgba(140,148,156,0.8)';
+      ctx.beginPath();
+      ctx.arc(beforeX, yOf(optimizerResult.before.gainDb), 2.2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  /**
+   * One delay and one polarity that serve every measuring position, weighted by
+   * the weight each position carries. It is a prediction across positions, not
+   * one measurement standing in for the room.
+   */
+  function runPositionsOptimizer() {
+    const referenceId = $('dmOptReference') ? $('dmOptReference').value : '';
+    const targetId = $('dmOptTarget') ? $('dmOptTarget').value : '';
+    if (!referenceId || !targetId || referenceId === targetId) {
+      setOptimizerMessage('Choose a reference and a different target before optimising across positions.', true);
+      return;
+    }
+    if (project.positions.length < 2) {
+      setOptimizerMessage('Add a second measuring position first.', true);
+      return;
+    }
+
+    const pairs = [];
+    for (const position of project.positions) {
+      const evaluation = evaluateSystem(project, { ...evaluationOptions(), positionId: position.id });
+      const reference = evaluation.responses.find((response) => response.id === referenceId);
+      const target = evaluation.responses.find((response) => response.id === targetId);
+      if (!reference || !target) continue;
+      pairs.push({ reference, target, weight: position.weight, label: position.label });
+    }
+    if (pairs.length < 2) {
+      setOptimizerMessage('That needs two positions where both sources have a measured response.', true);
+      return;
+    }
+
+    const result = optimizeMultiPosition({
+      pairs,
+      band: {
+        min: Number($('dmOptBandLow') && $('dmOptBandLow').value) || 1000,
+        max: Number($('dmOptBandHigh') && $('dmOptBandHigh').value) || 2000,
+      },
+      delay: {
+        min: Number($('dmOptDelayMin') && $('dmOptDelayMin').value) || -20,
+        max: Number($('dmOptDelayMax') && $('dmOptDelayMax').value) || 20,
+        stepMs: Number($('dmOptDelayStep') && $('dmOptDelayStep').value) || 0.05,
+      },
+      focusFrequency: Number($('dmOptFocus') && $('dmOptFocus').value) || 1414,
+      polarity: $('dmOptPolarity') ? $('dmOptPolarity').value : 'auto',
+      objective: $('dmOptObjective') ? $('dmOptObjective').value : 'sum',
+      weights: {
+        low: Number($('dmOptLow') && $('dmOptLow').value) || 0,
+        mid: Number($('dmOptMid') && $('dmOptMid').value) || 1,
+        high: Number($('dmOptHigh') && $('dmOptHigh').value) || 0,
+      },
+    });
+
+    if (!result.ok) {
+      multiResult = null;
+      setOptimizerMessage(result.message, true);
+      renderMultiPositionsResult();
+      return;
+    }
+    multiResult = result;
+    renderMultiPositionsResult();
+    setOptimizerMessage('Across ' + result.perPosition.length + ' positions: ' +
+      formatDelay(result.best.delayMs) + ', ' + result.best.polarity + ', ' +
+      formatTraceLevel(result.best.gainDb) + ' mean summation.', false);
+  }
+
+  function renderMultiPositionsResult() {
+    const holder = $('dmOptPositionsResult');
+    if (!holder) return;
+    holder.replaceChildren();
+    if (!multiResult) return;
+
+    const rows = [
+      ['Common delay', formatDelay(multiResult.best.delayMs)],
+      ['Common polarity', multiResult.best.polarity],
+      ['Weighted summation', formatTraceLevel(multiResult.best.gainDb)],
+      ['Confidence', multiResult.confidence.level],
+    ];
+    for (const [label, value] of rows) {
+      const row = el('div', 'dm-opt-row');
+      row.appendChild(el('span', 'dm-opt-key', label));
+      row.appendChild(el('span', 'dm-opt-value', value));
+      holder.appendChild(row);
+    }
+    for (const position of multiResult.perPosition) {
+      const row = el('div', 'dm-opt-row');
+      row.appendChild(el('span', 'dm-opt-key',
+        position.label + ' · weight ' + position.weight + ' · own best ' +
+        formatDelay(position.ownBestDelayMs)));
+      row.appendChild(el('span', 'dm-opt-value',
+        formatTraceLevel(position.gainAtCommonDelayDb) + ' at the common delay'));
+      holder.appendChild(row);
+    }
+    holder.appendChild(el('p', 'source-hint', multiResult.tradeoff));
   }
 
   function applyOptimizer() {
@@ -1219,6 +1638,205 @@ export function createDataModeler(options = {}) {
     renderOptimizerResult();
     const apply = $('btnDmApplyOptimizer');
     if (apply) apply.disabled = true;
+  }
+
+  /* ---------- the eight-subwoofer workflow ---------- */
+
+  function speakerCaptureFor(number) {
+    const entries = libraryProvider().filter((entry) => entry && Array.isArray(entry.curve) && entry.curve.length >= 2);
+    const performers = entries.filter((entry) => entry.speaker && entry.speaker.group === 'Subwoofers');
+    const pattern = new RegExp('(^|\\D)' + number + '(\\D|$)');
+    const byName = performers.find((entry) =>
+      pattern.test((entry.speaker && entry.speaker.name ? entry.speaker.name : '') + ' ' + (entry.name || '')));
+    return byName || performers[number - 1] || null;
+  }
+
+  /**
+   * Eight independently processed subwoofers, numbered 1–8, each taking its own
+   * saved speaker capture where the library has one. Sub 2 is the reference.
+   * A source without a capture is added without data and said to await one.
+   */
+  function createEightSubs() {
+    let measured = 0;
+    let withPhase = 0;
+    commit(() => {
+      project.sources = project.sources.filter((source) => !/^Subwoofer [1-8]$/.test(source.name));
+      for (let i = 1; i <= 8; i += 1) {
+        const entry = speakerCaptureFor(i);
+        let modelId = '';
+        let datasetId = '';
+        if (entry) {
+          const response = responseFromSaved(entry);
+          if (response) {
+            const built = buildDataset(response, {
+              label: entry.name,
+              provenance: 'measured',
+              importedFrom: 'Capture library',
+              sampleRate: response.sampleRate,
+              fftSize: response.fftSize,
+              delayMs: response.delayMs,
+              origin: { kind: 'speaker', id: entry.id, name: entry.name, date: entry.date },
+            });
+            if (built.ok) {
+              const model = newModel({
+                name: 'Subwoofer ' + i + ' · measured',
+                manufacturer: entry.speaker && entry.speaker.name ? entry.speaker.name : '',
+                type: 'Subwoofer',
+                provenance: 'measured',
+              });
+              model.datasets = [built.dataset];
+              project.models.unshift(model);
+              modelId = model.id;
+              datasetId = built.dataset.id;
+              measured += 1;
+              if (built.dataset.hasPhase) withPhase += 1;
+            }
+          }
+        }
+        project.sources.push(normalizeSource({
+          modelId,
+          datasetId,
+          name: 'Subwoofer ' + i,
+          reference: i === 2,
+        }));
+      }
+    }, 'Eight subwoofers numbered 1–8 · ' + measured + ' with a saved capture, ' +
+      (8 - measured) + ' awaiting one · Sub 2 is the reference.');
+
+    const message = $('dmEightMessage');
+    if (message) {
+      message.textContent = measured
+        ? 'Built from ' + measured + ' real speaker capture' + (measured === 1 ? '' : 's') +
+          (withPhase === measured ? ' with measured phase.' : '; ' + (measured - withPhase) + ' carry magnitude only.') +
+          (8 - measured ? ' ' + (8 - measured) + ' source' + (8 - measured === 1 ? ' has' : 's have') +
+            ' no measurement yet and stay out of the sum.' : '')
+        : 'The library holds no saved subwoofer capture: the eight sources were added without data. ' +
+          'Save each subwoofer as a speaker capture, or load the clearly-labelled demonstration data.';
+      message.hidden = false;
+    }
+    selectedSourceId = (project.sources.find((source) => source.name === 'Subwoofer 2') || {}).id || selectedSourceId;
+    renderAll();
+  }
+
+  /**
+   * Demonstration data for the workflow: eight synthetic subwoofers, labelled
+   * DEMO everywhere they appear. It is never presented as a measurement.
+   */
+  function loadDemoData() {
+    const frequencies = gridFrequencies(GRID_POINTS);
+    commit(() => {
+      project.sources = project.sources.filter((source) => !/^DEMO · Sub [1-8]$/.test(source.name));
+      for (let i = 1; i <= 8; i += 1) {
+        const magDb = Array.from(frequencies, (frequency) => {
+          const low = 20 * Math.log10(Math.max(frequency, 20) / 30);
+          const rolloff = frequency > 80 ? 24 * Math.log10(frequency / 80) : 0;
+          return -3 - low * 0.5 - rolloff - (i - 1) * 0.35;
+        });
+        const phaseDeg = Array.from(frequencies, (frequency) =>
+          -360 * frequency * (0.0015 + (i - 1) * 0.0004));
+        const model = newModel({
+          name: 'DEMO · Subwoofer ' + i,
+          manufacturer: 'Demonstration',
+          type: 'Subwoofer',
+          provenance: 'theoretical',
+          notes: 'Demonstration data — synthesised for the workflow, not a measurement.',
+        });
+        const dataset = normalizeDataset({
+          label: 'DEMO · Sub ' + i,
+          provenance: 'theoretical',
+          importedFrom: 'Demonstration — synthesised, not measured',
+          curve: { magDb, phaseDeg, coherence: Array.from(frequencies, () => 0.95) },
+          sampleRate: 48000,
+          fftSize: 16384,
+          delayMs: 0,
+          phaseOrigin: 'measured',
+          note: 'Demonstration data — synthesised for the workflow, not a measurement.',
+        });
+        if (!dataset) continue;
+        model.datasets = [dataset];
+        project.models.unshift(model);
+        project.sources.push(normalizeSource({
+          modelId: model.id,
+          datasetId: dataset.id,
+          name: 'DEMO · Sub ' + i,
+          reference: i === 2,
+        }));
+      }
+    }, 'Loaded demonstration data: eight synthetic subwoofers, clearly labelled DEMO.');
+    const message = $('dmEightMessage');
+    if (message) {
+      message.textContent = 'The eight subwoofers are demonstration data — synthesised to exercise the ' +
+        'workflow, never a measurement. Replace each with a saved speaker capture for a real prediction.';
+      message.hidden = false;
+    }
+    renderAll();
+  }
+
+  /** Every source compared pairwise with the chosen reference. */
+  function runPairCompare() {
+    const reference = project.sources.find((source) => source.reference) || project.sources[0];
+    if (!reference || project.sources.length < 2) {
+      setOptimizerMessage('That needs a reference and at least one other source.', true);
+      return;
+    }
+    const referenceResponse = sourceResponseById(reference.id);
+    if (!referenceResponse) {
+      setOptimizerMessage('The reference source has no measured response.', true);
+      return;
+    }
+    const band = {
+      min: Number($('dmOptBandLow') && $('dmOptBandLow').value) || 1000,
+      max: Number($('dmOptBandHigh') && $('dmOptBandHigh').value) || 2000,
+    };
+    const delay = {
+      min: Number($('dmOptDelayMin') && $('dmOptDelayMin').value) || -20,
+      max: Number($('dmOptDelayMax') && $('dmOptDelayMax').value) || 20,
+      stepMs: Number($('dmOptDelayStep') && $('dmOptDelayStep').value) || 0.05,
+    };
+    const rows = [];
+    for (const source of project.sources) {
+      if (source.id === reference.id) continue;
+      const target = sourceResponseById(source.id);
+      if (!target) {
+        rows.push({ name: source.name, note: 'no measured response' });
+        continue;
+      }
+      const result = optimizeAlignment({
+        reference: referenceResponse,
+        target,
+        band,
+        delay,
+        polarity: $('dmOptPolarity') ? $('dmOptPolarity').value : 'auto',
+        objective: $('dmOptObjective') ? $('dmOptObjective').value : 'sum',
+        focusFrequency: Number($('dmOptFocus') && $('dmOptFocus').value) || 1414,
+      });
+      rows.push(result.ok
+        ? { name: source.name, delayMs: result.best.delayMs, polarity: result.best.polarity,
+            gainDb: result.best.gainDb, note: result.confidence.level }
+        : { name: source.name, note: result.message });
+    }
+
+    const table = $('dmPairTable');
+    if (table) {
+      table.replaceChildren();
+      const head = el('div', 'dm-sum-row head');
+      for (const label of ['Source', 'Delay', 'Polarity', 'Summation', 'Confidence']) {
+        head.appendChild(el('span', null, label));
+      }
+      table.appendChild(head);
+      for (const row of rows) {
+        const line = el('div', 'dm-sum-row');
+        line.appendChild(el('span', null, row.name));
+        line.appendChild(el('span', null, row.delayMs !== undefined ? formatDelay(row.delayMs) : '—'));
+        line.appendChild(el('span', null, row.polarity || '—'));
+        line.appendChild(el('span', null, row.gainDb !== undefined ? formatTraceLevel(row.gainDb) : '—'));
+        line.appendChild(el('span', null, row.note || ''));
+        table.appendChild(line);
+      }
+    }
+    setOptimizerMessage('Compared ' + rows.length + ' source' + (rows.length === 1 ? '' : 's') +
+      ' against ' + reference.name + ' over ' + formatRangeText(band.min, band.max) +
+      '. Nothing was applied.', false);
   }
 
   /* ---------- prediction vs measurement ---------- */
@@ -1433,15 +2051,19 @@ export function createDataModeler(options = {}) {
     if (!list) return;
     list.replaceChildren();
     if (!project.snapshots.length) {
-      list.appendChild(el('li', 'dm-empty', 'No snapshot yet. Save one to compare two arrangements.'));
+      list.appendChild(el('li', 'dm-empty', 'No scenario yet. Save one to compare two arrangements.'));
       return;
     }
     for (const snapshot of project.snapshots) {
       const row = el('li', 'dm-snapshot');
+      if (snapshot.id === scenarioOverlayId) row.classList.add('on');
       row.appendChild(el('span', 'dm-snapshot-name', snapshot.name));
       row.appendChild(el('span', 'dm-snapshot-meta',
         snapshot.data.sources.length + ' sources · ' + new Date(snapshot.savedAt).toLocaleString()));
       row.appendChild(button('Recall', 'dm-mini', { recall: snapshot.id }));
+      row.appendChild(button('Duplicate', 'dm-mini', { duplicateSnapshot: snapshot.id }));
+      row.appendChild(button(snapshot.id === scenarioOverlayId ? 'Hide' : 'Compare', 'dm-mini', { compareSnapshot: snapshot.id }));
+      row.appendChild(button('Rename', 'dm-mini', { renameSnapshot: snapshot.id }));
       row.appendChild(button('Delete', 'dm-mini dm-danger', { removeSnapshot: snapshot.id }));
       list.appendChild(row);
     }
@@ -1488,6 +2110,285 @@ export function createDataModeler(options = {}) {
     }, 'Recalled “' + snapshot.name + '”.');
     optimizerResult = null;
     renderOptimizerResult();
+  }
+
+  function duplicateSnapshot(id) {
+    const snapshot = project.snapshots.find((entry) => entry.id === id);
+    if (!snapshot) return;
+    const taken = new Set(project.snapshots.map((entry) => entry.name.toLocaleLowerCase()));
+    let name = snapshot.name + ' copy';
+    let suffix = 2;
+    while (taken.has(name.toLocaleLowerCase())) {
+      name = snapshot.name + ' copy ' + suffix;
+      suffix += 1;
+    }
+    commit(() => {
+      project.snapshots.unshift({
+        id: 'snap-' + Date.now().toString(36),
+        name: name.slice(0, 60),
+        savedAt: new Date().toISOString(),
+        data: JSON.parse(JSON.stringify(snapshot.data)),
+      });
+      project.snapshots = project.snapshots.slice(0, 30);
+    }, 'Duplicated “' + snapshot.name + '” as “' + name + '”.');
+  }
+
+  function renameSnapshot(id) {
+    const snapshot = project.snapshots.find((entry) => entry.id === id);
+    if (!snapshot) return;
+    const answer = typeof window !== 'undefined' && typeof window.prompt === 'function'
+      ? window.prompt('Scenario name', snapshot.name)
+      : null;
+    if (answer === null) return;
+    const name = String(answer).trim();
+    if (!name) {
+      say('A scenario needs a name.', 'err');
+      return;
+    }
+    commit(() => { snapshot.name = name.slice(0, 60); }, 'Renamed the scenario to “' + name + '”.');
+  }
+
+  function compareSnapshot(id) {
+    scenarioOverlayId = scenarioOverlayId === id ? null : id;
+    renderSnapshots();
+    renderScenarioDiff();
+    renderChart();
+  }
+
+  /**
+   * The differences between the arrangement on screen and the compared
+   * scenario, source by source, plus what each predicts at 1 kHz.
+   */
+  function renderScenarioDiff() {
+    const table = $('dmScenarioDiff');
+    const note = $('dmScenarioNote');
+    if (!table) return;
+    table.replaceChildren();
+    const snapshot = project.snapshots.find((entry) => entry.id === scenarioOverlayId);
+    if (!snapshot) {
+      if (note) {
+        note.textContent = 'Compare a scenario to draw its predicted sum beside the current arrangement.';
+        note.hidden = false;
+      }
+      return;
+    }
+
+    const head = el('div', 'dm-sum-row head');
+    for (const label of ['Source', 'Delay', 'Polarity', 'Gain']) head.appendChild(el('span', null, label));
+    table.appendChild(head);
+
+    for (const source of project.sources) {
+      const other = (snapshot.data.sources || []).find((entry) => entry.id === source.id);
+      const row = el('div', 'dm-sum-row');
+      row.appendChild(el('span', null, source.name));
+      if (!other) {
+        row.appendChild(el('span', null, 'not in that scenario'));
+        table.appendChild(row);
+        continue;
+      }
+      row.appendChild(el('span', null, formatDelay(other.delayMs) + ' → ' + formatDelay(source.delayMs)));
+      row.appendChild(el('span', null, other.polarity + ' → ' + source.polarity));
+      row.appendChild(el('span', null, signed(other.gainDb) + ' → ' + signed(source.gainDb)));
+      table.appendChild(row);
+    }
+
+    if (note) {
+      const current = evaluationOf();
+      const scenario = evaluateSnapshot(snapshot, project.models, evaluationOptions());
+      const nowIndex = current.sum ? nearestIndex(current.sum.frequencies, 1000) : -1;
+      const thenIndex = scenario && scenario.sum ? nearestIndex(scenario.sum.frequencies, 1000) : -1;
+      note.textContent = nowIndex >= 0 && thenIndex >= 0
+        ? 'At 1 kHz the scenario predicts ' + formatTraceLevel(scenario.sum.magDb[thenIndex]) +
+          ' and the current arrangement ' + formatTraceLevel(current.sum.magDb[nowIndex]) +
+          ' — a prediction from the stored scenario, never a measurement.'
+        : 'The scenario could not be evaluated with the loudspeakers now in the library.';
+      note.hidden = false;
+    }
+  }
+
+  /** Every measuring position evaluated side by side. */
+  function runPositionsCompare() {
+    const table = $('dmPositionCompare');
+    if (!table) return;
+    table.replaceChildren();
+    if (project.positions.length < 2) {
+      table.appendChild(el('p', 'dm-empty', 'Add a second measuring position to compare them.'));
+      return;
+    }
+
+    const rows = [];
+    for (const position of project.positions) {
+      const evaluation = evaluateSystem(project, { ...evaluationOptions(), positionId: position.id });
+      if (!evaluation.sum) {
+        rows.push({ label: position.label, sources: evaluation.responses.length });
+        continue;
+      }
+      const at = nearestIndex(evaluation.sum.frequencies, 1000);
+      let mean = 0;
+      let count = 0;
+      for (let i = 0; i < evaluation.sum.frequencies.length; i += 1) {
+        const frequency = evaluation.sum.frequencies[i];
+        if (frequency < 100 || frequency > 10000) continue;
+        mean += evaluation.sum.magDb[i];
+        count += 1;
+      }
+      rows.push({
+        label: position.label,
+        weight: position.weight,
+        atKhz: at >= 0 ? evaluation.sum.magDb[at] : NaN,
+        mean: count ? mean / count : NaN,
+        sources: evaluation.responses.length,
+      });
+    }
+
+    const head = el('div', 'dm-sum-row head');
+    for (const label of ['Position', 'At 1 kHz', 'Mean 100 Hz – 10 kHz', 'Sources', 'Weight']) {
+      head.appendChild(el('span', null, label));
+    }
+    table.appendChild(head);
+    const base = rows.find((row) => Number.isFinite(row.mean));
+    for (const row of rows) {
+      const line = el('div', 'dm-sum-row');
+      line.appendChild(el('span', null, row.label));
+      line.appendChild(el('span', null, Number.isFinite(row.atKhz) ? formatTraceLevel(row.atKhz) : '—'));
+      line.appendChild(el('span', null, Number.isFinite(row.mean) ? formatTraceLevel(row.mean) : 'no sum'));
+      line.appendChild(el('span', null, String(row.sources || 0)));
+      line.appendChild(el('span', null, Number.isFinite(row.weight) ? String(row.weight) : '—'));
+      if (base && Number.isFinite(row.mean) && row !== base) {
+        line.appendChild(el('span', 'dm-opt-value', signed(row.mean - base.mean) + ' dB vs ' + base.label));
+      }
+      table.appendChild(line);
+    }
+  }
+
+  /** A measurement sent from the app's own measurement screen. */
+  function sendMeasurement(payload) {
+    if (!payload || !payload.results) {
+      return { ok: false, message: 'That measurement carries no results to send.' };
+    }
+    const response = responseFromAnalyser({
+      results: payload.results,
+      delayMs: payload.delayMs,
+      compensated: payload.compensated === true,
+      label: payload.label || 'Sent measurement',
+      device: payload.device,
+      channels: payload.channels,
+      reference: payload.reference,
+      calibration: payload.calibration,
+    });
+    if (!response) return { ok: false, message: 'That measurement carries no usable bins yet.' };
+    if (!active) open();
+
+    const modelSelect = $('dmDatasetModel');
+    const modelId = modelSelect && modelSelect.value !== 'new' ? modelSelect.value : '';
+    const dataset = importDataset(response, {
+      label: payload.label || 'Sent measurement',
+      provenance: 'measured',
+      importedFrom: 'Sent from the measurement screen',
+      modelId,
+      sampleRate: response.sampleRate,
+      fftSize: response.fftSize,
+      delayMs: response.delayMs,
+      conditions: {
+        device: payload.device || '',
+        channels: payload.channels || '',
+        reference: payload.reference || '',
+        calibrationName: payload.calibration || '',
+        phaseCompensated: payload.compensated === true,
+      },
+      origin: payload.origin || null,
+      note: response.phaseDeg ? '' : 'this measurement carried no phase',
+    });
+    if (!dataset) return { ok: false, message: 'That measurement could not be modelled.' };
+    return {
+      ok: true,
+      message: 'Sent “' + dataset.label + '” to the modeler' +
+        (dataset.hasPhase ? ' with its measured phase.' : ' as magnitude only.'),
+      dataset,
+    };
+  }
+
+  /** A saved capture sent from the app's capture library. */
+  function sendCapture(entry) {
+    if (!entry) return { ok: false, message: 'That capture holds nothing to send.' };
+    const response = responseFromSaved(entry);
+    if (!response) return { ok: false, message: 'That capture holds no usable curve.' };
+    if (!active) open();
+
+    const modelSelect = $('dmDatasetModel');
+    const modelId = modelSelect && modelSelect.value !== 'new' ? modelSelect.value : '';
+    const dataset = importDataset(response, {
+      label: entry.name,
+      provenance: 'measured',
+      importedFrom: 'Sent from the capture library',
+      modelId,
+      sampleRate: response.sampleRate,
+      fftSize: response.fftSize,
+      delayMs: response.delayMs,
+      conditions: {
+        venue: entry.venue || '',
+        event: entry.event || '',
+        micLabel: entry.micPosition && entry.micPosition.label ? entry.micPosition.label : '',
+        micDistanceM: entry.micPosition ? entry.micPosition.distanceM : null,
+        micHeightM: entry.micPosition ? entry.micPosition.heightM : null,
+        device: entry.inputs && entry.inputs.device ? entry.inputs.device : '',
+        channels: entry.inputs && entry.inputs.channelsDetected ? entry.inputs.channelsDetected : '',
+        reference: entry.reference || '',
+        calibrationName: entry.calibration && entry.calibration.name ? entry.calibration.name : '',
+        calibrationOffsetDb: entry.calibration ? entry.calibration.offsetDb : null,
+        phaseCompensated: entry.phaseCompensated === true,
+        measuredAt: entry.date || '',
+      },
+      origin: { kind: 'capture', id: entry.id, name: entry.name, date: entry.date },
+      note: entry.note || '',
+    });
+    if (!dataset) return { ok: false, message: 'That capture could not be modelled.' };
+    return {
+      ok: true,
+      message: 'Sent “' + dataset.label + '” to the modeler' +
+        (dataset.hasPhase ? ' with its measured phase.' : ' as magnitude only.'),
+      dataset,
+    };
+  }
+
+  /** Read a linked response again from the capture it came from. */
+  function refreshDataset(modelId, datasetId) {
+    const found = findDataset(project, modelId, datasetId);
+    const dataset = found.dataset;
+    if (!dataset || !dataset.origin) {
+      say('That response is not linked to a capture.', 'err');
+      return;
+    }
+    const entry = libraryProvider().find((item) => item.id === dataset.origin.id);
+    if (!entry) {
+      say('The capture it came from is no longer in the library; the modelled response is kept as it is.', 'err');
+      return;
+    }
+    const response = responseFromSaved(entry);
+    if (!response) {
+      say('That capture holds no usable curve.', 'err');
+      return;
+    }
+    const built = buildDataset(response, {
+      label: entry.name,
+      provenance: 'measured',
+      importedFrom: 'Capture library',
+      sampleRate: response.sampleRate,
+      fftSize: response.fftSize,
+      delayMs: response.delayMs,
+      origin: dataset.origin,
+    });
+    if (!built.ok) {
+      say(built.message, 'err');
+      return;
+    }
+    commit(() => {
+      dataset.curve = built.dataset.curve;
+      dataset.hasPhase = built.dataset.hasPhase;
+      dataset.phaseOrigin = built.dataset.phaseOrigin;
+      dataset.conditions = built.dataset.conditions;
+      dataset.importedAt = new Date().toISOString();
+    }, 'Refreshed “' + dataset.label + '” from the capture library.');
   }
 
   /* ---------- import ---------- */
@@ -1540,6 +2441,7 @@ export function createDataModeler(options = {}) {
       sampleRate: meta.sampleRate,
       fftSize: meta.fftSize,
       delayMs: meta.delayMs,
+      origin: meta.origin || null,
       phaseOrigin: resampled.phaseValid ? 'measured' : 'none',
       conditions: meta.conditions || {},
       note: [meta.note, resampled.message].filter(Boolean).join(' · '),
@@ -2070,6 +2972,15 @@ export function createDataModeler(options = {}) {
 
     const span = $('dmSpanText');
     if (chart && span) span.textContent = formatRangeText(chart.range.min, chart.range.max) + ' · drag to zoom';
+
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    const cursor = $('dmCursorFreq');
+    if (cursor && active !== cursor) cursor.value = String(Math.round(cursorFrequency));
+    const region = $('dmCrossRegion');
+    if (region && active !== region) {
+      region.value = Number(project.settings.crossoverRegion) > 0
+        ? String(Math.round(project.settings.crossoverRegion)) : '';
+    }
   }
 
   function renderAll() {
@@ -2080,15 +2991,20 @@ export function createDataModeler(options = {}) {
     renderGroups();
     renderPositions();
     renderChain();
+    renderDelayControls();
     renderOptimizerSelects();
     renderCompareSelect();
     renderFileMappingSelects();
     renderSnapshots();
+    renderScenarioDiff();
     renderViewOptions();
     renderComparison();
     renderChart();
     renderSummation();
+    renderPins();
     renderOptimizerResult();
+    renderMultiPositionsResult();
+    drawSweep();
     refreshHistory();
     renderImportSources();
   }
@@ -2394,6 +3310,19 @@ export function createDataModeler(options = {}) {
         selectedSourceId = data.sourcePick;
         renderSources();
         renderChain();
+        return;
+      }
+      if (data.reference) {
+        const source = project.sources.find((entry) => entry.id === data.reference);
+        if (!source) return;
+        const clearing = source.reference;
+        commit(() => {
+          for (const entry of project.sources) entry.reference = entry.id === source.id ? !clearing : false;
+        }, clearing ? 'The reference is cleared.' : source.name + ' is the reference.');
+        return;
+      }
+      if (data.refreshDataset) {
+        refreshDataset(data.refreshModel, data.refreshDataset);
         return;
       }
       if (data.mute) {
@@ -2797,6 +3726,86 @@ export function createDataModeler(options = {}) {
       renderAll();
     });
 
+    /* the delay, its step and the zeroing control */
+    $('dmDelayStep')?.addEventListener('change', () => {
+      const value = Number($('dmDelayStep').value);
+      delayStep = [1, 0.1, 0.01, 0.001].includes(value) ? value : 0.1;
+      renderDelayControls();
+    });
+    $('dmDelayValue')?.addEventListener('input', () => applyDelay($('dmDelayValue').value));
+    $('dmDelayValue')?.addEventListener('change', () => {
+      const source = selectedSource();
+      if (!source) return;
+      sourceField('delay', source.id, $('dmDelayValue').value, false);
+      renderDelayControls();
+    });
+    $('dmDelaySlider')?.addEventListener('input', () => applyDelay($('dmDelaySlider').value));
+    $('dmDelaySlider')?.addEventListener('change', () => {
+      const source = selectedSource();
+      if (!source) return;
+      sourceField('delay', source.id, $('dmDelaySlider').value, false);
+      renderDelayControls();
+    });
+    $('btnDmDelayZero')?.addEventListener('click', () => {
+      if (!selectedSource()) return;
+      applyDelay(0);
+      const source = selectedSource();
+      if (source) sourceField('delay', source.id, 0, false);
+      renderDelayControls();
+    });
+
+    /* cursor frequency, plotted crossover region and pinned readouts */
+    $('dmCursorFreq')?.addEventListener('change', () => {
+      const value = Number($('dmCursorFreq').value);
+      if (!(value >= 20) || value > 20000) return;
+      cursorFrequency = value;
+      if (chart) chart.cursor = { x: chart.xOf(value), y: 0 };
+      renderReadout();
+      renderSummation();
+      renderPins();
+      if (chart) chart.draw();
+    });
+    $('dmCrossRegion')?.addEventListener('change', () => {
+      const value = Number($('dmCrossRegion').value);
+      commit(() => {
+        project.settings.crossoverRegion = value >= 20 && value <= 20000 ? value : null;
+      }, value >= 20 && value <= 20000 ? 'Shaded the crossover region around ' + formatFrequency(value) + '.' : '');
+    });
+    $('btnDmPinFreq')?.addEventListener('click', () => {
+      if (pinnedMarkers.some((marker) => Math.abs(marker - cursorFrequency) < 0.01)) {
+        say('That frequency is already pinned.', 'err');
+        return;
+      }
+      pinnedMarkers = pinnedMarkers.concat(cursorFrequency).slice(0, 12);
+      renderPins();
+      say('Pinned ' + formatFrequency(cursorFrequency) + '.', 'ok');
+    });
+    $('btnDmClearPins')?.addEventListener('click', () => {
+      pinnedMarkers = [];
+      renderPins();
+    });
+    $('dmPinTable')?.addEventListener('click', (event) => {
+      const data = event.target.closest('button')?.dataset || {};
+      if (data.pinPick !== undefined) {
+        const value = Number(data.pinPick);
+        if (!(value > 0)) return;
+        cursorFrequency = value;
+        if (chart) chart.cursor = { x: chart.xOf(value), y: 0 };
+        renderReadout();
+        renderSummation();
+        if (chart) chart.draw();
+      } else if (data.pinRemove !== undefined) {
+        pinnedMarkers = pinnedMarkers.filter((marker) => Math.abs(marker - Number(data.pinRemove)) > 0.001);
+        renderPins();
+      }
+    });
+
+    $('btnDmOptPositions')?.addEventListener('click', runPositionsOptimizer);
+    $('btnDmComparePositions')?.addEventListener('click', runPositionsCompare);
+    $('btnDmEightSubs')?.addEventListener('click', createEightSubs);
+    $('btnDmDemoData')?.addEventListener('click', loadDemoData);
+    $('btnDmPairCompare')?.addEventListener('click', runPairCompare);
+
     $('btnDmRunOptimizer')?.addEventListener('click', runOptimizer);
     $('btnDmApplyOptimizer')?.addEventListener('click', applyOptimizer);
 
@@ -2812,10 +3821,16 @@ export function createDataModeler(options = {}) {
     $('dmSnapshotList')?.addEventListener('click', (event) => {
       const data = event.target.closest('button')?.dataset || {};
       if (data.recall) recallSnapshot(data.recall);
+      else if (data.duplicateSnapshot) duplicateSnapshot(data.duplicateSnapshot);
+      else if (data.compareSnapshot) compareSnapshot(data.compareSnapshot);
+      else if (data.renameSnapshot) renameSnapshot(data.renameSnapshot);
       else if (data.removeSnapshot) {
+        if (data.removeSnapshot === scenarioOverlayId) scenarioOverlayId = null;
         commit(() => {
           project.snapshots = project.snapshots.filter((entry) => entry.id !== data.removeSnapshot);
-        }, 'Deleted the snapshot.');
+        }, 'Deleted the scenario.');
+        renderScenarioDiff();
+        renderSnapshots();
       }
     });
 
@@ -2992,6 +4007,18 @@ export function createDataModeler(options = {}) {
     get active() { return active; },
     refresh: () => { if (active) renderAll(); },
     refreshSources: () => { if (active) refreshDynamicSources(); },
+    sendMeasurement: (payload) => sendMeasurement(payload),
+    sendCapture: (entry) => sendCapture(entry),
+    optimize: () => runOptimizer(),
+    applyOptimization: () => applyOptimizer(),
+    compareMeasurement: () => runComparison(),
+    optimizePositions: () => runPositionsOptimizer(),
+    comparePositions: () => runPositionsCompare(),
+    pairCompare: () => runPairCompare(),
+    createEightSubs: () => createEightSubs(),
+    loadDemoData: () => loadDemoData(),
+    saveScenario: () => saveSnapshot(),
+    recallScenario: (id) => recallSnapshot(id),
     get project() { return project; },
     setProject,
     load: (next) => { setProject(next); },

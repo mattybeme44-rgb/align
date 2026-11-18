@@ -23,8 +23,12 @@ import {
 import { chainResponse, designCrossover } from '../js/modeler/filters.js';
 import {
   effectiveSettings,
+  evaluateSnapshot,
+  evaluateSystem,
   groupDelay,
+  normalizeDataset,
   optimizeAlignment,
+  optimizeMultiPosition,
   sumResponses,
   synthesizeImpulse,
 } from '../js/modeler/model.js';
@@ -442,6 +446,170 @@ function nearest(response, frequency) {
   report('A group adds to its source without overwriting it',
     approx(settings.gainDb, -1, 1e-9) && approx(settings.delayMs, 1.5, 1e-9) && settings.inverted,
     'effective ' + settings.gainDb + ' dB, ' + settings.delayMs + ' ms, inverted');
+}
+
+/* 28. A filter gives its answer at every supported sample rate. */
+{
+  const design = designCrossover({ family: 'Linkwitz-Riley', slope: 24, frequency: 1000, type: 'highPass' });
+  const at48 = design.ok ? chainResponse(design.filters, new Float64Array([1000]), 48000) : null;
+  const at44 = design.ok ? chainResponse(design.filters, new Float64Array([1000]), 44100) : null;
+  const at96 = design.ok ? chainResponse(design.filters, new Float64Array([1000]), 96000) : null;
+  report('A crossover reads −6 dB at 44.1, 48 and 96 kHz',
+    !!design.ok && approx(at48.magDb[0], -6.02, 0.2) && approx(at44.magDb[0], -6.02, 0.2) &&
+      approx(at96.magDb[0], -6.02, 0.2),
+    design.ok ? [at44.magDb[0], at48.magDb[0], at96.magDb[0]]
+      .map((value) => value.toFixed(2)).join(' / ') + ' dB' : design.message);
+}
+
+/* 29. A file whose frequencies are not in order is sorted before it is modelled. */
+{
+  const lines = [];
+  for (let i = 11; i >= 0; i -= 1) {
+    lines.push((100 * Math.pow(2, i / 3)).toFixed(1) + ' ' + (-6 - i * 0.2).toFixed(2) + ' ' + (i * 9));
+  }
+  const parsed = parseResponseText(lines.join('\n'));
+  const resampled = parsed.ok ? resampleResponse(parsed.response) : null;
+  report('An unsorted response is put in order first',
+    parsed.ok && parsed.response.fMin < parsed.response.fMax && resampled && resampled.ok,
+    parsed.ok ? 'read ' + parsed.points + ' points, ' + parsed.response.fMin.toFixed(0) + ' – ' +
+      parsed.response.fMax.toFixed(0) + ' Hz' : parsed.message);
+}
+
+/* 30. Two datasets that cannot be summed are warned about, not silently combined. */
+{
+  const curve = {
+    magDb: Array.from(gridFrequencies(GRID_POINTS), () => -3),
+    phaseDeg: Array.from(gridFrequencies(GRID_POINTS), () => 0),
+    coherence: Array.from(gridFrequencies(GRID_POINTS), () => 0.9),
+  };
+  const dataset = (id, reference, sampleRate) => normalizeDataset({
+    id,
+    label: id,
+    curve,
+    sampleRate,
+    conditions: { reference },
+  });
+  const first = dataset('a', 'loopback', 48000);
+  const second = dataset('b', 'internal', 44100);
+  if (!first || !second) {
+    report('Incompatible datasets are warned about', false, 'test datasets could not be built');
+  } else {
+    const model = { id: 'm', name: 'm', datasets: [first, second] };
+    const project = {
+      models: [model],
+      sources: [
+        { id: 's1', modelId: 'm', datasetId: 'a', name: 'A', filters: [] },
+        { id: 's2', modelId: 'm', datasetId: 'b', name: 'B', filters: [] },
+      ],
+      groups: [],
+      positions: [{ id: 'centre', label: 'Centre', weight: 1 }],
+      settings: {},
+    };
+    const evaluation = evaluateSystem(project, { positionId: 'centre' });
+    const same = evaluateSystem({
+      ...project,
+      models: [{ id: 'm', name: 'm', datasets: [first, dataset('c', 'loopback', 48000)] }],
+      sources: [{ id: 's1', modelId: 'm', datasetId: 'a', name: 'A', filters: [] }],
+    }, { positionId: 'centre' });
+    report('Incompatible datasets are warned about',
+      evaluation.warnings.length >= 2 && same.warnings.every((warning) => !/sample rates/.test(warning)),
+      evaluation.warnings.length + ' warning(s) for a mixed pair, ' +
+        same.warnings.length + ' for one dataset');
+  }
+}
+
+/* 31. One delay serves every measuring position, weighted by each one. */
+{
+  const reference = modelResponse(null, 0);
+  const first = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+  const second = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+  const result = optimizeMultiPosition({
+    pairs: [
+      { reference, target: first, weight: 3, label: 'Front' },
+      { reference, target: second, weight: 1, label: 'Rear' },
+    ],
+    band: { min: 200, max: 1000 },
+    delay: { min: -10, max: 10, stepMs: 0.1 },
+    polarity: 'normal',
+    objective: 'sum',
+  });
+  report('One delay serves every position at once',
+    result.ok && approx(result.best.delayMs, -2, 0.2) && result.perPosition.length === 2,
+    result.ok ? 'common ' + result.best.delayMs.toFixed(2) + ' ms across ' +
+      result.perPosition.length + ' positions, ' + result.confidence.level : result.message);
+}
+
+/* 31b. When positions disagree, the common delay is a compromise and says so. */
+{
+  const reference = modelResponse(null, 0);
+  const first = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+  const second = modelResponse((frequency) => -2 * Math.PI * frequency * 0.004, 0);
+  const result = optimizeMultiPosition({
+    pairs: [
+      { reference, target: first, weight: 1, label: 'Front' },
+      { reference, target: second, weight: 1, label: 'Rear' },
+    ],
+    band: { min: 200, max: 1000 },
+    delay: { min: -10, max: 10, stepMs: 0.1 },
+    polarity: 'normal',
+    objective: 'sum',
+  });
+  const own = result.ok ? result.perPosition.map((position) => position.ownBestDelayMs) : [];
+  report('A common delay is a compromise when positions disagree',
+    result.ok && approx(own[0], -2, 0.2) && approx(own[1], -4, 0.2) &&
+      Math.abs(result.best.delayMs - own[0]) > 0.1 &&
+      Math.abs(result.best.delayMs - own[1]) > 0.1,
+    result.ok ? 'common ' + result.best.delayMs.toFixed(2) + ' ms against own best ' +
+      own.map((value) => value.toFixed(1)).join(' / ') + ' ms' : result.message);
+}
+
+/* 32. The sweep and the improvement over the current arrangement are reported. */
+{
+  const reference = modelResponse(null, 0);
+  const target = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+  const result = optimizeAlignment({
+    reference, target, band: { min: 200, max: 1000 },
+    delay: { min: -10, max: 10, stepMs: 0.05 }, polarity: 'normal', objective: 'sum',
+  });
+  report('The optimizer reports a sweep and the improvement',
+    result.ok && result.sweep.length >= 10 && result.improvement.summationDb > 0 &&
+      result.before && result.before.gainDb < result.best.gainDb,
+    result.ok ? result.sweep.length + ' sweep points, ' +
+      result.improvement.summationDb.toFixed(1) + ' dB better than now' : result.message);
+}
+
+/* 33. A saved scenario evaluates exactly like the project it was saved from. */
+{
+  const reference = modelResponse(null, 0);
+  const target = modelResponse((frequency) => -2 * Math.PI * frequency * 0.002, 0);
+  const frequencies = gridFrequencies(GRID_POINTS);
+  const curve = {
+    magDb: Array.from(frequencies, (frequency) => -3),
+    phaseDeg: Array.from(frequencies, (frequency) => -360 * frequency * 0.001),
+    coherence: Array.from(frequencies, () => 0.9),
+  };
+  const dataset = normalizeDataset({ id: 'd', label: 'd', curve, sampleRate: 48000 });
+  const model = { id: 'm', name: 'm', datasets: [dataset] };
+  const sources = [
+    { id: 's1', modelId: 'm', datasetId: 'd', name: 'A', gainDb: 0, delayMs: 0, polarity: 'normal', filters: [] },
+    { id: 's2', modelId: 'm', datasetId: 'd', name: 'B', gainDb: 0, delayMs: 3, polarity: 'normal', filters: [] },
+  ];
+  const project = {
+    models: [model], sources, groups: [],
+    positions: [{ id: 'centre', label: 'Centre', weight: 1 }], settings: {},
+  };
+  const snapshot = {
+    id: 'snap', name: 'snap', savedAt: new Date().toISOString(),
+    data: { sources, groups: [], positions: project.positions, settings: {} },
+  };
+  const live = evaluateSystem(project, { positionId: 'centre' });
+  const saved = evaluateSnapshot(snapshot, [model], { positionId: 'centre' });
+  const liveIndex = live.sum ? nearest({ frequencies: live.sum.frequencies }, 1000) : -1;
+  const savedIndex = saved && saved.sum ? nearest({ frequencies: saved.sum.frequencies }, 1000) : -1;
+  report('A saved scenario evaluates like the project it came from',
+    liveIndex >= 0 && savedIndex >= 0 &&
+      approx(live.sum.magDb[liveIndex], saved.sum.magDb[savedIndex], 1e-9),
+    liveIndex >= 0 ? 'both read ' + live.sum.magDb[liveIndex].toFixed(3) + ' dB at 1 kHz' : 'no sum');
 }
 
 console.log('');

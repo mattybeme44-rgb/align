@@ -259,21 +259,29 @@ suite). The suite is in the repository as `tests/modeler.mjs`, so it can be run
 again with `node tests/modeler.mjs`:
 
 - **Syntax**: every module, `js/app.js`, `js/validation.js`, `sw.js` — OK.
-- **Numerical suite (27 checks, all pass)**: +6.02 dB coherent sum; cancellation;
+- **Numerical suite (34 checks, all pass)**: +6.02 dB coherent sum; cancellation;
   180° polarity; delay→group delay; group-delay blanking; LR4/LR8/Butterworth
   crossovers (−6.02/−3.01 dB at fc, slopes below it); Bessel refusal; optimizer
   known 2 ms; optimizer inverted polarity; objectives/alternatives/confidence;
   flat-curve smoothing; comma/tab/semicolon files with header mapping;
   magnitude-only retention; short-file refusal; phase wrapping and unwrapping;
   derived impulse at its window origin; float32 and 16-bit WAV; low-pass rolloff;
-  all-pass unity; peaking gain; bypass; complex-vs-dB summation.
+  all-pass unity; peaking gain; bypass; complex-vs-dB summation; −6 dB at 44.1,
+  48 and 96 kHz; an unsorted file sorted before it is modelled; incompatible
+  datasets warned about; one delay across positions; a common delay as a
+  compromise; the sweep and the improvement; a scenario evaluating like its
+  project.
 - **In-app validation page (`validate.html`)**: **29 passed · 0 failed**,
   executed under Node with a DOM stub, so the same list the page runs is green.
-- **Screen wiring (`node tests/modeler-ui.mjs`)**: **8 passed · 0 failed** — the
-  workspace opens, a project of two subwoofers with real datasets is loaded, all
-  four graph modes are drawn, every one of the 135 elements the screen reads is
-  present in `index.html` with no duplicate ids, and it closes. It runs against a
-  stub document, so it proves the wiring and the names, not the layout.
+- **Screen wiring (`node tests/modeler-ui.mjs`)**: **13 passed · 0 failed** — the
+  workspace opens; a project of two subwoofers with real datasets is loaded; all
+  four graph modes draw; a saved capture and a live measurement are sent in;
+  optimise, apply and a scenario save work; a prediction is compared and the
+  scenario recalled; the eight-subwoofer workflow builds and compares; the
+  demonstration data is labelled as demonstration; every one of the 159 elements
+  the screen reads is present in `index.html` with no duplicate ids; it closes.
+  It runs against a stub document, so it proves the wiring and the names, not
+  the layout.
 - **Benchmark** (Node, 48 kHz, 400-point grid): a 12-filter chain over the whole
   grid ≈ 1 ms; a 16-source complex sum ≈ 0.25 ms; group delay ≈ 0.2 ms; an 8192
   impulse ≈ 2 ms; a 4001-step two-polarity optimizer ≈ 17 ms. The chart draws on
@@ -302,3 +310,117 @@ group delay, impulse, complex summation, DSP chain, alignment optimizer,
 prediction against measurement, snapshots with undo/redo, and CSV/FRD/report
 exports. It is a tool for predicting and aligning, and every result says what it
 rests on.
+
+
+
+---
+
+# Phase 2 — measurement integration, alignment and prediction
+
+This pass turns the Phase 1 engine into an interactive alignment workspace. It
+was built on the engine that Phase 1 already delivered, after re-checking it:
+the numerical suite above is the regression suite for Phase 1, and every check
+in it passes.
+
+## A. Phase 1 verification
+
+- **Complex arithmetic**: checked by the coherent-sum test (+6.0206 dB), the
+  cancellation test (identical levels, opposite phase, −318 dB) and the
+  complex-vs-dB test. Verified.
+- **Delay**: a 2 ms phase rotation reads back as 2.000 ms of group delay; the
+  phase is rotated by −2πfτ and interpolated linearly in frequency.
+- **Polarity**: exactly 180° at the same level, and the sum of an inverted
+  copy cancels.
+- **Filters and crossovers**: each filter is the exact digital transfer function
+  at the sample rate; LR4/LR8 read −6.02 dB at the crossover and −24.6/−48.3 dB
+  an octave below it; Butterworth 12 reads −3.01/−12.3 dB; a band-pass passes
+  its band; all-pass is unity to 2.5 × 10⁻¹⁴ dB.
+- **Interpolation**: phase is unwrapped first, then interpolated linearly in
+  frequency; a wrapped 170° → −170° curve reads 179.9° at 550 Hz.
+- **Sample rates**: the same crossover reads −6.02 dB at 44.1, 48 and 96 kHz.
+- **Defects found and corrected in Phase 1 before building on it**: the worst
+  deviation was never recorded (it compared against −∞); a semicolon or comma
+  file was mis-detected because the delimiter was guessed on whitespace tokens;
+  a comment header was ignored, which lost the phase column; a phase objective
+  could be computed from an assumed phase; and the first test expectations for
+  a high-pass were written for the wrong side of the crossover. All are fixed
+  and covered by the suite.
+- **No placeholder traces or disconnected controls**: every control the screen
+  shows is read by the engine, and the wiring test names all 159 elements it
+  reads in `index.html`.
+
+## B. Phase 2 implementation
+
+- **Send to Data Modeler**: a `Send to Data Modeler` button in the measurement
+  screen's Traces card sends the running measurement (or held Capture A, if
+  nothing is running) with its delay, polarity, coherence, device, channels,
+  reference and calibration; a `Send to modeler` action on every saved capture
+  row sends that saved measurement. Both call the same import path, so the
+  actual curve arrives, not a screenshot. A measurement with no phase arrives
+  as magnitude-only and says so.
+- **Shared library**: the modeler keeps no second capture store. Imported
+  responses carry their origin (`capture` or `speaker`), show "linked to the
+  capture library", and can be refreshed from that capture; the loudspeaker
+  library holds the modelled loudspeakers only.
+- **Interactive workspace**: the upper pane is magnitude, the lower is phase;
+  group delay, impulse and prediction-vs-measurement are separate views. The
+  source list carries visibility, gain, delay, polarity, DSP, reference, solo,
+  mute and colour. A change repaints the prediction without rebuilding the
+  lists.
+- **Real-time summation**: all sums are complex; the cursor reads every source,
+  the sum, pinned frequencies, phase crossings and cancellation nulls.
+- **Optimizer**: a delay/polarity search with six objectives, a sweep of the
+  predicted summation against delay, the arrangement as it stands ("before"),
+  the improvement over it, alternatives, nulls and confidence. Applying is a
+  manual action on the source; nothing is written to hardware.
+- **Phase workspace**: wrapped and unwrapped phase, relative phase difference
+  and phase crossings, group delay, a delay slider in 1/0.1/0.01/0.001 ms
+  steps with direct entry, a plotted crossover region, cursor frequency entry
+  and pinned readouts. One engine drives the phase and the sum.
+- **Multi-position**: measuring positions carry their own datasets and weights;
+  a comparison table evaluates every position, and one optimizer finds a single
+  delay and polarity weighted across the positions, reporting each position's
+  own best and what the common delay costs it.
+- **Scenarios**: recall, duplicate, compare (drawn as its own predicted sum
+  beside the current one, with a source-by-source difference table), rename,
+  delete, undo and redo, with project export and import.
+- **Eight subwoofers**: a template numbered 1–8 that takes each subwoofer's
+  saved speaker capture where the library has one, makes Sub 2 the reference,
+  and says plainly which sources are still waiting for a measurement. Pairwise
+  comparison against the reference and the demonstrator are separate actions;
+  the demonstration data is labelled DEMO on every model, dataset and source
+  and is never presented as a measurement.
+- **Error handling**: incompatible sample rates, differing timing references,
+  mixed delay compensation and missing datasets are reported as warnings rather
+  than silently combined; a phase objective without measured phase is refused;
+  a truncated file is refused whole.
+- **Graph performance**: the evaluation is memoised on everything that changes
+  an answer, so a cursor move, a colour or a zoom does not recompute it; chart
+  repaints are coalesced into one animation frame. Measured on a remote Mac
+  with Node: a 12-source complex sum is 0.13 ms, a 12-filter chain over the
+  whole grid is 0.86 ms, group delay is 0.15 ms, an 8192 impulse is 5.8 ms and
+  a two-position optimizer is 17 ms.
+
+## C. Outstanding issues
+
+- Nobody has clicked the real screen in a browser; the wiring test proves the
+  names and the code paths, not the layout on a phone, and the touch targets
+  and the sweep's size still need a look on a device.
+- A real microphone, interface or Smaart `.trf` file was not available: the
+  send path was exercised with synthetic analyser results, and no real vendor
+  FRD was tried.
+- Weighted multi-position optimisation is implemented for one common delay and
+  polarity across positions; per-position polarity is deliberately not allowed.
+- Chain import, device-specific DSP profiles, keyboard shortcuts and a PDF report
+  remain unimplemented.
+- The optimizer's sweep is drawn for the chosen polarity only, and the trace
+  comparison does not lock a reference trace while another is edited.
+
+## D. Web deployment
+
+The changes are committed to `main` and pushed, the private preview was
+republished from the same files, and the GitHub Pages deploy was triggered, for
+build `2026-11-19-13`. The public site serves that build once the deploy
+finishes; the build stamp in `version.json` is bumped and the service-worker
+cache is renamed, so an installed Home-Screen copy picks it up and offers
+Reload.

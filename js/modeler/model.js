@@ -149,6 +149,19 @@ function normalizeConditions(raw) {
   };
 }
 
+function normalizeOrigin(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const kind = raw.kind === 'capture' || raw.kind === 'speaker' || raw.kind === 'sent' ? raw.kind : 'capture';
+  const id = text(raw.id, 80);
+  if (!id) return null;
+  return {
+    kind,
+    id,
+    name: text(raw.name, 80),
+    date: text(raw.date, 40),
+  };
+}
+
 export function normalizeDataset(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const curve = normalizeCurve(source.curve || source);
@@ -171,6 +184,7 @@ export function normalizeDataset(raw) {
     fftSize: clamp(source.fftSize, 0, 262144, 0),
     delayMs: clamp(source.delayMs, -1000, 1000, 0),
     conditions: normalizeConditions(source.conditions),
+    origin: normalizeOrigin(source.origin),
     note: text(source.note, 200),
     importedAt: text(source.importedAt, 40) || new Date().toISOString(),
   };
@@ -220,6 +234,7 @@ export function normalizeSource(raw) {
     polarity: source.polarity === 'inverted' ? 'inverted' : 'normal',
     muted: source.muted === true,
     soloed: source.soloed === true,
+    reference: source.reference === true,
     filters: Array.isArray(source.filters)
       ? source.filters.map(normalizeFilter).slice(0, 24)
       : [],
@@ -275,6 +290,7 @@ export function emptyProject() {
       propagation: { enabled: false, referenceDistanceM: 1, speedOfSound: SPEED_OF_SOUND },
       coherenceThreshold: 0.35,
       nullDepthDb: 20,
+      crossoverRegion: null,
       compareDatasetId: '',
       compareLabel: '',
     },
@@ -456,6 +472,11 @@ export function evaluateSystem(project, options = {}) {
   const anySolo = (project.sources || []).some((source) => source.soloed);
   const responses = [];
   const missing = [];
+  const warnings = [];
+  const sampleRates = new Set();
+  const references = new Set();
+  let compensated = null;
+  let mixedCompensation = false;
 
   for (const source of project.sources || []) {
     if (source.muted) continue;
@@ -471,11 +492,38 @@ export function evaluateSystem(project, options = {}) {
     trace.label = found.dataset.label;
     const group = (project.groups || []).find((entry) => entry.id === source.groupId) || null;
     if (group && group.muted) continue;
+
+    const conditions = found.dataset.conditions || {};
+    if (Number(found.dataset.sampleRate) > 0) sampleRates.add(Number(found.dataset.sampleRate));
+    if (conditions.reference) references.add(String(conditions.reference));
+    if (typeof conditions.phaseCompensated === 'boolean') {
+      if (compensated === null) compensated = conditions.phaseCompensated;
+      else if (compensated !== conditions.phaseCompensated) mixedCompensation = true;
+    }
     responses.push(sourceResponse(source, trace, group, options));
   }
 
+  // Two datasets that cannot be meaningfully summed together are said so,
+  // rather than quietly producing a curve that means nothing.
+  if (sampleRates.size > 1) {
+    warnings.push('These responses were taken at different sample rates (' +
+      [...sampleRates].join(', ') + ' Hz). A model is computed at one rate; check that the ' +
+      'curves being compared really belong to the same measurement chain.');
+  }
+  if (references.size > 1) {
+    warnings.push('These responses name different timing references (' +
+      [...references].join(', ') + '), so their arrivals may not be comparable.');
+  }
+  if (mixedCompensation) {
+    warnings.push('Some captures were taken with delay compensation on and some off. ' +
+      'Their phase references differ; turn compensation off before comparing arrivals.');
+  }
+  for (const name of missing) {
+    warnings.push('“' + name + '” has no measured response for this position and is left out of the sum.');
+  }
+
   const sum = sumResponses(responses);
-  return { responses, sum, missing, positionId };
+  return { responses, sum, missing, warnings, positionId };
 }
 
 /* ---------- timing views of the sum ---------- */
@@ -702,6 +750,7 @@ export function optimizeAlignment(options = {}) {
   const evaluate = (delayMs, polarity) => {
     const sign = polarity === 'inverted' ? -1 : 1;
     const sums = [];
+    const phases = [];
     let worst = Infinity;
     let phaseError = 0;
     let phaseCount = 0;
@@ -718,6 +767,7 @@ export function optimizeAlignment(options = {}) {
       const magnitude = Math.hypot(re, im);
       const value = magnitude > 0 ? 20 * Math.log10(magnitude) : -240;
       sums.push(value);
+      phases.push((Math.atan2(im, re) * 180) / Math.PI);
       worst = Math.min(worst, value);
       if (target.phaseValid && reference.phaseValid) {
         const phaseTarget = Math.atan2(targetIm, targetRe);
@@ -768,6 +818,9 @@ export function optimizeAlignment(options = {}) {
       phaseErrorDeg: phaseCount ? phaseError / phaseCount : NaN,
       nulls: nulls.slice(0, 4),
       sums,
+      frequencies: indices.map((index) => frequencies[index]),
+      phaseDeg: phases,
+      phaseValid: !!(target.phaseValid && reference.phaseValid),
     };
   };
 
@@ -788,6 +841,25 @@ export function optimizeAlignment(options = {}) {
     if (alternatives.some((entry) => Math.abs(entry.delayMs - candidate.delayMs) < 0.1)) continue;
     alternatives.push(candidate);
   }
+
+  // The arrangement as it stands, so the recommended one can be compared with
+  // it instead of being reported in isolation.
+  const currentPolarity = target.settings && target.settings.inverted ? 'inverted' : 'normal';
+  const before = evaluate(0, currentPolarity);
+
+  // The sweep the chart draws: the answer at each delay, for the polarity the
+  // optimizer chose, thinned so it can be drawn at once.
+  const sweepCandidates = candidates
+    .filter((candidate) => candidate.polarity === best.polarity)
+    .sort((a, b) => a.delayMs - b.delayMs);
+  const stride = Math.max(1, Math.ceil(sweepCandidates.length / 240));
+  const sweep = sweepCandidates
+    .filter((candidate, index) => index % stride === 0 || candidate === best)
+    .map((candidate) => ({
+      delayMs: candidate.delayMs,
+      objectiveValue: candidate.objectiveValue,
+      gainDb: candidate.gainDb,
+    }));
 
   // Data quality decides how far the answer can be trusted.
   let coherence = NaN;
@@ -829,12 +901,134 @@ export function optimizeAlignment(options = {}) {
     message: '',
     best,
     alternatives,
+    before,
+    sweep,
+    improvement: {
+      objective: best.objectiveValue - before.objectiveValue,
+      summationDb: best.gainDb - before.gainDb,
+    },
     confidence: { level: confidence, note: confidenceNote, coherence, phaseKnown },
     tradeoff,
     band,
     objective,
     evaluated: candidates.length,
   };
+}
+
+/**
+ * Align one target against one reference across several measuring positions at
+ * once: one delay and one polarity that serve every position, weighted by how
+ * much each position matters. It is still a prediction, and each position keeps
+ * its own curve.
+ */
+export function optimizeMultiPosition(options = {}) {
+  const pairs = (options.pairs || [])
+    .filter((pair) => pair && pair.reference && pair.target)
+    .map((pair, index) => ({
+      index,
+      weight: Number(pair.weight) > 0 ? Number(pair.weight) : 1,
+      reference: pair.reference,
+      target: pair.target,
+      label: pair.label || 'Position ' + (index + 1),
+    }));
+  if (!pairs.length) {
+    return { ok: false, message: 'Multi-position alignment needs at least one measured position.' };
+  }
+
+  const results = pairs.map((pair) => optimizeAlignment({
+    ...options,
+    reference: pair.reference,
+    target: pair.target,
+  }));
+  const failed = results.find((result) => !result.ok);
+  if (failed) {
+    return { ok: false, message: failed.message };
+  }
+
+  // The delay grid is the same for every pair, so candidates can be matched by
+  // delay and polarity and combined with the position weights.
+  const combined = new Map();
+  for (let k = 0; k < pairs.length; k += 1) {
+    const pair = pairs[k];
+    for (const entry of results[k].sweep) {
+      const entryKey = entry.delayMs.toFixed(3) + '|' + results[k].best.polarity;
+      const slot = combined.get(entryKey) || {
+        delayMs: entry.delayMs,
+        polarity: results[k].best.polarity,
+        objectiveValue: 0,
+        gainDb: 0,
+        weight: 0,
+      };
+      slot.objectiveValue += entry.objectiveValue * pair.weight;
+      slot.gainDb += entry.gainDb * pair.weight;
+      slot.weight += pair.weight;
+      combined.set(entryKey, slot);
+    }
+  }
+  if (!combined.size) {
+    return { ok: false, message: 'No candidate delay could be compared across the positions.' };
+  }
+
+  const candidates = [...combined.values()]
+    .map((slot) => ({
+      delayMs: slot.delayMs,
+      polarity: slot.polarity,
+      objectiveValue: slot.weight > 0 ? slot.objectiveValue / slot.weight : -240,
+      gainDb: slot.weight > 0 ? slot.gainDb / slot.weight : -240,
+    }))
+    .sort((a, b) => b.objectiveValue - a.objectiveValue);
+
+  const best = candidates[0];
+  const weakest = results.reduce((worst, result) =>
+    (result.confidence.level === 'limited' && worst !== 'limited' ? 'limited' : worst), 'good');
+
+  const perPosition = results.map((result, index) => {
+    const gain = result.best.gainDb;
+    return {
+      label: pairs[index].label,
+      weight: pairs[index].weight,
+      ownBestDelayMs: result.best.delayMs,
+      ownBestPolarity: result.best.polarity,
+      gainAtCommonDelayDb: gain,
+      confidence: result.confidence.level,
+      note: result.confidence.note,
+    };
+  });
+
+  return {
+    ok: true,
+    message: '',
+    best,
+    candidates: candidates.length,
+    alternatives: candidates.slice(1, 4),
+    perPosition,
+    confidence: {
+      level: weakest,
+      note: weakest === 'good'
+        ? 'Every position carries measured phase and usable coherence.'
+        : 'At least one position carries no measured phase or low coherence: ' +
+          'the common delay is only as good as that position.',
+    },
+    tradeoff: 'One delay is applied to every position at once. A position that is improved ' +
+      'may be made worse; the per-position lines below show which. Nothing is written to a ' +
+      'processor — apply it by hand and confirm with a new measurement.',
+  };
+}
+
+/** A saved scenario evaluated as a project of its own, for comparing two. */
+export function evaluateSnapshot(snapshot, models, options = {}) {
+  if (!snapshot || !snapshot.data) return null;
+  const data = snapshot.data;
+  const project = {
+    models: models || [],
+    sources: data.sources || [],
+    groups: data.groups || [],
+    positions: data.positions && data.positions.length
+      ? data.positions
+      : [{ id: 'centre', label: 'Centre', weight: 1 }],
+    settings: { ...(data.settings || {}), ...(options.settings || {}) },
+  };
+  return evaluateSystem(project, options);
 }
 
 /** Compare a predicted sum with a measured response, for the verification card. */

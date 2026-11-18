@@ -66,7 +66,7 @@ const elements = new Map();
 globalThis.document = {
   getElementById(id) {
     if (!elements.has(id)) {
-      elements.set(id, makeNode(id.endsWith('Chart') ? 'canvas' : 'div'));
+      elements.set(id, makeNode(id.includes('Chart') || id === 'dmSweep' ? 'canvas' : 'div'));
     }
     return elements.get(id);
   },
@@ -87,6 +87,28 @@ const { createDataModeler } = await import('../js/modeler/ui.js');
 const { gridFrequencies } = await import('../js/modeler/curve.js');
 
 const frequencies = gridFrequencies(400);
+const savedCurve = Array.from(frequencies, (frequency) =>
+  -3 - Math.log10(Math.max(frequency, 20) / 20) * 2 - (frequency > 80 ? 18 * Math.log10(frequency / 80) : 0));
+const savedPhase = Array.from(frequencies, (frequency) => -360 * frequency * 0.002);
+const savedEntry = {
+  id: 'lib1',
+  name: 'Sub 2 · FOH centre',
+  date: new Date().toISOString(),
+  curve: savedCurve,
+  phase: savedPhase,
+  phaseCoherence: Array.from(frequencies, () => 0.92),
+  delayMs: 2,
+  phaseCompensated: false,
+  fftSize: 16384,
+  sampleRate: 48000,
+  note: 'Saved on the measurement screen',
+  speaker: { id: 'spk2', name: 'Subwoofer 2', group: 'Subwoofers' },
+  micPosition: { label: 'FOH centre', distanceM: 12, heightM: 1.4 },
+  venue: 'Demo room',
+};
+
+let opened = false;
+
 const dataset = {
   id: 'd1',
   label: 'Sub 1 measured',
@@ -117,10 +139,9 @@ const model = {
   datasets: [dataset],
 };
 
-let opened = false;
 const modeler = createDataModeler({
   setStatus() {},
-  library: () => [],
+  library: () => [savedEntry],
   live: () => null,
   held: () => [],
   persist: () => true,
@@ -175,6 +196,98 @@ for (const view of ['transfer', 'groupdelay', 'impulse', 'difference']) {
   } catch (error) {
     report('The ' + view + ' graph is drawn', false, 'threw: ' + (error && error.message));
   }
+}
+
+/* ---------- the end-to-end workflow of Phase 2 ---------- */
+
+try {
+  const sent = modeler.sendCapture(savedEntry);
+  const live = modeler.sendMeasurement({
+    results: {
+      magDb: Float32Array.from(savedCurve),
+      phaseDeg: Float32Array.from(savedPhase),
+      coh: Float32Array.from(frequencies, () => 0.9),
+      bins: 400,
+      fftSize: 16384,
+      sampleRate: 48000,
+      df: 120,
+    },
+    delayMs: 2,
+    compensated: false,
+    label: 'Live measurement',
+  });
+  report('A saved capture and a live measurement are sent in',
+    sent.ok && live.ok && modeler.project.models.length >= 2,
+    (sent.ok ? 'saved sent' : sent.message) + ', ' + (live.ok ? 'live sent' : live.message) +
+      ', ' + modeler.project.models.length + ' loudspeakers in the library');
+} catch (error) {
+  report('A saved capture and a live measurement are sent in', false, 'threw: ' + (error && error.message));
+}
+
+let scenarioId = null;
+try {
+  const sources = modeler.project.sources;
+  const first = modeler.project.models[0];
+  const second = modeler.project.models[1] || modeler.project.models[0];
+  modeler.setProject({
+    models: modeler.project.models,
+    sources: [
+      { id: 's1', modelId: first.id, datasetId: first.datasets[0].id, name: 'Sub A', gainDb: 0, delayMs: 0, polarity: 'normal', filters: [] },
+      { id: 's2', modelId: second.id, datasetId: second.datasets[0].id, name: 'Sub B', gainDb: 0, delayMs: 3, polarity: 'normal', filters: [] },
+    ],
+    groups: [],
+    positions: [{ id: 'centre', label: 'Centre', weight: 1 }],
+    settings: {},
+  });
+  document.getElementById('dmOptReference').value = 's1';
+  document.getElementById('dmOptTarget').value = 's2';
+  modeler.optimize();
+  modeler.applyOptimization();
+  document.getElementById('dmSnapshotName').value = 'Scenario B';
+  modeler.saveScenario();
+  scenarioId = modeler.project.snapshots[0] ? modeler.project.snapshots[0].id : null;
+  report('Optimise, apply and save a scenario',
+    !!scenarioId && modeler.project.sources.length === 2,
+    scenarioId ? 'scenario saved, ' + modeler.project.snapshots.length + ' in the list' : 'no scenario saved');
+} catch (error) {
+  report('Optimise, apply and save a scenario', false, 'threw: ' + (error && error.message));
+}
+
+try {
+  document.getElementById('dmCompareSelect').value = 'capture:lib1';
+  modeler.compareMeasurement();
+  document.getElementById('dmCompareLow').value = '100';
+  document.getElementById('dmCompareHigh').value = '10000';
+  modeler.compareMeasurement();
+  if (scenarioId) modeler.recallScenario(scenarioId);
+  report('A prediction is compared and the scenario recalled', true, 'compared and recalled without throwing');
+} catch (error) {
+  report('A prediction is compared and the scenario recalled', false, 'threw: ' + (error && error.message));
+}
+
+try {
+  modeler.createEightSubs();
+  modeler.pairCompare();
+  const eight = modeler.project.sources.filter((source) => /^Subwoofer [1-8]$/.test(source.name));
+  const reference = modeler.project.sources.find((source) => source.reference);
+  report('The eight-subwoofer workflow builds and compares',
+    eight.length === 8 && !!reference,
+    eight.length + ' subwoofers, reference ' + (reference ? reference.name : 'none'));
+} catch (error) {
+  report('The eight-subwoofer workflow builds and compares', false, 'threw: ' + (error && error.message));
+}
+
+try {
+  modeler.loadDemoData();
+  const demos = modeler.project.sources.filter((source) => /^DEMO · Sub/.test(source.name));
+  const labelled = modeler.project.models
+    .filter((entry) => /^DEMO/.test(entry.name))
+    .every((entry) => (entry.datasets || []).every((item) =>
+      /demonstration/i.test(item.importedFrom || '') || /demonstration/i.test(item.note || '')));
+  report('Demonstration data is labelled as demonstration', demos.length === 8 && labelled,
+    demos.length + ' demo sources, every demo dataset labelled');
+} catch (error) {
+  report('Demonstration data is labelled as demonstration', false, 'threw: ' + (error && error.message));
 }
 
 /* Every element the screen asks for must be named in index.html. */

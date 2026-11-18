@@ -39,14 +39,20 @@ const FREQ_LINES = [
 ];
 const FREQ_MAJOR = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
-function formatHz(frequency) {
-  const f = Number(frequency);
+function formatHz(frequency) {  const f = Number(frequency);
   if (!Number.isFinite(f)) return '—';
   if (f >= 1000) {
     const k = f / 1000;
     return (Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)) + 'k';
   }
   return f.toFixed(0);
+}
+
+function wrapPhase(degrees) {
+  let value = Number(degrees) % 360;
+  if (value > 180) value -= 360;
+  if (value < -180) value += 360;
+  return value;
 }
 
 function finite(value) {
@@ -67,6 +73,9 @@ export class ModelerChart {
     this.showLegend = true;
     this.cursor = null;
     this.drag = null;
+    this.markers = [];
+    this.crossoverHz = null;
+    this.scheduled = false;
     this.onHover = null;
     this.onRangeChange = null;
     this.pad = { left: 46, right: 16, top: 26, bottom: 22 };
@@ -116,6 +125,34 @@ export class ModelerChart {
 
   setImpulse(impulse) {
     this.impulse = impulse && Array.isArray(impulse.values) ? impulse : null;
+  }
+
+  /** Phase intersection markers: frequencies where two traces meet. */
+  setMarkers(markers) {
+    this.markers = (markers || []).filter((marker) =>
+      Number.isFinite(marker.frequency) && Number.isFinite(marker.phaseDeg));
+  }
+
+  /** The crossover region to shade, or null when it is off. */
+  setCrossover(frequency) {
+    const value = Number(frequency);
+    this.crossoverHz = Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  /**
+   * A repaint scheduled for the next animation frame. Several pointer moves
+   * between two frames paint once, so dragging a delay never queues a backlog
+   * of drawings behind the finger.
+   */
+  scheduleDraw() {
+    if (this.scheduled) return;
+    this.scheduled = true;
+    const run = () => {
+      this.scheduled = false;
+      this.draw();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else run();
   }
 
   plotRect() {
@@ -290,6 +327,7 @@ export class ModelerChart {
     }
 
     this.drawFrequencyGrid(used[used.length - 1].rect, area);
+    this.drawCrossoverBand(used);
 
     for (const pane of used) {
       if (pane.id === 'magnitude') this.drawMagnitude(pane.rect);
@@ -304,8 +342,36 @@ export class ModelerChart {
     this.drawCursor(used);
   }
 
-  drawFrequencyGrid(rect, area) {
+  /**
+   * A quiet band around the crossover frequency, so the region being aligned is
+   * obvious without changing a single curve.
+   */
+  drawCrossoverBand(panes) {
+    if (!this.crossoverHz || !panes.length) return;
+    const min = Math.max(this.range.min, this.crossoverHz / Math.pow(2, 1 / 6));
+    const max = Math.min(this.range.max, this.crossoverHz * Math.pow(2, 1 / 6));
+    if (!(max > min)) return;
+    const x0 = this.xOf(min);
+    const x1 = this.xOf(max);
+    if (!(x1 > x0)) return;
+
     const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = 'rgba(111,212,202,0.08)';
+    for (const pane of panes) ctx.fillRect(x0, pane.rect.y, x1 - x0, pane.rect.h);
+    ctx.strokeStyle = 'rgba(111,212,202,0.28)';
+    ctx.setLineDash([2, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const x of [x0, x1]) {
+      ctx.moveTo(Math.round(x) + 0.5, panes[0].rect.y);
+      ctx.lineTo(Math.round(x) + 0.5, panes[0].rect.y + panes[0].rect.h);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawFrequencyGrid(rect, area) {    const ctx = this.ctx;
     const r = this.range;
     ctx.save();
     for (const line of FREQ_LINES) {
@@ -474,6 +540,25 @@ export class ModelerChart {
         points.push([this.xOf(f), this.dbToY(shown, rect, range)]);
       }
       this.strokeTrace(points, trace.color, trace.width || 1.3, trace.phaseDashed ? [3, 3] : []);
+    }
+
+    // Where two phase traces cross, a dot marks the frequency.
+    const ctx = this.ctx;
+    for (const marker of this.markers) {
+      if (marker.frequency < this.range.min || marker.frequency > this.range.max) continue;
+      const phase = this.phaseMode === 'wrapped' ? wrapPhase(marker.phaseDeg) : marker.phaseDeg;
+      if (phase < range.min || phase > range.max) continue;
+      const x = this.xOf(marker.frequency);
+      const y = this.dbToY(phase, rect, range);
+      ctx.save();
+      ctx.fillStyle = marker.color || 'rgba(255,180,130,0.9)';
+      ctx.strokeStyle = 'rgba(9,13,10,0.9)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
 
     if (!traces.length) {
@@ -705,7 +790,7 @@ export class ModelerChart {
         const max = Math.min(F_MAX, Math.max(min * 1.001, span.max * factor));
         this.setRange(min, max);
         if (this.onRangeChange) this.onRangeChange(this.range);
-        this.draw();
+        this.scheduleDraw();
         return;
       }
 
@@ -716,7 +801,7 @@ export class ModelerChart {
           this.onHover({ frequency: this.freqAtX(x), x, y });
         } else this.onHover(null);
       }
-      this.draw();
+      this.scheduleDraw();
     });
 
     const finish = (event) => {
@@ -747,7 +832,7 @@ export class ModelerChart {
       const max = Math.min(F_MAX, anchor + (this.range.max - anchor) * factor);
       this.setRange(min, max);
       if (this.onRangeChange) this.onRangeChange(this.range);
-      this.draw();
+      this.scheduleDraw();
     }, { passive: false });
 
     canvas.addEventListener('dblclick', () => {

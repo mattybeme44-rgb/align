@@ -2722,6 +2722,14 @@ function renderSaved() {
       }
     });
 
+    action('Send to modeler', () => {
+      const result = dataModeler.sendCapture(item);
+      setStatus(result.message, result.ok ? 'ok' : 'err');
+      setLibraryError(result.ok ? '' : result.message);
+      const sheet = $('savedSheet');
+      if (sheet && result.ok) sheet.hidden = true;
+    });
+
     action('Delete', () => {
       const updated = state.saved.filter((entry) => entry.id !== item.id);
       if (!persistSaved(updated)) return;
@@ -7898,6 +7906,49 @@ $('btnModeler')?.addEventListener('click', () => {
     dataModeler.close();
   } else {
     dataModeler.open();
+  }
+});
+
+/* Sending the current measurement, or a held capture, into the modeler. */
+$('btnSendModeler')?.addEventListener('click', () => {
+  const note = $('sendModelerNote');
+  const held = heldSnapshot('A');
+  const payload = state.results
+    ? {
+        results: state.results,
+        delayMs: state.totalDelayMs,
+        compensated: state.compensate,
+        label: 'Live measurement',
+        device: (($('rdDevice') && $('rdDevice').textContent) || '').trim(),
+        channels: (($('rdChannelCount') && $('rdChannelCount').textContent) || '').trim(),
+        reference: state.refMode,
+        calibration: state.micCal && state.micCal.name ? state.micCal.name : '',
+      }
+    : held
+      ? {
+          results: held,
+          delayMs: held.delayMs,
+          compensated: !!held.phaseCompensated,
+          label: 'Capture A',
+          reference: state.refMode,
+          calibration: state.micCal && state.micCal.name ? state.micCal.name : '',
+        }
+      : null;
+
+  if (!payload) {
+    if (note) {
+      note.textContent = 'Nothing to send yet — start a measurement, or hold Capture A first.';
+      note.hidden = false;
+    }
+    setStatus('nothing to send to the Data Modeler', 'err');
+    return;
+  }
+
+  const result = dataModeler.sendMeasurement(payload);
+  setStatus(result.message, result.ok ? 'ok' : 'err');
+  if (note) {
+    note.textContent = result.message;
+    note.hidden = false;
   }
 });
 
