@@ -102,18 +102,28 @@ export function filterCoefficients(filter, sampleRate) {
   }
 
   if (info.id === 'highPass1' || info.id === 'lowPass1') {
+    // Bilinear transform of s/(s+ωc) and ωc/(s+ωc), prewarped at the corner:
+    //   HP = (1 − z⁻¹) / ((1 + k) + (k − 1)z⁻¹)
+    //   LP = k(1 + z⁻¹) / ((1 + k) + (k − 1)z⁻¹)
+    // with k = tan(π fc / fs). The numerator of the high-pass carries no k:
+    // dividing by it made every first-order high-pass — including the odd-order
+    // Butterworth and Bessel sections — 20·log10(k) dB too quiet, which is
+    // −23.7 dB at a 1 kHz corner and 48 kHz.
     const k = Math.tan((Math.PI * frequency) / fs);
     const norm = 1 / (1 + k);
     if (info.id === 'highPass1') {
-      return { b0: k * norm, b1: -k * norm, b2: 0, a1: (k - 1) * norm, a2: 0 };
+      return { b0: norm, b1: -norm, b2: 0, a1: (k - 1) * norm, a2: 0 };
     }
     return { b0: k * norm, b1: k * norm, b2: 0, a1: (k - 1) * norm, a2: 0 };
   }
 
   if (info.id === 'allPass1') {
+    // RBJ first-order all-pass, H = (a + z⁻¹)/(1 + a z⁻¹) with a = (k − 1)/(k + 1).
+    // The old pair returned −H: still unity magnitude, but half a turn away from
+    // the phase the section was asked to add.
     const k = Math.tan((Math.PI * frequency) / fs);
-    const norm = (1 - k) / (1 + k);
-    return { b0: norm, b1: -1, b2: 0, a1: -norm, a2: 0 };
+    const a = (k - 1) / (1 + k);
+    return { b0: a, b1: 1, b2: 0, a1: a, a2: 0 };
   }
 
   if (['peaking', 'lowShelf', 'highShelf', 'highPass'].includes(info.id)) {

@@ -21,38 +21,38 @@ const STORAGE_KEY = 'align.graphAppearance.v1';
  * magenta, lime and yellow, each distinct from its neighbours.
  */
 export const PALETTE = {
-  trace: '#41d9ff',                       // live magnitude — electric cyan
-  phase: '#3ef0b8',                       // live phase — bright mint
-  coh: '#ffb054',                         // coherence — warm amber
-  ghost: 'rgba(226, 248, 255, 0.90)',     // capture A — bright ice
-  ghostB: 'rgba(96, 178, 255, 0.92)',     // capture B — brilliant blue
-  ghostC: 'rgba(178, 132, 255, 0.92)',    // capture C — violet
-  ghostD: 'rgba(255, 176, 82, 0.92)',     // capture D — orange
-  ghostE: 'rgba(64, 224, 245, 0.90)',     // capture E — cyan-sky
-  ghostF: 'rgba(255, 106, 200, 0.92)',    // capture F — magenta
-  peak: 'rgba(65, 217, 255, 0.34)',       // peak hold — cyan pin
-  average: '#ff77c8',                     // running average — pink
-  overlay: '#c9a3ff',                     // saved overlays — purple
-  savedColors: ['#c9a3ff', '#ffb36b', '#5ec8ff', '#ff8fb8', '#7de87a', '#ffe066', '#5fded4', '#e8a68f'],
-  target: 'rgba(206, 222, 240, 0.50)',    // target curve — cool grey-blue
-  cursor: 'rgba(255, 138, 110, 0.60)',    // cursor — coral
-  sumTrace: '#ffc453',                    // predicted sum — yellow
+  trace: '#2fe6ff',                       // live magnitude — electric cyan
+  phase: '#2bf2b6',                       // live phase — vibrant mint
+  coh: '#ffb54a',                         // coherence — warm amber
+  ghost: 'rgba(232, 250, 255, 0.92)',     // capture A — bright ice
+  ghostB: 'rgba(84, 172, 255, 0.94)',     // capture B — brilliant blue
+  ghostC: 'rgba(186, 132, 255, 0.94)',    // capture C — saturated violet
+  ghostD: 'rgba(255, 176, 82, 0.94)',     // capture D — warm orange
+  ghostE: 'rgba(56, 228, 245, 0.92)',     // capture E — cyan-sky
+  ghostF: 'rgba(255, 92, 200, 0.94)',     // capture F — rich magenta
+  peak: 'rgba(47, 230, 255, 0.36)',       // peak hold — cyan pin
+  average: '#ff7ad1',                     // running average — pink
+  overlay: '#bb93ff',                     // saved overlays — purple
+  savedColors: ['#bb93ff', '#ffb36b', '#5ec8ff', '#ff8fb8', '#7de87a', '#ffe066', '#5fded4', '#e8a68f'],
+  target: 'rgba(206, 222, 240, 0.52)',    // target curve — cool grey-blue
+  cursor: 'rgba(255, 138, 110, 0.62)',    // cursor — coral
+  sumTrace: '#ffd24a',                    // predicted sum — yellow
   halo: 'rgba(8, 12, 20, 0.92)',          // laid under traces so crossings stay separate
-  bg: '#10151d',
+  bg: '#0b101a',
 };
 
 const DEFAULTS = {
-  preset: 'studio',
-  brightness: 80,      // 80 = natural colour strength; higher pushes traces brighter
-  saturation: 100,     // 100 = base saturation
+  preset: 'Vibrant',
+  brightness: 95,      // 80 = natural colour strength; higher pushes traces brighter
+  saturation: 135,     // 100 = base saturation
   thickness: 'medium', // thin | medium | thick | custom
   thicknessPx: 2.2,    // used when thickness is custom
   opacity: 100,        // 100 = fully drawn
-  glow: 'off',         // off | subtle | enhanced
-  background: 32,      // graph panel brightness, 0 = near black, 100 = light professional
-  gridMajor: 55,       // major gridline contrast
-  gridMinor: 45,       // minor gridline contrast
-  axis: 75,            // axis and label brightness
+  glow: 'subtle',      // off | subtle | enhanced
+  background: 30,      // graph panel brightness, 0 = near black, 100 = light professional
+  gridMajor: 62,       // major gridline contrast
+  gridMinor: 52,       // minor gridline contrast
+  axis: 88,            // axis and label brightness
   coherence: 100,      // coherence display intensity
   cursor: 100,         // cursor and marker visibility
 };
@@ -235,7 +235,7 @@ export const appearance = {
   hasOverride: (key) => Boolean(overrides[key]),
 
   reset() {
-    global_ = Object.assign({}, DEFAULTS, PRESETS['Studio Dark'], { preset: 'studio' });
+    global_ = Object.assign({}, DEFAULTS, PRESETS['Vibrant'], { preset: 'Vibrant' });
     overrides = {};
     changed();
   },
@@ -353,6 +353,7 @@ export const appearance = {
       link('gapOpacity', 'opacity');
       link('gapBackground', 'background');
       link('gapGrid', 'gridMajor');
+      link('gapGridMinor', 'gridMinor');
       link('gapAxis', 'axis');
       link('gapCoherence', 'coherence');
       link('gapCursor', 'cursor');
@@ -404,6 +405,7 @@ export const appearance = {
     slider('gapOpacity', 'opacity');
     slider('gapBackground', 'background');
     slider('gapGrid', 'gridMajor');
+    slider('gapGridMinor', 'gridMinor');
     slider('gapAxis', 'axis');
     slider('gapCoherence', 'coherence');
     slider('gapCursor', 'cursor');

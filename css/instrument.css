@@ -3274,3 +3274,28 @@ body.validation-page {
 #displayPanel input[type="range"] {
   flex: 1 1 auto;
 }
+
+
+/* ---------- Vibrancy and readability pass ---------- */
+
+/* The active choice in a popover reads as a lit control rather than a tinted box. */
+.popover .btn.on,
+.popover .link-btn.on {
+  color: var(--accent-bright);
+  border-color: rgba(var(--accent-rgb), 0.62);
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.24), rgba(var(--accent-rgb), 0.10));
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.12), 0 0 16px rgba(var(--accent-rgb), 0.22);
+}
+
+/* The display panel says which of its two natures it has: drawing only. */
+#displayPanel .pop-detail {
+  color: var(--magenta);
+  border-color: rgba(255, 92, 200, 0.42);
+  background: rgba(255, 92, 200, 0.10);
+}
+
+/* Preset chips read as choices at a glance. */
+#gapPresetRow .btn {
+  border-radius: 999px;
+  font-weight: 600;
+}
