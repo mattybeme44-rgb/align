@@ -321,6 +321,54 @@ const channelsView = createChannels({
   setStatus,
   sourceOptions: () => sourceOptions(),
   generator: () => ({ signal: state.signal, level: state.level, sineHz: state.sineHz }),
+  saveChannels: (channels) => {
+    const items = channels.map((channel) => {
+      const input = Number(channel.input ?? 0);
+      const smoothing = Number(channel.smoothing) || 0;
+      const label = smoothing === 0
+        ? 'None'
+        : smoothing === 0.125
+          ? '1/8 oct'
+          : smoothing <= 0.2
+            ? '1/6 oct'
+            : '1/3 oct';
+      return {
+        schema: SAVED_SCHEMA,
+        id: captureId(),
+        name: 'Input ' + (input + 1) + ' · multichannel',
+        date: new Date().toISOString(),
+        source: 'Multichannel',
+        delayMs: Number.isFinite(channel.delayMs) ? channel.delayMs : channel.result.delayMs,
+        coherence: Number.isFinite(channel.coherence) ? channel.coherence : 0,
+        polarity: channel.result.polarityKnown
+          ? (channel.result.polarity > 0 ? 'normal' : 'inverted')
+          : 'unknown',
+        fftSize: channel.result.fftSize,
+        sampleRate: channel.result.sampleRate,
+        smoothing: label,
+        reference: 'Generated',
+        curve: savedCurve(channel.result),
+        phase: sampleSaved(channel.result.phaseDeg, channel.result),
+        phaseCoherence: sampleSaved(channel.result.coh, channel.result),
+        phaseCompensated: true,
+        previewDelayMs: 0,
+        gate: {
+          enabled: !!state.gate.enabled,
+          startMs: state.gate.startMs,
+          widthMs: state.gate.widthMs,
+        },
+        note: 'Multichannel · input ' + (input + 1) + ' · FFT ' + channel.result.fftSize,
+      };
+    });
+
+    const updated = [...items, ...state.saved];
+    if (!persistSaved(updated)) {
+      return { ok: false, message: 'Could not write to browser storage — nothing was saved.' };
+    }
+    state.saved = updated;
+    renderSaved();
+    return { ok: true, count: items.length };
+  },
   onOpen: () => {
     if (multiView.active) {
       multiView.close();

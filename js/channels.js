@@ -3,19 +3,21 @@
  * interface actually offers, side by side on one logarithmic axis.
  *
  * Each channel has its own input, its own window, smoothing and averaging, its
- * own delay and coherence, and its own held capture. One button starts and stops
- * them together, one channel can fill the window, and the screen says plainly
- * which inputs the browser delivered. It reads the capture and never touches the
- * single measurement's settings, gate or captures.
+ * own delay, coherence, held capture and impulse pane. One button starts and
+ * stops them together, one channel can fill the window, and the screen says
+ * plainly which inputs the browser delivered.
+ *
+ * Three tabs keep it uncluttered: the channels themselves, a band-by-band
+ * comparison of two of them, and the report. It reads the capture and never
+ * touches the single measurement's settings, gate or captures.
  */
 
 import { Analyser } from './analyser.js';
+import { reportPdfBlob, shareOrDownload } from './sharing.js';
 
 const NAMES = ['Channel 1', 'Channel 2', 'Channel 3', 'Channel 4'];
 const COLORS = ['#a6f14d', '#3ddcff', '#ffb054', '#ffe066'];
 const FFT_CHOICES = [4096, 8192, 16384, 32768];
-const SMOOTHING = [[0, 'None'], [0.125, '1/8 oct'], [1 / 6, '1/6 oct'], [1 / 3, '1/3 oct']];
-const AVERAGING = [[0.05, 'Slow'], [0.12, 'Medium'], [0.3, 'Quick']];
 const UPDATE_MS = 300;
 
 const F_MIN = 20;
@@ -23,12 +25,15 @@ const F_MAX = 20000;
 const DB_TOP = 20;
 const DB_BOTTOM = -60;
 const TICKS = [20, 100, 1000, 10000, 20000];
+const COHERENCE_GATE = 0.35;
+
+const SMOOTHING_LABELS = [[0, 'None'], [0.125, '1/8 oct'], [1 / 6, '1/6 oct'], [1 / 3, '1/3 oct']];
 
 const ICON_PIN = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M9.5 1.5 14.5 6.5 12 7.5 9.5 10 8.5 14 2 7.5 6 6.5 8.5 4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
-const ICON_PIN_OFF = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M9.5 1.5 14.5 6.5 12 7.5 9.5 10 8.5 14 2 7.5 6 6.5 8.5 4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M2 14 14 2" stroke="currentColor" stroke-width="1.4"/></svg>';
 const ICON_EXPAND = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M9 2h5v5M7 14H2V9M14 2 9.5 6.5M2 14l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
 const ICON_COLLAPSE = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M14 9H9v5M2 7h5V2M14 9 9.5 4.5M2 7l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
 const ICON_SLIDERS = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.2"/><circle cx="6" cy="4" r="1.7" fill="currentColor"/><circle cx="10" cy="8" r="1.7" fill="currentColor"/><circle cx="5" cy="12" r="1.7" fill="currentColor"/></svg>';
+const ICON_IMPULSE = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 12h5l1-8 1 10 1-5 1 3h6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 
@@ -42,6 +47,14 @@ function frequencyLabel(hz) {
 
 function dbLabel(db) {
   return String(Math.round(db)).replace('-', '−');
+}
+
+function smoothingText(value) {
+  let best = SMOOTHING_LABELS[0];
+  for (const entry of SMOOTHING_LABELS) {
+    if (Math.abs(entry[0] - value) < Math.abs(best[0] - value)) best = entry;
+  }
+  return best[1];
 }
 
 function meanCoherence(result) {
@@ -58,6 +71,39 @@ function meanCoherence(result) {
   return count ? sum / count : 0;
 }
 
+/** One third-octave band's power level and mean coherence. */
+function bandLevel(result, centre) {
+  if (!result || !result.magDb || !result.df || !result.bins) return null;
+  const ratio = Math.pow(2, 1 / 6);
+  const k0 = Math.max(1, Math.round(centre / ratio / result.df));
+  const k1 = Math.min(result.bins - 1, Math.round(centre * ratio / result.df));
+  if (k1 < k0) return null;
+  let power = 0;
+  let coherence = 0;
+  let count = 0;
+  for (let k = k0; k <= k1; k += 1) {
+    const db = result.magDb[k];
+    if (!Number.isFinite(db)) continue;
+    power += Math.pow(10, db / 10);
+    coherence += result.coh[k];
+    count += 1;
+  }
+  if (!count || !(power > 0)) return null;
+  return { db: 10 * Math.log10(power / count), coherence: coherence / count };
+}
+
+function thirdOctaves() {
+  const centres = [];
+  let centre = 25;
+  while (centre <= 16000) {
+    centres.push(Math.round(centre * 100) / 100);
+    centre *= Math.pow(2, 1 / 3);
+  }
+  return centres;
+}
+
+const CENTRES = thirdOctaves();
+
 export function createChannels(options) {
   const opts = options || {};
   const engine = opts.engine || null;
@@ -66,6 +112,7 @@ export function createChannels(options) {
   const generator = typeof opts.generator === 'function'
     ? opts.generator
     : () => ({ signal: 'pink', level: 0.2, sineHz: 1000 });
+  const saveChannels = typeof opts.saveChannels === 'function' ? opts.saveChannels : null;
   const onOpenHook = typeof opts.onOpen === 'function' ? opts.onOpen : null;
   const onCloseHook = typeof opts.onClose === 'function' ? opts.onClose : null;
 
@@ -75,6 +122,9 @@ export function createChannels(options) {
     startedEngine: false,
     expanded: null,
     editing: null,
+    tab: 'channels',
+    compareA: null,
+    compareB: null,
     delivered: 0,
     channels: [0, 1, 2, 3].map(() => ({
       input: null,
@@ -85,6 +135,7 @@ export function createChannels(options) {
       held: null,
       coherence: null,
       delayMs: null,
+      impulse: false,
     })),
   };
 
@@ -116,6 +167,7 @@ export function createChannels(options) {
       head.innerHTML =
         '<span class="mc-dot" style="background:' + COLORS[index] + '"></span>' +
         '<span class="mc-name">' + NAMES[index] + '</span>' +
+        '<button class="mc-icon" type="button" data-act="impulse" title="Impulse response" aria-label="Channel ' + (index + 1) + ' impulse response">' + ICON_IMPULSE + '</button>' +
         '<button class="mc-icon" type="button" data-act="settings" title="Channel analysis" aria-label="Channel ' + (index + 1) + ' analysis">' + ICON_SLIDERS + '</button>' +
         '<button class="mc-icon" type="button" data-act="hold" title="Hold this curve" aria-label="Hold channel ' + (index + 1) + '">' + ICON_PIN + '</button>' +
         '<button class="mc-icon" type="button" data-act="expand" title="Fill the window with this channel" aria-label="Expand channel ' + (index + 1) + '">' + ICON_EXPAND + '</button>';
@@ -153,10 +205,14 @@ export function createChannels(options) {
       wrap.className = 'mc-chart-wrap';
       const canvas = document.createElement('canvas');
       canvas.className = 'mc-chart';
+      const impulse = document.createElement('canvas');
+      impulse.className = 'mc-chart mc-chart-impulse';
+      impulse.hidden = true;
       const empty = document.createElement('p');
       empty.className = 'mc-empty';
       empty.hidden = true;
       wrap.appendChild(canvas);
+      wrap.appendChild(impulse);
       wrap.appendChild(empty);
 
       card.appendChild(head);
@@ -171,13 +227,15 @@ export function createChannels(options) {
         if (act === 'hold') toggleHold(index);
         if (act === 'expand') toggleExpand(index);
         if (act === 'settings') showSettings(index);
+        if (act === 'impulse') toggleImpulse(index);
       });
 
-      cards[index] = { card, select, delay, coherence, held, canvas, empty };
+      cards[index] = { card, select, delay, coherence, held, canvas, impulse, empty };
     });
 
     renderInputs();
     renderExpansion();
+    renderImpulse();
   }
 
   function renderInputs() {
@@ -224,6 +282,17 @@ export function createChannels(options) {
     });
   }
 
+  function renderImpulse() {
+    state.channels.forEach((channel, index) => {
+      const entry = cards[index];
+      if (!entry) return;
+      entry.impulse.hidden = !channel.impulse || channel.input === null;
+      entry.card.classList.toggle('mc-with-impulse', channel.impulse && channel.input !== null);
+      const button = entry.card.querySelector('[data-act="impulse"]');
+      if (button) button.classList.toggle('on', channel.impulse);
+    });
+  }
+
   function updateFigures() {
     state.channels.forEach((channel, index) => {
       const entry = cards[index];
@@ -267,6 +336,26 @@ export function createChannels(options) {
     button.classList.toggle('on', state.running);
   }
 
+  /* ---------- tabs ---------- */
+
+  function showTab(tab) {
+    state.tab = tab;
+    const panels = { channels: 'mcPanelChannels', compare: 'mcPanelCompare', report: 'mcPanelReport' };
+    Object.keys(panels).forEach((key) => {
+      const panel = $(panels[key]);
+      if (panel) panel.hidden = key !== tab;
+    });
+    document.querySelectorAll('.mc-tab').forEach((button) => {
+      const on = button.dataset.tab === tab;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    requestAnimationFrame(() => {
+      resizeAll();
+      drawAll();
+    });
+  }
+
   /* ---------- control ---------- */
 
   function open() {
@@ -281,8 +370,11 @@ export function createChannels(options) {
       bound = true;
     }
     buildCards();
+    showTab(state.tab || 'channels');
     updateNote();
     updateStartButton();
+    updateCompareChoices();
+    renderReport();
     setStatus('multichannel screen open — Start all reads the inputs the interface offers');
     window.addEventListener('resize', resizeAll);
     requestAnimationFrame(() => { resizeAll(); drawAll(); });
@@ -340,8 +432,11 @@ export function createChannels(options) {
       });
 
       renderInputs();
+      renderImpulse();
       updateNote();
       updateStartButton();
+      updateCompareChoices();
+      renderReport();
 
       setStatus(state.delivered + ' input' + (state.delivered === 1 ? '' : 's') +
         ' open — the reference is the generated signal', 'ok');
@@ -379,7 +474,9 @@ export function createChannels(options) {
     analysers[index] = null;
     windows[index] = null;
     renderInputs();
+    renderImpulse();
     updateFigures();
+    updateCompareChoices();
     drawAll();
   }
 
@@ -415,13 +512,24 @@ export function createChannels(options) {
     if (channel.held) {
       channel.held = null;
     } else if (channel.result) {
-      channel.held = { magDb: Float32Array.from(channel.result.magDb), df: channel.result.df };
+      channel.held = {
+        magDb: Float32Array.from(channel.result.magDb),
+        df: channel.result.df,
+      };
     } else {
       setStatus('channel ' + (index + 1) + ' has no curve to hold yet', 'err');
       return;
     }
     updateFigures();
     drawAll();
+  }
+
+  function toggleImpulse(index) {
+    const channel = state.channels[index];
+    if (!channel) return;
+    channel.impulse = !channel.impulse;
+    renderImpulse();
+    requestAnimationFrame(() => { resizeAll(); drawAll(); });
   }
 
   function toggleExpand(index) {
@@ -458,15 +566,201 @@ export function createChannels(options) {
     state.editing = null;
   }
 
-  function bindSettings() {
-    const close = $('btnMcSettingsDone');
-    if (close) close.addEventListener('click', hideSettings);
-    const fft = $('mcFFT');
-    if (fft) fft.addEventListener('change', () => { if (state.editing !== null) setFFT(state.editing, fft.value); });
-    const smoothing = $('mcSmoothing');
-    if (smoothing) smoothing.addEventListener('change', () => { if (state.editing !== null) setSmoothing(state.editing, smoothing.value); });
-    const averaging = $('mcAveraging');
-    if (averaging) averaging.addEventListener('change', () => { if (state.editing !== null) setAveraging(state.editing, averaging.value); });
+  /* ---------- saving and reporting ---------- */
+
+  function assignedChannels() {
+    return state.channels.filter((channel) => channel.input !== null);
+  }
+
+  function saveAll() {
+    if (!saveChannels) return;
+    const ready = assignedChannels().filter((channel) => channel.result);
+    if (!ready.length) {
+      setStatus(assignedChannels().length
+        ? 'no channel has a curve yet — Start the channels, then save'
+        : 'no channel has an input, so there is nothing to save', 'err');
+      return;
+    }
+
+    const payload = ready.map((channel) => ({
+      input: channel.input,
+      smoothing: channel.smoothing,
+      coherence: channel.coherence,
+      delayMs: channel.delayMs,
+      result: channel.result,
+    }));
+
+    const outcome = saveChannels(payload) || { ok: false, message: 'nothing was saved' };
+    if (outcome.ok) {
+      const left = assignedChannels().length - ready.length;
+      setStatus('saved ' + outcome.count + ' channel' + (outcome.count === 1 ? '' : 's') +
+        ' to the capture library' + (left > 0 ? ' · ' + left + ' left out — no curve yet' : ''), 'ok');
+    } else {
+      setStatus(outcome.message || 'the channels could not be saved', 'err');
+    }
+  }
+
+  async function shareReport() {
+    const withCurves = state.channels.filter((channel) => channel.result);
+    if (!withCurves.length) {
+      setStatus('there is nothing to report until a channel has a curve', 'err');
+      return;
+    }
+
+    try {
+      const chart = buildReportChart();
+      const facts = state.channels.map((channel, index) => {
+        if (!channel.result) return [NAMES[index], 'no curve'];
+        const delay = Number.isFinite(channel.delayMs) ? channel.delayMs.toFixed(2) + ' ms' : '—';
+        const coherence = Number.isFinite(channel.coherence) ? Math.round(channel.coherence * 100) + '%' : '—';
+        return [NAMES[index], delay + ' · ' + coherence];
+      });
+      const settings = [
+        ['Inputs captured', String(state.delivered)],
+        ['Reference', 'generated signal'],
+        ...state.channels.map((channel, index) => [
+          NAMES[index],
+          channel.input === null
+            ? 'no input'
+            : 'IN ' + (channel.input + 1) + ' · FFT ' + channel.fftSize + ' · ' + smoothingText(channel.smoothing),
+        ]),
+      ];
+
+      const blob = await reportPdfBlob({
+        dateText: new Date().toLocaleString(),
+        chartCanvas: chart,
+        facts,
+        eqLines: ['Multichannel capture in the browser — every curve is measured from the captured audio.'],
+        settings,
+      });
+
+      const outcome = await shareOrDownload(blob, 'align-multichannel.pdf', 'Align multichannel report');
+      setStatus(outcome === 'cancelled'
+        ? 'the report was cancelled'
+        : 'the multichannel report is ready', outcome === 'cancelled' ? 'err' : 'ok');
+    } catch (err) {
+      setStatus('the report could not be made: ' + (err && err.message ? err.message : err), 'err');
+    }
+  }
+
+  /* ---------- comparison ---------- */
+
+  function updateCompareChoices() {
+    const options = state.channels
+      .filter((channel) => channel.input !== null)
+      .map((channel) => ({ value: String(state.channels.indexOf(channel)), label: NAMES[state.channels.indexOf(channel)] }));
+
+    const apply = (select, current) => {
+      if (!select) return null;
+      select.textContent = '';
+      if (!options.length) {
+        const none = document.createElement('option');
+        none.value = '';
+        none.textContent = 'no channel';
+        select.appendChild(none);
+        select.disabled = true;
+        return null;
+      }
+      select.disabled = false;
+      options.forEach((option) => {
+        const node = document.createElement('option');
+        node.value = option.value;
+        node.textContent = option.label;
+        select.appendChild(node);
+      });
+      const wanted = options.some((option) => option.value === String(current))
+        ? String(current)
+        : options[0].value;
+      select.value = wanted;
+      return Number(wanted);
+    };
+
+    state.compareA = apply($('mcCompareA'), state.compareA);
+    const second = options.find((option) => Number(option.value) !== state.compareA);
+    const wantedB = options.some((option) => option.value === String(state.compareB)) &&
+      Number(state.compareB) !== state.compareA
+      ? String(state.compareB)
+      : (second ? second.value : null);
+    state.compareB = wantedB === null ? null : apply($('mcCompareB'), Number(wantedB));
+  }
+
+  function comparison() {
+    const a = state.channels[state.compareA ?? -1];
+    const b = state.channels[state.compareB ?? -1];
+    if (!a || !b || !a.result || !b.result) return null;
+
+    const bands = CENTRES.map((centre) => {
+      const left = bandLevel(a.result, centre);
+      const right = bandLevel(b.result, centre);
+      if (!left || !right || left.coherence < COHERENCE_GATE || right.coherence < COHERENCE_GATE) {
+        return { centre, delta: null };
+      }
+      return { centre, delta: left.db - right.db };
+    });
+
+    const measured = bands.filter((band) => band.delta !== null);
+    const largest = measured.reduce(
+      (best, band) => (!best || Math.abs(band.delta) > Math.abs(best.delta) ? band : best),
+      null,
+    );
+    const range = measured.filter((band) => band.centre >= 250 && band.centre <= 4000);
+    const withinTwo = range.length
+      ? range.filter((band) => Math.abs(band.delta) <= 2).length / range.length
+      : null;
+
+    return { a, b, bands, largest, withinTwo };
+  }
+
+  function comparisonText(result) {
+    if (!result) {
+      return 'Two channels with a live curve are needed: Start the channels, then choose one for A and one for B.';
+    }
+    if (!result.largest) {
+      return 'No band is clear of the coherence gate (35%) yet — the two curves do not agree enough to compare.';
+    }
+    const aIndex = state.channels.indexOf(result.a);
+    const bIndex = state.channels.indexOf(result.b);
+    const louder = result.largest.delta >= 0 ? NAMES[aIndex] : NAMES[bIndex];
+    const amount = Math.abs(result.largest.delta);
+    let text = NAMES[aIndex] + ' − ' + NAMES[bIndex] + ': ' + louder + ' is ' + amount.toFixed(1) +
+      ' dB louder at ' + result.largest.centre + ' Hz';
+    if (result.largest.centre >= 1000) {
+      text = NAMES[aIndex] + ' − ' + NAMES[bIndex] + ': ' + louder + ' is ' + amount.toFixed(1) +
+        ' dB louder at ' + (result.largest.centre / 1000).toFixed(2) + ' kHz';
+    }
+    if (result.withinTwo !== null) {
+      text += ' · ' + Math.round(result.withinTwo * 100) + '% of 250 Hz – 4 kHz within 2 dB';
+    }
+    return text + ' · bands below 35% coherence are left out';
+  }
+
+  /* ---------- report ---------- */
+
+  function renderReport() {
+    const list = $('mcReportList');
+    if (!list) return;
+    list.textContent = '';
+    state.channels.forEach((channel, index) => {
+      const item = document.createElement('li');
+      const delay = channel.result && Number.isFinite(channel.delayMs)
+        ? channel.delayMs.toFixed(2) + ' ms'
+        : '—';
+      const coherence = channel.result && Number.isFinite(channel.coherence)
+        ? Math.round(channel.coherence * 100) + '%'
+        : '—';
+      item.innerHTML =
+        '<span class="mc-dot" style="background:' + COLORS[index] + '"></span>' +
+        '<strong>' + NAMES[index] + '</strong>' +
+        '<span>' + (channel.input === null ? 'no input' : 'IN ' + (channel.input + 1)) + '</span>' +
+        '<span>' + delay + '</span>' +
+        '<span>' + coherence + '</span>' +
+        '<span>FFT ' + channel.fftSize + ' · ' + smoothingText(channel.smoothing) + '</span>';
+      list.appendChild(item);
+    });
+
+    const button = $('btnMcReport');
+    if (button) button.disabled = !state.channels.some((channel) => channel.result);
+    drawReport();
   }
 
   /* ---------- analysis ---------- */
@@ -536,28 +830,49 @@ export function createChannels(options) {
 
   /* ---------- drawing ---------- */
 
+  function resizeCanvas(canvas) {
+    if (!canvas || canvas.hidden) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+  }
+
   function resizeAll() {
     state.channels.forEach((channel, index) => {
       const entry = cards[index];
       if (!entry) return;
-      const rect = entry.canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const width = Math.max(1, Math.round(rect.width * dpr));
-      const height = Math.max(1, Math.round(rect.height * dpr));
-      if (entry.canvas.width !== width || entry.canvas.height !== height) {
-        entry.canvas.width = width;
-        entry.canvas.height = height;
-      }
+      resizeCanvas(entry.canvas);
+      resizeCanvas(entry.impulse);
     });
-    drawAll();
+    resizeCanvas($('mcCompareChart'));
+    resizeCanvas($('mcReportChart'));
   }
 
   function drawAll() {
+    if (!state.active) return;
     state.channels.forEach((channel, index) => {
       const entry = cards[index];
       if (!entry || entry.card.hidden) return;
       drawCard(channel, index, entry.canvas);
+      if (channel.impulse) drawImpulse(channel, index, entry.impulse);
     });
+
+    if (state.tab === 'compare') drawCompare();
+    if (state.tab === 'report') { drawReport(); renderReport(); }
+  }
+
+  function paneFor(width, height, left, right, top, bottom) {
+    return {
+      x: left,
+      y: top,
+      w: Math.max(1, width - left - right),
+      h: Math.max(1, height - top - bottom),
+    };
   }
 
   function drawCard(channel, index, canvas) {
@@ -571,22 +886,11 @@ export function createChannels(options) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const left = 34;
-    const right = 8;
-    const top = 10;
-    const bottom = 24;
-    const pane = {
-      x: left,
-      y: top,
-      w: Math.max(1, width - left - right),
-      h: Math.max(1, height - top - bottom),
-    };
-
+    const pane = paneFor(width, height, 34, 8, 10, 24);
     const logSpan = Math.log(F_MAX / F_MIN);
     const xFor = (hz) => pane.x + pane.w * clamp(Math.log(clamp(hz, F_MIN, F_MAX) / F_MIN) / logSpan, 0, 1);
     const yFor = (db) => pane.y + pane.h * (DB_TOP - clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM);
 
-    // Grid and axes.
     ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textBaseline = 'middle';
 
@@ -623,12 +927,15 @@ export function createChannels(options) {
     ctx.fillStyle = 'rgba(159, 184, 164, 0.8)';
     ctx.fillText('Frequency (Hz)', pane.x + pane.w / 2, pane.y + pane.h + 19);
 
-    // Curves: the held capture dim behind the live one.
-    const plot = (values, df, stroke, widthPx, alpha) => {
+    plotMagnitude(ctx, channel, pane, xFor, yFor, logSpan, COLORS[index]);
+  }
+
+  function plotMagnitude(ctx, channel, pane, xFor, yFor, logSpan, colour, strong) {
+    const plot = (values, df, widthPx, alpha) => {
       if (!values || !df) return;
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.strokeStyle = stroke;
+      ctx.strokeStyle = colour;
       ctx.lineWidth = widthPx;
       ctx.beginPath();
       let started = false;
@@ -647,11 +954,327 @@ export function createChannels(options) {
       ctx.restore();
     };
 
-    if (channel.held) plot(channel.held.magDb, channel.held.df, COLORS[index], 1.3, 0.4);
-    if (channel.result) plot(channel.result.magDb, channel.result.df, COLORS[index], 1.8, 1);
+    if (channel.held) plot(channel.held.magDb, channel.held.df, 1.3, 0.4);
+    if (channel.result) plot(channel.result.magDb, channel.result.df, strong ? 2 : 1.8, 1);
+  }
+
+  function drawImpulse(channel, index, canvas) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx || !channel.result || !channel.result.irDb) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+    if (width < 40 || height < 20) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const values = channel.result.irDb;
+    const n = values.length;
+    const rate = channel.result.sampleRate || engine?.sampleRate || 48000;
+    const peakRaw = Math.round(channel.result.delaySamples || 0);
+    const peak = peakRaw < 0 ? n + peakRaw : peakRaw;
+    const before = Math.round(rate * 0.002);
+    const after = Math.round(rate * 0.010);
+    const span = before + after;
+
+    const left = 30;
+    const pane = paneFor(width, height, left, 8, 6, 14);
+    const top = 0;
+    const bottom = -70;
+
+    ctx.strokeStyle = 'rgba(120, 190, 140, 0.16)';
+    ctx.lineWidth = 1;
+    for (const db of [0, -35, -70]) {
+      const y = pane.y + pane.h * (top - db) / (top - bottom);
+      ctx.beginPath();
+      ctx.moveTo(pane.x, y);
+      ctx.lineTo(pane.x + pane.w, y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.8)';
+      ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dbLabel(db), pane.x - 5, y);
+    }
+
+    ctx.strokeStyle = COLORS[index];
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (let i = 0; i <= span; i += 1) {
+      let sample = peak - before + i;
+      sample = ((sample % n) + n) % n;
+      const db = clamp(values[sample], bottom, top);
+      const x = pane.x + pane.w * (i / span);
+      const y = pane.y + pane.h * (top - db) / (top - bottom);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Mark the peak and name the time window.
+    const peakX = pane.x + pane.w * (before / span);
+    ctx.strokeStyle = 'rgba(159, 232, 138, 0.5)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(peakX, pane.y);
+    ctx.lineTo(peakX, pane.y + pane.h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = 'rgba(159, 184, 164, 0.8)';
+    ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('impulse · −2 to +10 ms', pane.x + 4, pane.y + pane.h + 7);
+  }
+
+  function drawCompare() {
+    const canvas = $('mcCompareChart');
+    const readout = $('mcCompareReadout');
+    if (!canvas || !readout) return;
+
+    const result = comparison();
+    readout.textContent = comparisonText(result);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+    if (width < 40 || height < 30) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const span = 12;
+    const pane = paneFor(width, height, 34, 8, 10, 24);
+    const logSpan = Math.log(F_MAX / F_MIN);
+    const xFor = (hz) => pane.x + pane.w * clamp(Math.log(clamp(hz, F_MIN, F_MAX) / F_MIN) / logSpan, 0, 1);
+    const yFor = (db) => pane.y + pane.h / 2 - (pane.h / 2) * clamp(db, -span, span) / span;
+
+    ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textBaseline = 'middle';
+
+    for (const db of [-12, -6, 0, 6, 12]) {
+      const y = yFor(db);
+      ctx.strokeStyle = db === 0 ? 'rgba(140, 220, 160, 0.5)' : 'rgba(120, 190, 140, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pane.x, y);
+      ctx.lineTo(pane.x + pane.w, y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.9)';
+      ctx.textAlign = 'right';
+      ctx.fillText(db === 0 ? '0' : (db > 0 ? '+' : '') + db, pane.x - 6, y);
+    }
+
+    for (const hz of TICKS) {
+      const x = xFor(hz);
+      ctx.strokeStyle = 'rgba(120, 190, 140, 0.14)';
+      ctx.beginPath();
+      ctx.moveTo(x, pane.y);
+      ctx.lineTo(x, pane.y + pane.h);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.9)';
+      ctx.textAlign = 'center';
+      ctx.fillText(frequencyLabel(hz), x, pane.y + pane.h + 9);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(159, 184, 164, 0.8)';
+    ctx.fillText('Frequency (Hz)', pane.x + pane.w / 2, pane.y + pane.h + 19);
+
+    if (!result) return;
+
+    ctx.strokeStyle = '#ffb054';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    let started = false;
+    for (const band of result.bands) {
+      if (band.delta === null) { started = false; continue; }
+      const x = xFor(band.centre);
+      const y = yFor(band.delta);
+      if (started) ctx.lineTo(x, y);
+      else { ctx.moveTo(x, y); started = true; }
+      ctx.fillStyle = '#ffb054';
+      ctx.fillRect(x - 1.4, y - 1.4, 2.8, 2.8);
+    }
+    ctx.stroke();
+  }
+
+  function buildReportChart() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 900;
+    canvas.height = 420;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#0b0f0c';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const pane = { x: 56, y: 22, w: canvas.width - 78, h: canvas.height - 66 };
+    const logSpan = Math.log(F_MAX / F_MIN);
+    const xFor = (hz) => pane.x + pane.w * clamp(Math.log(clamp(hz, F_MIN, F_MAX) / F_MIN) / logSpan, 0, 1);
+    const yFor = (db) => pane.y + pane.h * (DB_TOP - clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM);
+
+    ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textBaseline = 'middle';
+
+    for (let db = DB_TOP; db >= DB_BOTTOM; db -= 20) {
+      const y = yFor(db);
+      ctx.strokeStyle = db === 0 ? 'rgba(140, 220, 160, 0.45)' : 'rgba(120, 190, 140, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pane.x, y);
+      ctx.lineTo(pane.x + pane.w, y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.9)';
+      ctx.textAlign = 'right';
+      ctx.fillText(dbLabel(db), pane.x - 8, y);
+    }
+
+    for (const hz of TICKS) {
+      const x = xFor(hz);
+      ctx.strokeStyle = 'rgba(120, 190, 140, 0.14)';
+      ctx.beginPath();
+      ctx.moveTo(x, pane.y);
+      ctx.lineTo(x, pane.y + pane.h);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.9)';
+      ctx.textAlign = 'center';
+      ctx.fillText(frequencyLabel(hz) + ' Hz', x, pane.y + pane.h + 18);
+    }
+
+    // A legend along the top.
+    let legendX = pane.x;
+    state.channels.forEach((channel, index) => {
+      if (!channel.result) return;
+      ctx.fillStyle = COLORS[index];
+      ctx.fillRect(legendX, 8, 14, 3);
+      ctx.fillStyle = 'rgba(233, 245, 232, 0.9)';
+      ctx.textAlign = 'left';
+      ctx.font = '12px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+      ctx.fillText(NAMES[index], legendX + 20, 10);
+      legendX += 34 + ctx.measureText(NAMES[index]).width;
+      ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+    });
+
+    state.channels.forEach((channel, index) => {
+      if (!channel.result) return;
+      const values = channel.result.magDb;
+      const df = channel.result.df;
+      ctx.strokeStyle = COLORS[index];
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      let started = false;
+      const columns = Math.max(2, Math.round(pane.w));
+      for (let i = 0; i < columns; i += 1) {
+        const hz = F_MIN * Math.exp((i / (columns - 1)) * logSpan);
+        const bin = clamp(Math.round(hz / df), 0, values.length - 1);
+        const db = values[bin];
+        if (!Number.isFinite(db)) { started = false; continue; }
+        const x = pane.x + (i / (columns - 1)) * pane.w;
+        const y = yFor(db);
+        if (started) ctx.lineTo(x, y);
+        else { ctx.moveTo(x, y); started = true; }
+      }
+      ctx.stroke();
+    });
+
+    return canvas;
+  }
+
+  function drawReport() {
+    const canvas = $('mcReportChart');
+    if (!canvas || state.tab !== 'report') return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+    if (width < 40 || height < 30) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const pane = paneFor(width, height, 34, 8, 10, 24);
+    const logSpan = Math.log(F_MAX / F_MIN);
+    const xFor = (hz) => pane.x + pane.w * clamp(Math.log(clamp(hz, F_MIN, F_MAX) / F_MIN) / logSpan, 0, 1);
+    const yFor = (db) => pane.y + pane.h * (DB_TOP - clamp(db, DB_BOTTOM, DB_TOP)) / (DB_TOP - DB_BOTTOM);
+
+    ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textBaseline = 'middle';
+
+    for (let db = DB_TOP; db >= DB_BOTTOM; db -= 20) {
+      const y = yFor(db);
+      ctx.strokeStyle = db === 0 ? 'rgba(140, 220, 160, 0.45)' : 'rgba(120, 190, 140, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pane.x, y);
+      ctx.lineTo(pane.x + pane.w, y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.9)';
+      ctx.textAlign = 'right';
+      ctx.fillText(dbLabel(db), pane.x - 6, y);
+    }
+
+    for (const hz of TICKS) {
+      const x = xFor(hz);
+      ctx.strokeStyle = 'rgba(120, 190, 140, 0.14)';
+      ctx.beginPath();
+      ctx.moveTo(x, pane.y);
+      ctx.lineTo(x, pane.y + pane.h);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(159, 184, 164, 0.9)';
+      ctx.textAlign = 'center';
+      ctx.fillText(frequencyLabel(hz), x, pane.y + pane.h + 9);
+    }
+
+    state.channels.forEach((channel, index) => {
+      if (!channel.result) return;
+      plotMagnitude(ctx, channel, pane, xFor, yFor, logSpan, COLORS[index], false);
+    });
   }
 
   /* ---------- boot ---------- */
+
+  function bindSettings() {
+    const close = $('btnMcSettingsDone');
+    if (close) close.addEventListener('click', hideSettings);
+    const fft = $('mcFFT');
+    if (fft) fft.addEventListener('change', () => { if (state.editing !== null) setFFT(state.editing, fft.value); });
+    const smoothing = $('mcSmoothing');
+    if (smoothing) smoothing.addEventListener('change', () => { if (state.editing !== null) setSmoothing(state.editing, smoothing.value); });
+    const averaging = $('mcAveraging');
+    if (averaging) averaging.addEventListener('change', () => { if (state.editing !== null) setAveraging(state.editing, averaging.value); });
+  }
+
+  function bind() {
+    const start = $('btnMcStart');
+    if (start) start.addEventListener('click', startAll);
+    const closeButton = $('btnMcClose');
+    if (closeButton) closeButton.addEventListener('click', close);
+    const saveButton = $('btnMcSave');
+    if (saveButton) saveButton.addEventListener('click', saveAll);
+    const reportButton = $('btnMcReport');
+    if (reportButton) reportButton.addEventListener('click', shareReport);
+
+    document.querySelectorAll('.mc-tab').forEach((button) => {
+      button.addEventListener('click', () => showTab(button.dataset.tab));
+    });
+
+    const compareA = $('mcCompareA');
+    if (compareA) compareA.addEventListener('change', () => {
+      state.compareA = Number(compareA.value);
+      if (state.compareB === state.compareA) updateCompareChoices();
+      drawAll();
+    });
+    const compareB = $('mcCompareB');
+    if (compareB) compareB.addEventListener('change', () => {
+      state.compareB = Number(compareB.value);
+      drawAll();
+    });
+
+    bindSettings();
+  }
 
   return {
     open,
@@ -660,13 +1283,7 @@ export function createChannels(options) {
     stopAll,
     get active() { return state.active; },
     get running() { return state.running; },
-    /** Called once after the page's DOM exists. */
-    bind() {
-      const start = $('btnMcStart');
-      if (start) start.addEventListener('click', startAll);
-      const closeButton = $('btnMcClose');
-      if (closeButton) closeButton.addEventListener('click', close);
-      bindSettings();
-    },
+    /** Bind once the page's DOM exists. */
+    bind,
   };
 }

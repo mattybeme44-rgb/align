@@ -820,6 +820,7 @@
       <h2>Multichannel</h2>
       <p class="mc-sub">4 channels · reading beside the measurement</p>
     </div>
+    <button id="btnMcSave" class="mc-close" type="button">Save all</button>
     <button id="btnMcStart" class="mc-start" type="button">Start all</button>
     <button id="btnMcClose" class="mc-close" type="button">Close</button>
   </div>
@@ -854,7 +855,37 @@
     <button id="btnMcSettingsDone" class="btn" type="button">Done</button>
   </div>
 
-  <div class="mc-grid" id="mcGrid"></div>
+  <div class="mc-tabs" role="tablist">
+    <button class="mc-tab on" type="button" data-tab="channels" role="tab" aria-selected="true">Channels</button>
+    <button class="mc-tab" type="button" data-tab="compare" role="tab" aria-selected="false">Compare</button>
+    <button class="mc-tab" type="button" data-tab="report" role="tab" aria-selected="false">Report</button>
+  </div>
+
+  <div class="mc-panel" id="mcPanelChannels">
+    <div class="mc-grid" id="mcGrid"></div>
+  </div>
+
+  <div class="mc-panel" id="mcPanelCompare" hidden>
+    <div class="mc-compare-head">
+      <label>A <select id="mcCompareA"></select></label>
+      <span>vs</span>
+      <label>B <select id="mcCompareB"></select></label>
+    </div>
+    <div class="mc-chart-wrap">
+      <canvas class="mc-chart mc-chart-compare" id="mcCompareChart"></canvas>
+    </div>
+    <p class="mc-compare-readout" id="mcCompareReadout">Choose two channels once they have a curve.</p>
+  </div>
+
+  <div class="mc-panel" id="mcPanelReport" hidden>
+    <div class="mc-chart-wrap">
+      <canvas class="mc-chart mc-chart-report" id="mcReportChart"></canvas>
+    </div>
+    <ul class="mc-report-list" id="mcReportList"></ul>
+    <div class="mc-report-actions">
+      <button id="btnMcReport" class="mc-start" type="button">Share PDF</button>
+    </div>
+  </div>
 
   <p class="mc-foot">Nothing here changes the measurement, its gate or its captures.</p>
 </section>
