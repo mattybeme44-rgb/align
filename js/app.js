@@ -1,5 +1,6 @@
 import { AudioEngine } from './audio-engine.js';
 import { createMultiView } from './multiview.js';
+import { createChannels } from './channels.js';
 import { createHardwareCheck } from './hardware.js';
 import { createDataModeler } from './modeler/ui.js';
 import { createRoomDesigner } from './modeler/roomui.js';
@@ -292,6 +293,10 @@ const multiView = createMultiView({
   sourceOptions: () => sourceOptions(),
   generator: () => ({ signal: state.signal, level: state.level, sineHz: state.sineHz }),
   onOpen: () => {
+    if (channelsView.active) {
+      channelsView.close();
+      $('btnChannels').classList.remove('on');
+    }
     if (dataModeler.active) dataModeler.close();
     if (state.running) stopAll();
     const start = $('btnPower');
@@ -300,6 +305,44 @@ const multiView = createMultiView({
   onClose: () => {
     const start = $('btnPower');
     if (start) start.disabled = false;
+  },
+});
+
+/**
+ * The multichannel screen: up to four live transfer functions from the inputs
+ * the interface offers, each with its own input, analysis and held capture.
+ *
+ * It reads the capture. The single measurement's settings, gate and captures are
+ * never written by it, and when the capture was already open it reads the inputs
+ * that are open rather than restarting the stream underneath the measurement.
+ */
+const channelsView = createChannels({
+  engine,
+  setStatus,
+  sourceOptions: () => sourceOptions(),
+  generator: () => ({ signal: state.signal, level: state.level, sineHz: state.sineHz }),
+  onOpen: () => {
+    if (multiView.active) {
+      multiView.close();
+      $('btnMulti').classList.remove('on');
+    }
+    if (hardwareCheck.active) {
+      hardwareCheck.close();
+      $('btnHardware').classList.remove('on');
+    }
+    if (dataModeler.active) dataModeler.close();
+    if (roomDesigner.active) roomDesigner.close();
+    if (state.running) stopAll();
+    const start = $('btnPower');
+    if (start) start.disabled = true;
+    const button = $('btnChannels');
+    if (button) button.classList.add('on');
+  },
+  onClose: () => {
+    const start = $('btnPower');
+    if (start) start.disabled = false;
+    const button = $('btnChannels');
+    if (button) button.classList.remove('on');
   },
 });
 
@@ -316,6 +359,10 @@ const hardwareCheck = createHardwareCheck({
     if (multiView.active) {
       multiView.close();
       $('btnMulti').classList.remove('on');
+    }
+    if (channelsView.active) {
+      channelsView.close();
+      $('btnChannels').classList.remove('on');
     }
     if (dataModeler.active) dataModeler.close();
     if (state.running) stopAll();
@@ -366,6 +413,10 @@ const dataModeler = createDataModeler({
       hardwareCheck.close();
       $('btnHardware').classList.remove('on');
     }
+    if (channelsView.active) {
+      channelsView.close();
+      $('btnChannels').classList.remove('on');
+    }
     if (roomDesigner.active) roomDesigner.close();
     if (state.running) stopAll();
     const start = $('btnPower');
@@ -403,6 +454,10 @@ const roomDesigner = createRoomDesigner({
     if (hardwareCheck.active) {
       hardwareCheck.close();
       $('btnHardware').classList.remove('on');
+    }
+    if (channelsView.active) {
+      channelsView.close();
+      $('btnChannels').classList.remove('on');
     }
     if (dataModeler.active) dataModeler.close();
     if (state.running) stopAll();
@@ -8584,6 +8639,14 @@ $('btnMulti')?.addEventListener('click', () => {
   } else {
     multiView.open();
     $('btnMulti').classList.add('on');
+  }
+});
+
+$('btnChannels')?.addEventListener('click', () => {
+  if (channelsView.active) {
+    channelsView.close();
+  } else {
+    channelsView.open();
   }
 });
 

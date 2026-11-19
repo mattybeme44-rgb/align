@@ -34,6 +34,7 @@
     <button class="tb-btn" type="button" data-panel="delayPanel" aria-expanded="false">Delay Finder</button>
     <button class="tb-btn" type="button" data-panel="displayPanel" aria-expanded="false">Display</button>
     <button class="tb-btn" type="button" id="btnMulti">Multi-mic</button>
+    <button class="tb-btn" type="button" id="btnChannels">Channels</button>
     <button class="tb-btn" type="button" id="btnSpeakers">Speakers</button>
     <button class="tb-btn" type="button" id="btnHardware">Hardware</button>
     <button class="tb-btn" type="button" id="btnModeler">Data Modeler</button>
@@ -811,6 +812,51 @@
     </div>
   </div>
   <div class="hw-grid" id="hwBody"></div>
+</section>
+
+<section id="channelsWorkspace" class="mc-workspace" hidden>
+  <div class="mc-head">
+    <div>
+      <h2>Multichannel</h2>
+      <p class="mc-sub">4 channels · reading beside the measurement</p>
+    </div>
+    <button id="btnMcStart" class="mc-start" type="button">Start all</button>
+    <button id="btnMcClose" class="mc-close" type="button">Close</button>
+  </div>
+
+  <p class="mc-note" id="mcNote">Start all opens the inputs this interface offers.</p>
+
+  <div class="mc-settings" id="mcSettings" hidden>
+    <strong id="mcSettingsTitle">Channel 1 analysis</strong>
+    <label>FFT
+      <select id="mcFFT">
+        <option value="4096">4096</option>
+        <option value="8192">8192</option>
+        <option value="16384" selected>16384</option>
+        <option value="32768">32768</option>
+      </select>
+    </label>
+    <label>Smoothing
+      <select id="mcSmoothing">
+        <option value="0">None</option>
+        <option value="0.125">1/8 oct</option>
+        <option value="0.1666667" selected>1/6 oct</option>
+        <option value="0.3333333">1/3 oct</option>
+      </select>
+    </label>
+    <label>Averaging
+      <select id="mcAveraging">
+        <option value="0.05">Slow</option>
+        <option value="0.12" selected>Medium</option>
+        <option value="0.3">Quick</option>
+      </select>
+    </label>
+    <button id="btnMcSettingsDone" class="btn" type="button">Done</button>
+  </div>
+
+  <div class="mc-grid" id="mcGrid"></div>
+
+  <p class="mc-foot">Nothing here changes the measurement, its gate or its captures.</p>
 </section>
 
 <section id="multiWorkspace" class="multi-workspace" hidden>
