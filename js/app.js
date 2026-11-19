@@ -74,6 +74,7 @@ import { buildSpectrogram, SpectrogramChart } from './spectrogram.js';
 import { bandReadings, bandSummary, speakerBalance, formatBalanceFrequency, GroupDelayChart } from './bands.js';
 import { loadPresets, persistPresets, newPreset, uniqueCopyName, PRESET_LIMIT } from './presets.js';
 import { chartImageBlob, reportPdfBlob, shareOrDownload } from './sharing.js';
+import { appearance } from './graph-appearance.js';
 import { buildSumPreview, bestOverlap, drawSumChart } from './sum-preview.js';
 import { parseMeasurementCsv } from './measurement-import.js';
 import { EQ_SET_LIMIT, loadEqSets, persistEqSets, newEqSet } from './eq-sets.js';
@@ -97,10 +98,10 @@ const $ = (id) => document.getElementById(id);
 
 /** The further capture slots C–F, each its own colour on the charts. */
 const EXTRA_GHOST_COLORS = {
-  C: 'rgba(197,163,247,0.62)',
-  D: 'rgba(251,184,107,0.66)',
-  E: 'rgba(107,216,248,0.62)',
-  F: 'rgba(250,133,184,0.66)',
+  C: 'rgba(178,132,255,0.62)',
+  D: 'rgba(255,176,82,0.66)',
+  E: 'rgba(64,224,245,0.62)',
+  F: 'rgba(255,106,200,0.66)',
 };
 
 /** The held capture in a slot by letter, A through F. */
@@ -609,6 +610,18 @@ state.rawResults = null;
 const tfChart = new TransferChart($('tfChart'));
 tfChart.phaseEase = state.phaseEase;
 const irChart = new ImpulseChart($('irChart'));
+
+tfChart.graphKey = 'transfer';
+irChart.graphKey = 'impulse';
+
+// Appearance changes re-render in place: the measurement keeps running and
+// the zoom, gate and overlays stay exactly where they are.
+appearance.subscribe(() => {
+  irDrawKey = '';
+  draw();
+  drawImpulseIfNeeded();
+});
+appearance.bindPanel();
 const wfChart = new WaterfallChart($('wfChart'));
 const liveSpectrograph = new LiveSpectrograph($('spectrographChart'));
 const spectrogramChart = new SpectrogramChart($('spectrogramChart'));
@@ -5977,7 +5990,7 @@ function drawRTA() {
     ctx.fillRect(centre - barWidth / 2, top, barWidth, Math.max(1, plot.y + plot.h - top));
     if (state.rtaPeaks && index < state.rtaPeaks.length) {
       const capY = y(state.rtaPeaks[index] + offset);
-      ctx.fillStyle = '#4ea8de';
+      ctx.fillStyle = '#41d9ff';
       ctx.fillRect(centre - barWidth / 2 - 1, capY, barWidth + 2, 2);
     }
   }

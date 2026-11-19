@@ -9,15 +9,15 @@
  */
 
 :root {
-  --bg: #0b0e10;
-  --bg-soft: #101417;
-  --panel: #13171a;
-  --panel-2: #181d21;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.15);
-  --text: #eceef0;
-  --text-soft: #b6bec5;
-  --dim: #7a828a;
+  --bg: #090d15;
+  --bg-soft: #0f141e;
+  --panel: #121826;
+  --panel-2: #172032;
+  --line: rgba(148, 180, 255, 0.09);
+  --line-strong: rgba(148, 180, 255, 0.18);
+  --text: #f2f6fa;
+  --text-soft: #c2ccdb;
+  --dim: #8b95a6;
   --radius: 4px;
 }
 
@@ -108,8 +108,8 @@ body {
 
 .tb-btn[aria-expanded="true"] {
   color: var(--accent);
-  background: rgba(78, 168, 222, 0.1);
-  border-color: rgba(78, 168, 222, 0.38);
+  background: rgba(var(--accent-rgb), 0.1);
+  border-color: rgba(var(--accent-rgb), 0.38);
 }
 
 .tb-right {
@@ -1926,8 +1926,8 @@ body.validation-page {
 }
 
 .dm-model.on {
-  border-color: rgba(78, 168, 222, 0.45);
-  background: rgba(78, 168, 222, 0.07);
+  border-color: rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.07);
 }
 
 .dm-model-head {
@@ -2032,8 +2032,8 @@ body.validation-page {
 }
 
 .dm-source.on {
-  border-color: rgba(78, 168, 222, 0.45);
-  background: rgba(78, 168, 222, 0.07);
+  border-color: rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.07);
 }
 
 .dm-source.muted {
@@ -2404,13 +2404,13 @@ body.validation-page {
 }
 
 .dm-snapshot.on {
-  border: 1px solid rgba(217, 162, 108, 0.5);
-  background: rgba(217, 162, 108, 0.07);
+  border: 1px solid rgba(var(--amber-rgb), 0.5);
+  background: rgba(var(--amber-rgb), 0.07);
 }
 
 .dm-pin {
   color: var(--accent-bright);
-  border-color: rgba(78, 168, 222, 0.4);
+  border-color: rgba(var(--accent-rgb), 0.4);
 }
 
 .dm-source-meta {
@@ -2448,14 +2448,14 @@ body.validation-page {
 
 #btnModeler:hover {
   color: #a9e0fb;
-  background: rgba(78, 168, 222, 0.16);
-  border-color: rgba(78, 168, 222, 0.4);
+  background: rgba(var(--accent-rgb), 0.16);
+  border-color: rgba(var(--accent-rgb), 0.4);
 }
 
 #btnModeler.on,
 #btnRoomDesigner.on {
   color: #c8ecff;
-  background: rgba(78, 168, 222, 0.22);
+  background: rgba(var(--accent-rgb), 0.22);
   border-color: rgba(143, 208, 245, 0.55);
 }
 
@@ -2491,7 +2491,7 @@ body.validation-page {
 
 .analysis-finding {
   border: 1px solid var(--line);
-  border-left: 3px solid rgba(78, 168, 222, 0.6);
+  border-left: 3px solid rgba(var(--accent-rgb), 0.6);
   border-radius: 4px;
   padding: 6px 8px;
   background: rgba(255, 255, 255, 0.015);
@@ -3092,8 +3092,8 @@ body.validation-page {
 }
 
 .sub-tile.on {
-  border-color: rgba(78, 168, 222, 0.65);
-  background: rgba(78, 168, 222, 0.16);
+  border-color: rgba(var(--accent-rgb), 0.65);
+  background: rgba(var(--accent-rgb), 0.16);
 }
 
 .sub-tile-head {
@@ -3117,7 +3117,7 @@ body.validation-page {
 
 .sub-tile-slot {
   padding: 1px 5px;
-  border: 1px solid rgba(78, 168, 222, 0.4);
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
   border-radius: 8px;
   font-size: 9px;
   font-weight: 700;
@@ -3255,4 +3255,22 @@ body.validation-page {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--dim, rgba(180, 190, 172, 0.6));
+}
+
+
+/* ---------- Display panel: active states and compact rows ---------- */
+
+.popover .btn.on,
+.popover .link-btn.on {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+#displayPanel .row {
+  gap: 8px;
+}
+
+#displayPanel input[type="range"] {
+  flex: 1 1 auto;
 }

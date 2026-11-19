@@ -22,13 +22,13 @@ const DPR = () => Math.min(2, (typeof window !== 'undefined' && window.devicePix
 
 /** The colour ramp used for every heat map, with the value it stands for. */
 export const HEAT_STOPS = [
-  { at: 0, colour: [12, 22, 48] },
-  { at: 0.18, colour: [22, 64, 112] },
-  { at: 0.36, colour: [26, 132, 148] },
-  { at: 0.54, colour: [72, 178, 108] },
-  { at: 0.72, colour: [186, 198, 68] },
-  { at: 0.87, colour: [232, 152, 48] },
-  { at: 1, colour: [214, 68, 52] },
+  { at: 0, colour: [8, 18, 52] },
+  { at: 0.18, colour: [18, 76, 140] },
+  { at: 0.36, colour: [20, 168, 172] },
+  { at: 0.54, colour: [64, 208, 110] },
+  { at: 0.72, colour: [206, 226, 58] },
+  { at: 0.87, colour: [255, 170, 48] },
+  { at: 1, colour: [255, 82, 64] },
 ];
 
 export function heatColour(t) {

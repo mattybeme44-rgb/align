@@ -430,7 +430,7 @@ export function drawSumChart(canvas, data) {
 
   stroke('aDb', 'rgba(226, 235, 214, 0.35)', 1.2, [4, 3]);
   stroke('bDb', 'rgba(143, 199, 250, 0.38)', 1.2, [4, 3]);
-  stroke('sumDb', '#4ea8de', 2);
+  stroke('sumDb', '#41d9ff', 2);
 
   ctx.fillStyle = 'rgba(156, 159, 149, 0.9)';
   ctx.textAlign = 'left';

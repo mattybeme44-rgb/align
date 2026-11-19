@@ -12,22 +12,22 @@ const F_MIN = 20;
 const F_MAX = 20000;
 
 const COL = {
-  bg: '#0c1013',
-  panel: '#0f1316',
-  border: 'rgba(255,255,255,0.08)',
-  gridMajor: 'rgba(255,255,255,0.10)',
-  gridMinor: 'rgba(255,255,255,0.045)',
-  zero: 'rgba(255,255,255,0.22)',
-  text: 'rgba(214,220,226,0.82)',
-  textDim: 'rgba(160,168,176,0.56)',
-  halo: 'rgba(9,13,10,0.92)',
-  cursor: 'rgba(255,140,120,0.55)',
-  selection: 'rgba(78,168,222,0.14)',
-  null: 'rgba(219,121,111,0.55)',
+  bg: '#0a0e16',
+  panel: '#10151d',
+  border: 'rgba(148,180,255,0.08)',
+  gridMajor: 'rgba(178,200,255,0.10)',
+  gridMinor: 'rgba(178,200,255,0.045)',
+  zero: 'rgba(200,216,255,0.22)',
+  text: 'rgba(226,236,248,0.82)',
+  textDim: 'rgba(178,194,214,0.56)',
+  halo: 'rgba(8,12,20,0.92)',
+  cursor: 'rgba(255,138,110,0.55)',
+  selection: 'rgba(65,217,255,0.14)',
+  null: 'rgba(255,111,94,0.55)',
 };
 
 export const TRACE_COLORS = [
-  '#4ea8de', '#6fd4ca', '#d9a26c', '#b4a7f7', '#9dcfa3', '#fbb679', '#72c7f2', '#eea4b3',
+  '#41d9ff', '#3ef0b8', '#ffb054', '#c9a3ff', '#7de87a', '#ffb36b', '#5ec8ff', '#ff8fb8',
 ];
 
 const FONT_TICK = '10px ui-monospace, SFMono-Regular, Menlo, monospace';

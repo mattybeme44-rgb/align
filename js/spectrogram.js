@@ -17,7 +17,7 @@ const COL = {
   textDim: 'rgba(160,172,150,0.52)',
   grid: 'rgba(160,168,176,0.16)',
   gridMinor: 'rgba(160,168,176,0.07)',
-  accent: '#4ea8de',
+  accent: '#41d9ff',
 };
 
 const FONT_AXIS = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -381,11 +381,11 @@ export class SpectrogramChart {
     const endY = plot.y + (gateEnd / span) * plot.h;
 
     if (Math.abs(endY - startY) > 1) {
-      ctx.fillStyle = gateEnabled ? 'rgba(78,168,222,0.07)' : 'rgba(78,168,222,0.02)';
+      ctx.fillStyle = gateEnabled ? 'rgba(65,217,255,0.07)' : 'rgba(65,217,255,0.02)';
       ctx.fillRect(plot.x, Math.min(startY, endY), plot.w, Math.abs(endY - startY));
     }
 
-    ctx.strokeStyle = gateEnabled ? 'rgba(78,168,222,0.85)' : 'rgba(78,168,222,0.30)';
+    ctx.strokeStyle = gateEnabled ? 'rgba(65,217,255,0.85)' : 'rgba(65,217,255,0.30)';
     ctx.lineWidth = 1.2;
     ctx.setLineDash([5, 4]);
     ctx.beginPath();

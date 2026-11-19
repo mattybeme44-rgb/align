@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-21" />
+<meta name="align-build" content="2026-11-19-22" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -32,6 +32,7 @@
     <button class="tb-btn" type="button" data-panel="fftPanel" aria-expanded="false">FFT</button>
     <button class="tb-btn" type="button" data-panel="averagingPanel" aria-expanded="false">Averaging</button>
     <button class="tb-btn" type="button" data-panel="delayPanel" aria-expanded="false">Delay Finder</button>
+    <button class="tb-btn" type="button" data-panel="displayPanel" aria-expanded="false">Display</button>
     <button class="tb-btn" type="button" id="btnMulti">Multi-mic</button>
     <button class="tb-btn" type="button" id="btnSpeakers">Speakers</button>
     <button class="tb-btn" type="button" id="btnHardware">Hardware</button>
@@ -256,6 +257,94 @@
     <p class="source-hint">
       Find delay searches the impulse response for the arrival. Zero phase calls the present arrival
       zero, so a delay added in the processor can be watched into alignment.
+    </p>
+  </div>
+
+  <div class="popover" id="displayPanel" hidden>
+    <div class="pop-head">
+      <h2>Display &amp; graphs</h2>
+      <span class="pop-detail">rendering only</span>
+    </div>
+    <div class="row wrap" id="gapPresetRow"></div>
+    <div class="row">
+      <label for="gapBrightness">Trace brightness</label>
+      <input type="range" id="gapBrightness" min="10" max="125" value="80" />
+      <span class="hint" id="gapBrightnessVal">80</span>
+    </div>
+    <div class="row">
+      <label for="gapSaturation">Trace saturation</label>
+      <input type="range" id="gapSaturation" min="0" max="150" value="100" />
+      <span class="hint" id="gapSaturationVal">100</span>
+    </div>
+    <div class="row">
+      <label for="gapOpacity">Trace opacity</label>
+      <input type="range" id="gapOpacity" min="20" max="100" value="100" />
+      <span class="hint" id="gapOpacityVal">100</span>
+    </div>
+    <div class="row">
+      <label for="gapBackground">Graph background</label>
+      <input type="range" id="gapBackground" min="0" max="100" value="32" />
+      <span class="hint" id="gapBackgroundVal">32</span>
+    </div>
+    <div class="row">
+      <label for="gapGrid">Gridlines</label>
+      <input type="range" id="gapGrid" min="0" max="100" value="55" />
+      <span class="hint" id="gapGridVal">55</span>
+    </div>
+    <div class="row">
+      <label for="gapAxis">Axis &amp; labels</label>
+      <input type="range" id="gapAxis" min="0" max="100" value="75" />
+      <span class="hint" id="gapAxisVal">75</span>
+    </div>
+    <div class="row">
+      <label for="gapCoherence">Coherence</label>
+      <input type="range" id="gapCoherence" min="0" max="100" value="100" />
+      <span class="hint" id="gapCoherenceVal">100</span>
+    </div>
+    <div class="row">
+      <label for="gapCursor">Cursor</label>
+      <input type="range" id="gapCursor" min="0" max="100" value="100" />
+      <span class="hint" id="gapCursorVal">100</span>
+    </div>
+    <div class="row">
+      <label for="selGapThickness">Thickness</label>
+      <select id="selGapThickness">
+        <option value="thin">Thin</option>
+        <option value="medium" selected>Medium</option>
+        <option value="thick">Thick</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input type="number" id="numGapThickness" min="0.5" max="6" step="0.1" value="2.2" hidden />
+    </div>
+    <div class="row">
+      <label for="selGapGlow">Trace glow</label>
+      <select id="selGapGlow">
+        <option value="off">Off</option>
+        <option value="subtle">Subtle</option>
+        <option value="enhanced">Enhanced</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="selGapScope">Apply to</label>
+      <select id="selGapScope">
+        <option value="global">All graphs</option>
+        <option value="transfer">Transfer function</option>
+        <option value="impulse">Impulse response</option>
+      </select>
+      <button id="btnGapClearOverride" class="link-btn" type="button" hidden>Clear override</button>
+    </div>
+    <div class="row btns">
+      <button id="btnGapDefaults" class="btn" type="button">Restore defaults</button>
+    </div>
+    <div class="row">
+      <input id="gapPresetName" class="url-field" type="text" placeholder="Preset name…" maxlength="24" autocomplete="off" />
+      <button id="btnGapSave" class="btn" type="button">Save</button>
+    </div>
+    <div class="row wrap" id="gapCustomRow" hidden></div>
+    <p class="source-hint">
+      These change how graphs are drawn only — never the measured magnitude, phase, coherence, resolution or
+      timing. Changes apply instantly; the measurement, the zoom and the overlays keep running. Presets and
+      overrides are kept in this browser between sessions.
     </p>
   </div>
 </header>

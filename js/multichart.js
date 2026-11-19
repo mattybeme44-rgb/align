@@ -8,23 +8,23 @@
  */
 
 export const MULTI_COLORS = {
-  A: '#8ff06a',
-  B: '#63b3ff',
-  C: '#ffab52',
-  average: '#b48cf2',
+  A: '#9df058',
+  B: '#5ec8ff',
+  C: '#ffb054',
+  average: '#c9a3ff',
 };
 
 const F_MIN = 20;
 const F_MAX = 20000;
 
 const COL = {
-  panel: '#0a0d0b',
-  border: 'rgba(148,180,140,0.16)',
-  grid: 'rgba(160,190,150,0.10)',
-  gridMajor: 'rgba(201,255,112,0.16)',
-  text: 'rgba(226,235,214,0.72)',
-  dim: 'rgba(180,190,172,0.42)',
-  cursor: 'rgba(226,235,214,0.45)',
+  panel: '#0a0d14',
+  border: 'rgba(148,180,255,0.16)',
+  grid: 'rgba(178,200,255,0.10)',
+  gridMajor: 'rgba(140,200,255,0.16)',
+  text: 'rgba(226,236,248,0.72)',
+  dim: 'rgba(178,194,214,0.42)',
+  cursor: 'rgba(226,236,248,0.45)',
 };
 
 const FONT_AXIS = '9px ui-monospace, SFMono-Regular, Menlo, monospace';

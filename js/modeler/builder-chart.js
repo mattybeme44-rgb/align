@@ -13,7 +13,7 @@
  *     aim. Its size says nothing about how the cabinet behaves acoustically.
  */
 
-export const CURVE_COLOURS = ['#4ea8de', '#e8b84b', '#6fcf97', '#d07ad0', '#e07a5f', '#77c9c9'];
+export const CURVE_COLOURS = ['#41d9ff', '#f7a94e', '#58e07a', '#f26bd8', '#ff6f5e', '#45e8c2'];
 
 const AXIS = 'rgba(255,255,255,0.10)';
 const AXIS_TEXT = '#7a828a';
@@ -412,7 +412,7 @@ export function drawCabinetChart(canvas, payload) {
   };
 
   if (hDeg > 0) {
-    ctx.fillStyle = 'rgba(78,168,222,0.14)';
+    ctx.fillStyle = 'rgba(65,217,255,0.14)';
     ctx.beginPath();
     ctx.moveTo(centreScreen.x, centreScreen.y);
     const left = toScreen(rays.left);

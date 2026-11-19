@@ -1,37 +1,19 @@
 import { targetDb } from './targets.js';
+import { appearance, PALETTE } from './graph-appearance.js';
+
+const G = appearance;
 
 const F_MIN = 20;
 const F_MAX = 20000;
 const LOG_SPAN = Math.log(F_MAX / F_MIN);
 
-const COL = {
-  bg: '#12161a',
-  border: 'rgba(255,255,255,0.08)',
-  gridMajor: 'rgba(255,255,255,0.10)',
-  gridMinor: 'rgba(255,255,255,0.05)',
-  gridZero: 'rgba(255,255,255,0.22)',
-  text: 'rgba(214,220,226,0.80)',
-  textDim: 'rgba(160,168,176,0.52)',
-  trace: '#4ea8de',
-  phase: '#6fe0d6',
-  coh: '#d9a26c',
-  ghost: 'rgba(226,235,214,0.85)',
-  ghostB: 'rgba(143,199,250,0.90)',
-  ghostC: 'rgba(197,163,247,0.88)',
-  ghostD: 'rgba(251,184,107,0.90)',
-  ghostE: 'rgba(107,216,248,0.88)',
-  ghostF: 'rgba(250,133,184,0.90)',
-  peak: 'rgba(78,168,222,0.32)',
-  average: '#eeaac4',
-  overlay: '#b4a7f7',
-  savedColors: ['#b4a7f7', '#fbb679', '#72c7f2', '#eea4b3', '#a8df9b', '#f7d47b', '#86d5ca', '#d8a691'],
-  target: 'rgba(214,222,206,0.45)',
-  cursor: 'rgba(255,140,120,0.55)',
-  // The predicted sum of two captures: a simulation, drawn dashed.
-  sumTrace: '#ffb15d',
-  // Laid under every trace so two overlays crossing stay two lines.
-  halo: 'rgba(9,13,10,0.92)',
-};
+/*
+ * The trace palette lives in graph-appearance.js so every graph shares one
+ * set of vibrant colours. Grid, panel and label colours come from the Display
+ * settings at draw time; brightness, saturation, opacity, thickness and glow
+ * are applied per stroke and never touch the measurement itself.
+ */
+const COL = { ...PALETTE };
 
 const FONT_AXIS = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
 const FONT_UNIT = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -78,9 +60,9 @@ function roundRect(ctx, x, y, w, h, r) {
 /** The flat, near-black panel every plot is drawn on. */
 function paintPanel(ctx, w, h) {
   roundRect(ctx, 0.5, 0.5, w - 1, h - 1, 4);
-  ctx.fillStyle = '#0f1316';
+  ctx.fillStyle = G.panelBg();
   ctx.fill();
-  ctx.strokeStyle = COL.border;
+  ctx.strokeStyle = G.panelBorder();
   ctx.lineWidth = 1;
   ctx.stroke();
 }
@@ -117,15 +99,21 @@ function strokeSeparated(ctx, color, width, dash, glow) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
+  color = G.colorize(color);
+  width = G.width(width);
+
   ctx.strokeStyle = COL.halo;
   ctx.lineWidth = width + 2.6;
   ctx.setLineDash(dash || []);
   ctx.stroke();
 
-  if (glow) {
-    ctx.globalAlpha = 0.22;
+  // The glow is a separate under-stroke; the crisp line below is always
+  // stroked at its exact width, so glow never blurs the trace itself.
+  const glowStrength = glow ? G.glowStrength() : null;
+  if (glowStrength) {
+    ctx.globalAlpha = glowStrength.alpha;
     ctx.strokeStyle = color;
-    ctx.lineWidth = width + 3.2;
+    ctx.lineWidth = width + glowStrength.width;
     ctx.setLineDash([]);
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -360,10 +348,14 @@ export class TransferChart {
   }
 
   draw(res, opts) {
+    appearance.beginGraph(this.graphKey || 'transfer');
     const options = opts || {};
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
-    if (this.w < 60 || this.h < 60) return;
+    if (this.w < 60 || this.h < 60) {
+      appearance.endGraph();
+      return;
+    }
 
     this.phaseMode = options.phaseMode || this.phaseMode || 'wrapped';
     this.phaseSpan = Number(options.phaseSpan) || this.phaseSpan || 180;
@@ -464,6 +456,7 @@ export class TransferChart {
 
     if (options.cursorFreq) this.drawCursor(panes, bottom, options.cursorFreq, res);
     if (this.selection) this.drawSelection(panes, bottom);
+    appearance.endGraph();
   }
 
   /** The band a drag is selecting before it becomes the new frequency span. */
@@ -473,9 +466,9 @@ export class TransferChart {
     if (!(x1 - x0 >= 1)) return;
     const ctx = this.ctx;
     ctx.save();
-    ctx.fillStyle = 'rgba(78,168,222,0.12)';
+    ctx.fillStyle = 'rgba(65,217,255,0.12)';
     ctx.fillRect(x0, panes.mag.y, x1 - x0, bottom - panes.mag.y);
-    ctx.strokeStyle = 'rgba(78,168,222,0.6)';
+    ctx.strokeStyle = 'rgba(65,217,255,0.6)';
     ctx.lineWidth = 1;
     ctx.strokeRect(Math.round(x0) + 0.5, Math.round(panes.mag.y) + 0.5, x1 - x0, bottom - panes.mag.y);
     ctx.restore();
@@ -486,13 +479,13 @@ export class TransferChart {
     const p = panes.mag;
     const top = p.y;
 
-    rule(ctx, p.x, top, p.x, bottom, COL.gridMajor);
-    rule(ctx, p.x + p.w, top, p.x + p.w, bottom, COL.gridMajor);
-    rule(ctx, p.x, top, p.x + p.w, top, COL.gridMajor);
-    rule(ctx, p.x, bottom, p.x + p.w, bottom, COL.gridMajor);
+    rule(ctx, p.x, top, p.x, bottom, G.gridMajor());
+    rule(ctx, p.x + p.w, top, p.x + p.w, bottom, G.gridMajor());
+    rule(ctx, p.x, top, p.x + p.w, top, G.gridMajor());
+    rule(ctx, p.x, bottom, p.x + p.w, bottom, G.gridMajor());
 
-    if (panes.phase) rule(ctx, p.x, panes.phase.y - 6, p.x + p.w, panes.phase.y - 6, COL.gridMinor);
-    if (panes.coh) rule(ctx, p.x, panes.coh.y - 6, p.x + p.w, panes.coh.y - 6, COL.gridMajor);
+    if (panes.phase) rule(ctx, p.x, panes.phase.y - 6, p.x + p.w, panes.phase.y - 6, G.gridMinor());
+    if (panes.coh) rule(ctx, p.x, panes.coh.y - 6, p.x + p.w, panes.coh.y - 6, G.gridMajor());
   }
 
   drawFrequencyAxis(panes, bottom) {
@@ -504,13 +497,13 @@ export class TransferChart {
       if (f < this.range.min || f > this.range.max) continue;
       const x = this.xOf(f);
       const major = FREQ_MAJOR.indexOf(f) >= 0;
-      rule(ctx, x, p.y, x, bottom, major ? COL.gridMajor : COL.gridMinor);
+      rule(ctx, x, p.y, x, bottom, major ? G.gridMajor() : G.gridMinor());
     }
 
     const labels = this.frequencyTicks();
     ctx.save();
     ctx.font = FONT_AXIS;
-    ctx.fillStyle = COL.text;
+    ctx.fillStyle = G.axisText();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     for (let i = 0; i < labels.length; i++) {
@@ -519,7 +512,7 @@ export class TransferChart {
       ctx.fillText(formatHz(f), x, bottom + 12);
     }
     ctx.font = FONT_UNIT;
-    ctx.fillStyle = COL.textDim;
+    ctx.fillStyle = G.axisDim();
     ctx.textAlign = 'left';
     ctx.fillText('Hz', p.x + p.w + 7, bottom + 13);
     ctx.restore();
@@ -538,13 +531,13 @@ export class TransferChart {
 
     for (let db = start; db <= this.dbMax; db += step) {
       const y = this.dbToY(db, pane);
-      rule(ctx, pane.x, y, pane.x + pane.w, y, db === 0 ? COL.gridZero : COL.gridMajor);
-      ctx.fillStyle = db === 0 ? COL.text : COL.textDim;
+      rule(ctx, pane.x, y, pane.x + pane.w, y, db === 0 ? G.gridZero() : G.gridMajor());
+      ctx.fillStyle = db === 0 ? G.axisText() : G.axisDim();
       ctx.fillText(db + '', pane.x - 8, y);
     }
 
     ctx.font = FONT_UNIT;
-    ctx.fillStyle = COL.textDim;
+    ctx.fillStyle = G.axisDim();
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
     ctx.fillText('dB', pane.x + pane.w - 3, pane.y + 4);
@@ -562,13 +555,13 @@ export class TransferChart {
 
     for (let deg = span; deg >= -span; deg -= step) {
       const y = this.phaseToY(deg, pane);
-      rule(ctx, pane.x, y, pane.x + pane.w, y, deg === 0 ? COL.gridZero : COL.gridMinor);
-      ctx.fillStyle = COL.textDim;
+      rule(ctx, pane.x, y, pane.x + pane.w, y, deg === 0 ? G.gridZero() : G.gridMinor());
+      ctx.fillStyle = G.axisDim();
       ctx.fillText(deg > 0 ? '+' + deg : String(deg), pane.x + pane.w + 7, y);
     }
 
     ctx.font = FONT_UNIT;
-    ctx.fillStyle = COL.textDim;
+    ctx.fillStyle = G.axisDim();
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
     ctx.fillText(this.phaseMode === 'unwrapped' ? '° unwrapped' : '°', pane.x + pane.w - 3, pane.y + 4);
@@ -587,13 +580,13 @@ export class TransferChart {
     for (let i = 0; i < ticks.length; i++) {
       const v = ticks[i];
       const y = this.cohToY(v, pane);
-      rule(ctx, pane.x, y, pane.x + pane.w, y, v === 0 ? COL.gridZero : COL.gridMinor);
-      ctx.fillStyle = COL.textDim;
+      rule(ctx, pane.x, y, pane.x + pane.w, y, v === 0 ? G.gridZero() : G.gridMinor());
+      ctx.fillStyle = G.axisDim();
       ctx.fillText(v === 1 ? '1' : v === 0 ? '0' : '0.5', pane.x + pane.w + 7, y);
     }
 
     ctx.font = FONT_UNIT;
-    ctx.fillStyle = COL.textDim;
+    ctx.fillStyle = G.axisDim();
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
     ctx.fillText('coh', pane.x + pane.w - 3, pane.y + 3);
@@ -664,7 +657,7 @@ export class TransferChart {
       ctx.lineTo(x + 11, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = COL.text;
+      ctx.fillStyle = G.axisText();
       ctx.fillText(label, x + 16, y);
       x += width + (short ? 11 : 16);
     }
@@ -713,12 +706,9 @@ export class TransferChart {
     if (ghost) {
       strokeSeparated(ctx, COL.ghost, 1.2);
     } else {
-      ctx.strokeStyle = COL.halo;
-      ctx.lineWidth = 2.6;
-      ctx.stroke();
-      ctx.strokeStyle = COL.trace;
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
+      // The live trace is the primary line: halo under, glow per the Display
+      // settings, then the crisp stroke last at its exact width.
+      strokeSeparated(ctx, COL.trace, 1.4, [], true);
     }
     ctx.restore();
   }
@@ -857,8 +847,8 @@ export class TransferChart {
     if (faint.length) {
       ctx.save();
       ctx.globalAlpha = 0.30;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = G.colorize(color);
+      ctx.lineWidth = G.width(1.5);
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -897,8 +887,8 @@ export class TransferChart {
       if (i === 0) ctx.moveTo(pane.x + i + 0.5, y);
       else ctx.lineTo(pane.x + i + 0.5, y);
     }
-    ctx.strokeStyle = COL.target;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = G.colorize(COL.target);
+    ctx.lineWidth = G.width(1);
     ctx.setLineDash([4, 4]);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -1041,8 +1031,8 @@ export class TransferChart {
     if (faint.length) {
       ctx.save();
       ctx.globalAlpha = 0.28;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = opts.held ? 1 : 1.1;
+      ctx.strokeStyle = G.colorize(color);
+      ctx.lineWidth = G.width(opts.held ? 1 : 1.1);
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -1066,7 +1056,8 @@ export class TransferChart {
       if (open) ctx.lineTo(point.x, point.y);
       else { ctx.moveTo(point.x, point.y); open = true; }
     }
-    strokeSeparated(ctx, color, opts.held ? 1.1 : 1.3);
+    // The live phase is a primary trace; held captures stay quiet.
+    strokeSeparated(ctx, color, opts.held ? 1.1 : 1.3, [], !opts.held);
     ctx.restore();
   }
 
@@ -1202,7 +1193,7 @@ export class TransferChart {
     for (let i = 0; i < smoothed.length; i++) ctx.lineTo(x0 + i, yOf(smoothed[i]));
     ctx.lineTo(x0 + smoothed.length - 1, bottom);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(217,162,108,0.10)';
+    ctx.fillStyle = G.rgba(COL.coh, 0.10 * G.coherenceFactor());
     ctx.fill();
 
     ctx.beginPath();
@@ -1212,8 +1203,9 @@ export class TransferChart {
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
-    ctx.strokeStyle = COL.coh;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = G.colorize(COL.coh);
+    ctx.lineWidth = G.width(1);
+    ctx.globalAlpha = G.coherenceFactor();
     ctx.lineJoin = 'round';
     ctx.stroke();
     ctx.restore();
@@ -1224,8 +1216,8 @@ export class TransferChart {
     const x = this.xOf(freq);
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(226,235,214,0.42)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = G.cursorColor();
+    ctx.lineWidth = G.cursorWidth(1);
     ctx.beginPath();
     ctx.moveTo(Math.round(x) + 0.5, panes.mag.y);
     ctx.lineTo(Math.round(x) + 0.5, bottom);
@@ -1251,9 +1243,9 @@ export class TransferChart {
         const y = this.dbToY(10 * Math.log10(sum / n), panes.mag);
         ctx.beginPath();
         ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = COL.trace;
+        ctx.fillStyle = G.colorize(COL.trace);
         ctx.fill();
-        ctx.strokeStyle = COL.bg;
+        ctx.strokeStyle = G.panelBg();
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -1333,11 +1325,15 @@ export class ImpulseChart {
   }
 
   draw(res, opts) {
+    appearance.beginGraph(this.graphKey || 'impulse');
     const options = opts || {};
     const gate = options.gate || null;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
-    if (this.w < 60 || this.h < 50) return;
+    if (this.w < 60 || this.h < 50) {
+      appearance.endGraph();
+      return;
+    }
 
     paintPanel(ctx, this.w, this.h);
 
@@ -1372,8 +1368,8 @@ export class ImpulseChart {
     ctx.textBaseline = 'middle';
     for (let db = 0; db >= -80; db -= 20) {
       const y = yOf(db);
-      rule(ctx, p.x, y, p.x + p.w, y, db === 0 ? COL.gridMajor : COL.gridMinor);
-      ctx.fillStyle = COL.textDim;
+      rule(ctx, p.x, y, p.x + p.w, y, db === 0 ? G.gridMajor() : G.gridMinor());
+      ctx.fillStyle = G.axisDim();
       ctx.fillText(db + '', p.x - 8, y);
     }
 
@@ -1383,13 +1379,13 @@ export class ImpulseChart {
     ctx.textBaseline = 'top';
     for (let ms = startTick; ms <= xMax; ms += stepMs) {
       const x = xOf(ms);
-      rule(ctx, x, p.y, x, bottom, COL.gridMinor);
-      ctx.fillStyle = COL.text;
+      rule(ctx, x, p.y, x, bottom, G.gridMinor());
+      ctx.fillStyle = G.axisText();
       ctx.fillText(stepMs < 1 ? ms.toFixed(1) : ms.toFixed(0), x, bottom + 5);
     }
 
     ctx.font = FONT_UNIT;
-    ctx.fillStyle = COL.textDim;
+    ctx.fillStyle = G.axisDim();
     ctx.textAlign = 'right';
     ctx.fillText('dB', p.x + p.w - 3, p.y + 4);
     ctx.textAlign = 'left';
@@ -1404,9 +1400,9 @@ export class ImpulseChart {
 
       if (gateEndX > p.x && gateStartX < p.x + p.w) {
         ctx.save();
-        ctx.fillStyle = 'rgba(78,168,222,0.10)';
+        ctx.fillStyle = 'rgba(65,217,255,0.10)';
         ctx.fillRect(Math.min(startX, endX), p.y, Math.max(1, Math.abs(endX - startX)), p.h);
-        ctx.strokeStyle = 'rgba(78,168,222,0.85)';
+        ctx.strokeStyle = 'rgba(65,217,255,0.85)';
         ctx.lineWidth = 1.5;
 
         for (const x of [startX, endX]) {
@@ -1415,7 +1411,7 @@ export class ImpulseChart {
           ctx.lineTo(Math.round(x) + 0.5, bottom);
           ctx.stroke();
 
-          ctx.fillStyle = COL.trace;
+          ctx.fillStyle = G.colorize(COL.trace);
           roundRect(ctx, x - 2.5, p.y, 5, 12, 2);
           ctx.fill();
           roundRect(ctx, x - 2.5, bottom - 12, 5, 12, 2);
@@ -1425,13 +1421,13 @@ export class ImpulseChart {
         // A grip on the bottom edge moves the whole gate; the plot stays free
         // above it for drawing a zoom selection.
         const midX = (startX + endX) / 2;
-        ctx.fillStyle = 'rgba(78,168,222,0.28)';
+        ctx.fillStyle = 'rgba(65,217,255,0.28)';
         roundRect(ctx, midX - 15, bottom - 5, 30, 5, 2.5);
         ctx.fill();
 
         const label = this.gateLabel(gate);
         ctx.font = FONT_UNIT;
-        ctx.fillStyle = COL.trace;
+        ctx.fillStyle = G.colorize(COL.trace);
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         const labelX = Math.min(p.x + p.w - 44, Math.max(p.x + 44, midX));
@@ -1440,7 +1436,10 @@ export class ImpulseChart {
       }
     }
 
-    if (!res) return;
+    if (!res) {
+      appearance.endGraph();
+      return;
+    }
 
     // One value per pixel: the peak of the response inside that column.
     const count = Math.max(2, Math.ceil(p.w));
@@ -1461,14 +1460,17 @@ export class ImpulseChart {
       if (first < 0) first = i;
       last = i;
     }
-    if (first < 0) return;
+    if (first < 0) {
+      appearance.endGraph();
+      return;
+    }
 
     const x0 = p.x + first + 0.5;
     const xEnd = p.x + last + 0.5;
 
     const gradient = ctx.createLinearGradient(0, p.y, 0, bottom);
-    gradient.addColorStop(0, 'rgba(78,168,222,0.20)');
-    gradient.addColorStop(1, 'rgba(78,168,222,0.00)');
+    gradient.addColorStop(0, 'rgba(65,217,255,0.20)');
+    gradient.addColorStop(1, 'rgba(65,217,255,0.00)');
 
     ctx.save();
     ctx.beginPath();
@@ -1485,18 +1487,18 @@ export class ImpulseChart {
     for (let i = first + 1; i <= last; i++) ctx.lineTo(p.x + i + 0.5, yOf(columns[i]));
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(78,168,222,0.16)';
+    ctx.strokeStyle = 'rgba(65,217,255,0.16)';
     ctx.lineWidth = 4.5;
     ctx.stroke();
-    ctx.strokeStyle = COL.trace;
-    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = G.colorize(COL.trace);
+    ctx.lineWidth = G.width(1.8);
     ctx.stroke();
     ctx.restore();
 
     const xp = xOf(0);
     if (xp >= p.x - 2 && xp <= p.x + p.w + 2) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(78,168,222,0.35)';
+      ctx.strokeStyle = 'rgba(65,217,255,0.35)';
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(Math.round(xp) + 0.5, p.y);
@@ -1505,9 +1507,9 @@ export class ImpulseChart {
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.arc(xp, yOf(0), 3, 0, Math.PI * 2);
-      ctx.fillStyle = COL.trace;
+      ctx.fillStyle = G.colorize(COL.trace);
       ctx.fill();
-      ctx.strokeStyle = COL.bg;
+      ctx.strokeStyle = G.panelBg();
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.restore();
@@ -1518,13 +1520,14 @@ export class ImpulseChart {
       const sx1 = Math.max(this.selection.x0, this.selection.x1);
       if (sx1 - sx0 >= 1) {
         ctx.save();
-        ctx.fillStyle = 'rgba(78,168,222,0.12)';
+        ctx.fillStyle = 'rgba(65,217,255,0.12)';
         ctx.fillRect(sx0, p.y, sx1 - sx0, p.h);
-        ctx.strokeStyle = 'rgba(78,168,222,0.6)';
+        ctx.strokeStyle = 'rgba(65,217,255,0.6)';
         ctx.lineWidth = 1;
         ctx.strokeRect(Math.round(sx0) + 0.5, Math.round(p.y) + 0.5, sx1 - sx0, p.h);
         ctx.restore();
       }
     }
+    appearance.endGraph();
   }
 }

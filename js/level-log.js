@@ -99,8 +99,8 @@ export function drawLevelLog(canvas, samples, options = {}) {
   const minimum = Math.min(...values);
   const maximum = Math.max(...values);
   const mean = values.reduce((total, value) => total + value, 0) / values.length;
-  [[minimum, 'rgba(156, 159, 149, 0.5)'], [mean, 'rgba(119, 200, 193, 0.55)'],
-    [maximum, 'rgba(217, 162, 108, 0.55)']].forEach(([value, color]) => {
+  [[minimum, 'rgba(178, 194, 214, 0.5)'], [mean, 'rgba(69, 232, 194, 0.55)'],
+    [maximum, 'rgba(247, 169, 78, 0.55)']].forEach(([value, color]) => {
     ctx.beginPath();
     ctx.setLineDash([3, 3]);
     ctx.strokeStyle = color;
@@ -118,7 +118,7 @@ export function drawLevelLog(canvas, samples, options = {}) {
     if (index === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = '#4ea8de';
+  ctx.strokeStyle = '#41d9ff';
   ctx.lineWidth = 1.8;
   ctx.lineJoin = 'round';
   ctx.stroke();

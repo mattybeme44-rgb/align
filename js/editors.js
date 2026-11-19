@@ -17,11 +17,11 @@ const COL = {
   text: 'rgba(176,186,164,0.82)',
   textDim: 'rgba(160,172,150,0.55)',
   ghost: 'rgba(226,235,214,0.55)',
-  trace: '#4ea8de',
-  accent: '#4ea8de',
+  trace: '#41d9ff',
+  accent: '#41d9ff',
   phase: '#77c8c1',
   target: 'rgba(214,222,206,0.85)',
-  node: '#4ea8de',
+  node: '#41d9ff',
   savedColors: ['#b4a7f7', '#fbb679', '#72c7f2', '#eea4b3', '#a8df9b', '#f7d47b', '#86d5ca', '#d8a691'],
 };
 
@@ -236,7 +236,7 @@ export class EqDesignerChart {
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
-      ctx.strokeStyle = 'rgba(78,168,222,0.16)';
+      ctx.strokeStyle = 'rgba(65,217,255,0.16)';
       ctx.lineWidth = 4.5;
       ctx.lineJoin = 'round';
       ctx.stroke();
@@ -445,7 +445,7 @@ export class TargetEditorChart {
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
-      ctx.strokeStyle = 'rgba(78,168,222,0.16)';
+      ctx.strokeStyle = 'rgba(65,217,255,0.16)';
       ctx.lineWidth = 4.5;
       ctx.lineJoin = 'round';
       ctx.stroke();
