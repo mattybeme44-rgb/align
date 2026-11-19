@@ -3421,6 +3421,10 @@ body.validation-page {
   gap: 10px;
 }
 
+.mc-grid.mc-single {
+  grid-template-columns: 1fr;
+}
+
 .mc-card {
   border: 1px solid rgba(130, 205, 150, 0.26);
   border-radius: 14px;

@@ -268,6 +268,26 @@ export function createChannels(options) {
         empty.hidden = true;
       }
     });
+    applyVisibility();
+  }
+
+  /** A channel whose input the interface did not deliver is not shown at all. */
+  function isUnused(index) {
+    return state.delivered > 0 && index >= state.delivered;
+  }
+
+  function applyVisibility() {
+    state.channels.forEach((channel, index) => {
+      const entry = cards[index];
+      if (!entry) return;
+      entry.card.hidden = isUnused(index) ||
+        (state.expanded !== null && state.expanded !== index);
+    });
+    const grid = $('mcGrid');
+    if (grid) {
+      const shown = state.delivered > 0 ? Math.min(state.delivered, 4) : 4;
+      grid.classList.toggle('mc-single', shown === 1);
+    }
   }
 
   function renderExpansion() {
@@ -276,10 +296,10 @@ export function createChannels(options) {
       if (!entry) return;
       const expanded = state.expanded === index;
       entry.card.classList.toggle('mc-expanded', expanded);
-      entry.card.hidden = state.expanded !== null && !expanded;
       const button = entry.card.querySelector('[data-act="expand"]');
       if (button) button.innerHTML = expanded ? ICON_COLLAPSE : ICON_EXPAND;
     });
+    applyVisibility();
   }
 
   function renderImpulse() {
@@ -324,7 +344,9 @@ export function createChannels(options) {
       (captured > 1 ? '–' + captured : '') + ' ' + (captured === 1 ? 'is' : 'are') +
       ' being captured; the reference is the generated signal.';
     if (captured < 4) {
-      text += ' Channel ' + (captured + 1) + ' has no input — this device offers ' + captured + '.';
+      text += ' This interface offers ' + captured +
+        ' input' + (captured === 1 ? '' : 's') + ', so ' + captured +
+        ' channel' + (captured === 1 ? ' is' : 's are') + ' shown.';
     }
     note.textContent = text;
   }
