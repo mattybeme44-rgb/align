@@ -1428,14 +1428,6 @@ export function createSpeakerBuilder(options = {}) {
       clfFormat.appendChild(option);
     }
     clfRow.appendChild(clfFormat);
-    clfRow.appendChild(field('Bands from Hz', numericInput(clfBands.minHz, {
-      step: 1, min: 20, max: 40000, title: 'Leave empty to write every band of the grid',
-      onChange: (value) => { clfBands.minHz = value; },
-    })));
-    clfRow.appendChild(field('to Hz', numericInput(clfBands.maxHz, {
-      step: 1, min: 20, max: 40000, title: 'Leave empty to write every band of the grid',
-      onChange: (value) => { clfBands.maxHz = value; },
-    })));
     clfRow.appendChild(button('Convert GLL to CLF', 'btn', () => convertGllToClf(gllInput, clfFormat)));
     const clfInput = el('input');
     clfInput.type = 'file';
@@ -1446,6 +1438,19 @@ export function createSpeakerBuilder(options = {}) {
     clfRow.appendChild(button('Import CLF', 'btn', () => clfInput.click()));
     if (importedClf) clfRow.appendChild(button('Check CLF round trip', 'btn', checkClfRoundTrip));
     box.appendChild(clfRow);
+
+    // The span is not a button: in the button row these fields were squeezed
+    // until a four-digit value no longer fitted, so they get their own row.
+    const spanRow = el('div', 'dm-builder-row');
+    spanRow.appendChild(field('Bands from Hz', numericInput(clfBands.minHz, {
+      step: 1, min: 20, max: 40000, title: 'Leave empty to write every band of the grid',
+      onChange: (value) => { clfBands.minHz = value; },
+    })));
+    spanRow.appendChild(field('to Hz', numericInput(clfBands.maxHz, {
+      step: 1, min: 20, max: 40000, title: 'Leave empty to write every band of the grid',
+      onChange: (value) => { clfBands.maxHz = value; },
+    })));
+    box.appendChild(spanRow);
 
     if (pendingGll) {
       const partsRow = el('div', 'row btns');
