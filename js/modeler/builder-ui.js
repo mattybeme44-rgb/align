@@ -45,6 +45,7 @@ import {
 } from './speaker-builder.js';
 import { drawCabinetChart, drawPolarChart, drawResponseChart, curveColour } from './builder-chart.js';
 import { normalizeModel } from './model.js';
+import { createGllFromSpec } from './gll.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -476,6 +477,30 @@ export function createSpeakerBuilder(options = {}) {
       setMessage('Sharing a file is not available in this browser, so the definition was not exported.', 'err');
       render();
     }
+  }
+
+  function exportGll() {
+    if (!draft) return;
+    const built = createGllFromSpec(draft, { name: draft.name });
+    if (!built.ok) {
+      setMessage(built.message, 'err');
+      render();
+      return;
+    }
+    if (typeof opts.share !== 'function') {
+      setMessage('Sharing a file is not available in this browser, so the GLL was not written.', 'err');
+      render();
+      return;
+    }
+    const note = 'Wrote ' + built.summary.responses + ' balloon responses on a ' + built.summary.step +
+      '° grid across ' + built.summary.bands + ' third-octave bands, ' + built.summary.fromHz + '–' +
+      built.summary.toHz + ' Hz. The file carries Align\u2019s beamwidth model, not a measurement, and it is ' +
+      'not AFMG-authorised: EASE SpeakerLab is the only tool that compiles and signs a GLL. ' +
+      (built.warnings.length ? built.warnings.join('; ') + '. ' : '') +
+      'It has not been opened in EASE.';
+    opts.share(new Blob([built.bytes], { type: 'application/octet-stream' }), built.fileName, 'GLL loudspeaker');
+    setMessage(note, 'ok');
+    render();
   }
 
   function importFile(input) {
@@ -1197,6 +1222,7 @@ export function createSpeakerBuilder(options = {}) {
       row.appendChild(button('Save as new', 'btn', () => save(true)));
       row.appendChild(button('Export definition', 'btn', exportCurrent));
     }
+    row.appendChild(button('Create GLL', 'btn', exportGll));
     row.appendChild(button('Close', 'btn', close));
     box.appendChild(row);
 
