@@ -603,6 +603,30 @@ body {
   color: var(--accent);
 }
 
+/* A phone column is 320-430px and the strip keeps the tiles at their natural
+   widths, so the desktop 62px floor forces a fourth row. A 50px floor with
+   tighter padding and a hair less label tracking packs all fifteen tiles into
+   three rows on every phone width, without shortening any label. */
+@media (max-width: 470px) {
+  .metrics.compact .metric {
+    min-width: 50px;
+    padding: 2px 4px;
+  }
+
+  .metrics.compact .metric .k {
+    font-size: 8px;
+    letter-spacing: 0.06em;
+  }
+
+  .metrics.compact .metric .v {
+    font-size: 11px;
+  }
+
+  .metrics.compact .metric-action {
+    padding: 2px 8px;
+  }
+}
+
 /* ---------- tool column ---------- */
 
 .tool-column {
