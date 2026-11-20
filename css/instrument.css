@@ -558,12 +558,11 @@ body {
 .metrics.compact {
   display: flex;
   flex: none;
-  flex-wrap: nowrap;
+  /* The fifteen tiles need 642px and a phone column is 320-430px, so the strip
+     wraps onto extra rows instead of scrolling the last tiles out of sight. */
+  flex-wrap: wrap;
   gap: 0;
   margin: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
   border-top: 1px solid var(--line);
   background: #0d1114;
 }
