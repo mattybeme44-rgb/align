@@ -2878,7 +2878,7 @@ export function createDataModeler(options = {}) {
           ? 'GLL is AFMG’s compiled Generic Loudspeaker Library; decoding needs AFMG’s licensed SDK, ' +
             'which is an annual subscription with AFMG signing for plug-in authors, and no public reader exists. '
           : 'The EASE SPK format has no public specification — only vendor descriptions exist. ') +
-        'Export the loudspeaker data from EASE as text or FRD, or import a CLF (.cf1/.cf2) file.', true);
+        'Export the loudspeaker data from EASE as text or FRD, or import a CLF (.cf1/.cf2) file. The Speaker Builder can convert a GLL to CLF.', true);
       return;
     }
 
