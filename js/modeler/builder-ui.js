@@ -161,6 +161,7 @@ export function createSpeakerBuilder(options = {}) {
   let pendingGll = null; // a GLL whose parts are waiting for a choice
   let clfBands = { minHz: null, maxHz: null }; // the span of the grid to write
   let importedClf = null; // the file a round trip is checked against
+  let balloonBandHz = 1000; // the band of the balloon drawn as the sphere
   let refs = {};
   let bound = false;
 
@@ -591,7 +592,10 @@ export function createSpeakerBuilder(options = {}) {
       unit = 'mm';
       aim = { h: 0, v: 0 };
       importedClf = { clf, fileName: file.name, balloon: clfResponse(clf).balloon || null };
-      setMessage(imported.message, 'ok');
+      // The drift is measured now, while the imported file is still the one being
+      // compared, so the operator does not have to ask for it to learn it.
+      const trip = clfRoundTripReport(clf, draft, file.name);
+      setMessage(imported.message + ' ' + trip.text, 'ok');
       render();
     };
     reader.onerror = () => {
@@ -607,33 +611,28 @@ export function createSpeakerBuilder(options = {}) {
    * the file that was imported. The drift is the loss of going round the circle,
    * so it is measured and stated rather than assumed to be zero.
    */
+  /** GLL round trip of one CLF file: the drift, or why it could not be checked. */
+  function clfRoundTripReport(clf, spec, label) {
+    const built = createGllFromSpec(spec, { name: spec.name });
+    if (!built.ok) return { ok: false, text: 'A round trip could not be checked: ' + built.message };
+    const parsedGll = parseGll(built.bytes);
+    if (!parsedGll.ok) return { ok: false, text: 'A round trip could not be checked: ' + parsedGll.message };
+    const back = clfFromGll(parsedGll);
+    if (!back.ok) return { ok: false, text: 'A round trip could not be checked: ' + back.message };
+    const diff = clfDiff(clf, parseClf(back.text, back.fileName));
+    if (!diff.ok) return { ok: false, text: diff.message };
+    return {
+      ok: true,
+      text: 'Round trip \u201c' + label + '\u201d \u2192 GLL \u2192 CLF: ' + diff.message +
+        ' The widths are measured from each file\u2019s own balloon, so a narrow band moves its width ' +
+        'before its level.',
+    };
+  }
+
   function checkClfRoundTrip() {
     if (!importedClf || !draft) return;
-    const spec = normalizeSpec(draft);
-    const built = createGllFromSpec(spec, { name: spec.name });
-    if (!built.ok) {
-      setMessage(built.message, 'err');
-      render();
-      return;
-    }
-    const parsedGll = parseGll(built.bytes);
-    if (!parsedGll.ok) {
-      setMessage(parsedGll.message, 'err');
-      render();
-      return;
-    }
-    const back = clfFromGll(parsedGll);
-    if (!back.ok) {
-      setMessage(back.message, 'err');
-      render();
-      return;
-    }
-    const diff = clfDiff(importedClf.clf, parseClf(back.text, back.fileName));
-    setMessage(diff.ok
-      ? 'Round trip “' + importedClf.fileName + '” → GLL → CLF: ' + diff.message +
-        ' The widths are measured from each file’s own balloon, so a narrow band moves its width ' +
-        'before its level.'
-      : diff.message, diff.ok ? 'ok' : 'err');
+    const trip = clfRoundTripReport(importedClf.clf, normalizeSpec(draft), importedClf.fileName);
+    setMessage(trip.text, trip.ok ? 'ok' : 'err');
     render();
   }
 
@@ -744,11 +743,14 @@ export function createSpeakerBuilder(options = {}) {
     });
 
     const balloon = balloonOf();
+    if (refs.balloonBandRow) refs.balloonBandRow.hidden = !balloon;
     if (refs.balloon && refs.balloonNote) {
       refs.balloon.hidden = !balloon;
       refs.balloonNote.hidden = !balloon;
       if (balloon) {
-        drawBalloonChart(refs.balloon, { balloon, bandHz: 1000, rotationDeg: aim.h, height: 220 });
+        drawBalloonChart(refs.balloon, {
+          balloon, bandHz: balloonBandHz || 1000, rotationDeg: aim.h, height: 220,
+        });
       }
     }
 
@@ -1305,11 +1307,22 @@ export function createSpeakerBuilder(options = {}) {
       'Cabinet geometry from the entered dimensions: outline, front face, acoustic centre, coverage cone and ' +
       'preview aim. Mounting and aim in a room are set in the Room Designer.'));
 
+    refs.balloonBandRow = el('div', 'dm-builder-row');
+    refs.balloonBandRow.appendChild(field('Sphere band Hz', numericInput(balloonBandHz, {
+      step: 1, min: 20, max: 20000,
+      title: 'The band drawn as the sphere: the nearest band the file has is used',
+      onChange: (value) => {
+        balloonBandHz = value;
+        refresh();
+      },
+    })));
+    box.appendChild(refs.balloonBandRow);
+
     refs.balloon = el('canvas', 'dm-builder-canvas tall');
     refs.balloon.setAttribute('aria-label', 'Imported balloon drawn as a three-dimensional directivity sphere');
     box.appendChild(refs.balloon);
     refs.balloonNote = el('p', 'dm-sub',
-      'A balloon from an imported CLF or GLL file, drawn at the 1 kHz band: the radius at each angle is ' +
+      'A balloon from an imported CLF or GLL file, drawn at the band you choose, 1 kHz unless you set another: the radius at each angle is ' +
       'that angle’s level, on the file’s own angular grid, and the preview aim turns it. ' +
       'Without an imported balloon this panel stays hidden, because there is nothing measured to draw.');
     box.appendChild(refs.balloonNote);

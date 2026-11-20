@@ -513,6 +513,26 @@ report('a dataset with no balloon has no sphere to draw',
   balloonProjection(null, 1000, 0).ok === false && balloonProjection({ levels: [] }, 1000, 0).ok === false,
   balloonProjection(null, 1000, 0).message);
 
+// The sphere follows the chosen band, and a request the grid cannot meet is
+// answered with the nearest band the file actually holds, named in the drawing.
+const topFrequency = projected.balloon.frequencies[projected.balloon.frequencies.length - 1];
+const topSphere = balloonProjection(projected.balloon, topFrequency, 0);
+report('the sphere draws any band of the file, not only 1 kHz',
+  topSphere.ok && topSphere.band === projected.balloon.frequencies.length - 1 &&
+    Math.abs(topSphere.frequency - topFrequency) < 1e-6 &&
+    topSphere.points.length === projected.balloon.azimuths * sphereParallels,
+  topSphere.ok
+    ? 'asked ' + topFrequency + ' Hz, drew ' + topSphere.frequency + ' Hz · ' + topSphere.points.length + ' points'
+    : topSphere.message);
+const betweenSphere = balloonProjection(projected.balloon, 1100, 0);
+report('a band between two grid bands is drawn at the nearest one, by ratio',
+  betweenSphere.ok && betweenSphere.frequency === 1000,
+  betweenSphere.ok ? 'asked 1100 Hz, drew ' + betweenSphere.frequency + ' Hz' : betweenSphere.message);
+const aboveSphere = balloonProjection(projected.balloon, 40000, 0);
+report('a band above the file falls back to its top band and says which',
+  aboveSphere.ok && aboveSphere.frequency === topFrequency,
+  aboveSphere.ok ? 'asked 40000 Hz, drew ' + aboveSphere.frequency + ' Hz' : aboveSphere.message);
+
 /* ---------- the honest refusals ---------- */
 
 report('a GLL that was never read is not converted',
