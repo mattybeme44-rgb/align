@@ -505,13 +505,14 @@ export function createSpeakerBuilder(options = {}) {
   }
 
   /** Convert a GLL to CLF2 text and hand it to the share sheet. */
-  function convertGllToClf(input) {
+  function convertGllToClf(input, formatSelect) {
     const file = input && input.files && input.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
+      const format = formatSelect && formatSelect.value === 'clf1' ? 'clf1' : 'clf2';
       const built = clfTextFromGllBytes(new Uint8Array(reader.result || []),
-        { name: draft ? draft.name : file.name });
+        { name: draft ? draft.name : file.name, format });
       if (!built.ok) {
         setMessage(built.message, 'err');
         render();
@@ -522,9 +523,9 @@ export function createSpeakerBuilder(options = {}) {
         render();
         return;
       }
-      setMessage('Converted \u201c' + built.summary.label + '\u201d to CLF2: ' + built.summary.bands +
-        ' third-octave bands ' + built.summary.fromHz + '\u2013' + built.summary.toHz + ' Hz, ' +
-        built.summary.meridians + ' \u00d7 ' + built.summary.parallels + ' polar rows, and the 6 dB widths ' +
+      setMessage('Converted \u201c' + built.summary.label + '\u201d to ' + built.summary.format + ': ' +
+        built.summary.bands + ' bands ' + built.summary.fromHz + '\u2013' + built.summary.toHz + ' Hz, ' +
+        built.summary.azimuths + ' \u00d7 ' + built.summary.rows + ' polar rows, and the 6 dB widths ' +
         'measured from the file\u2019s own balloon. The GLL was read by Align\u2019s own reader, not AFMG\u2019s ' +
         'SDK, so nothing here is AFMG-authorised.' +
         (built.warnings.length ? ' ' + built.warnings.join('; ') + '.' : ''), 'ok');
@@ -1313,7 +1314,15 @@ export function createSpeakerBuilder(options = {}) {
     gllInput.hidden = true;
     gllInput.addEventListener('change', () => convertGllToClf(gllInput));
     clfRow.appendChild(gllInput);
-    clfRow.appendChild(button('Convert GLL to CLF', 'btn', () => gllInput.click()));
+    const clfFormat = el('select');
+    clfFormat.title = 'CLF format written by the converter';
+    for (const choice of [['clf2', 'CLF2 \u00b7 1/3 octave'], ['clf1', 'CLF1 \u00b7 octave']]) {
+      const option = el('option', null, choice[1]);
+      option.value = choice[0];
+      clfFormat.appendChild(option);
+    }
+    clfRow.appendChild(clfFormat);
+    clfRow.appendChild(button('Convert GLL to CLF', 'btn', () => convertGllToClf(gllInput, clfFormat)));
     const clfInput = el('input');
     clfInput.type = 'file';
     clfInput.accept = '.cf1,.cf2,.clf,text/plain';

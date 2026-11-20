@@ -99,6 +99,14 @@ export function parseClf(text, fileName) {
   const beamwidth = numbers(keys.get('6DB-WIDTH-HOR'));
   const beamwidthVertical = numbers(keys.get('6DB-WIDTH-VER'));
 
+  // The polar data section: <BAND> blocks of TAB-separated levels, one row per
+  // azimuth angle and one column per polar angle. Decoding it means a file that
+  // states no 6 dB width keys still carries a pattern the widths can be measured
+  // from, instead of the whole balloon being dropped on import.
+  const polarBlocks = readPolarBands(lines);
+  const symmetry = String(keys.get('BALLOON-SYMMETRY') || '').replace(/[<>]/g, '').trim().toLowerCase();
+  const balloon = polarBlocks.length ? measureBalloon(polarBlocks, symmetry) : null;
+
   const warnings = [];
   if (sensitivity.length === 0 && axial.length) {
     warnings.push('the sensitivity list is empty, so the on-axis spectrum is used as the band levels');
@@ -112,9 +120,11 @@ export function parseClf(text, fileName) {
   if (beamwidth.length && beamwidth.length !== bands.length) {
     warnings.push('the 6 dB width list holds ' + beamwidth.length + ' values for ' + bands.length + ' bands');
   }
-  if (keys.has('CLF2')) {
-    warnings.push('CLF2 polar-balloon blocks are only in the licensed authoring kit and were not read; ' +
-      'only the published band keys are used');
+  if (balloon && !beamwidth.length) {
+    warnings.push('the file states no 6 dB width key, so the widths are measured from its own decoded balloon');
+  }
+  if (balloon && balloon.incomplete) {
+    warnings.push(balloon.incomplete + ' band blocks were not read because their rows differ in length');
   }
 
   const readings = [];
@@ -124,9 +134,12 @@ export function parseClf(text, fileName) {
       frequency: bands[i],
       levelDb: Number.isFinite(level) ? level : null,
       impedanceOhm: i < impedance.length && Number.isFinite(impedance[i]) ? impedance[i] : null,
-      beamwidthDeg: i < beamwidth.length && Number.isFinite(beamwidth[i]) ? beamwidth[i] : null,
+      beamwidthDeg: i < beamwidth.length && Number.isFinite(beamwidth[i])
+        ? beamwidth[i]
+        : nearestWidth(balloon && balloon.horizontal, bands[i]),
       beamwidthVDeg: i < beamwidthVertical.length && Number.isFinite(beamwidthVertical[i])
-        ? beamwidthVertical[i] : null,
+        ? beamwidthVertical[i]
+        : nearestWidth(balloon && balloon.vertical, bands[i]),
     });
   }
 
@@ -153,6 +166,8 @@ export function parseClf(text, fileName) {
     },
     bands,
     readings,
+    polar: balloon,
+    symmetry,
     fileName: fileName || '',
   };
 }
@@ -223,10 +238,17 @@ export function clfResponse(clf) {
  *
  *   - the GLL side is Align's own reader of a reverse-engineered layout, not
  *     AFMG's licensed SDK, so a file it cannot account for is refused whole;
- *   - CLF2 has a fixed 24-band grid, so the GLL's third-octave bands are carried
- *     across by nearest band, not resampled into a curve that pretends to be
- *     measured at those exact centres.
+ *   - the band grids are the formats' own (CLF2: 24 third-octave bands from 100 Hz,
+ *     CLF1: 8 octave bands from 125 Hz), so the GLL's bands are carried across by
+ *     nearest band rather than resampled into a curve that pretends to be measured
+ *     at those exact centres;
+ *   - no CLF Group tool was available to open the output. Their viewer and authoring
+ *     kit are the only real readers and are Windows binaries behind registration, so
+ *     the text written here is checked against the published format rules (see
+ *     tests/clf.mjs), never by a vendor application.
  */
+
+export const CLF1_BANDS = [125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
 export const CLF2_BANDS = [
   100, 125, 160, 200, 250, 315, 400, 500, 630, 800,
@@ -475,7 +497,113 @@ export function parseGll(input) {
   }
 }
 
-/* ---------- the CLF2 writer ---------- */
+/* ---------- reading the polar section back ---------- */
+
+/** The azimuth span a CLF symmetry tag stores, in degrees. */
+function balloonSpan(symmetry) {
+  switch (symmetry) {
+    case 'rotational': return 0;
+    case 'vertical': return 0;
+    case 'polar': return 270;
+    case 'full': return 90;
+    case 'none': return 360;
+    default: return 180; // <horizontal>
+  }
+}
+
+/** Every <BAND> block: one row per azimuth, one column per polar angle. */
+function readPolarBands(lines) {
+  const blocks = [];
+  let current = null;
+  for (const line of lines) {
+    if (!line || COMMENT.test(line)) continue;
+    const band = line.match(/^\s*<BAND>\s*(.*)$/i);
+    if (band) {
+      const frequency = Number(String(band[1]).replace(/[\s,;]+/g, ''));
+      current = Number.isFinite(frequency) && frequency > 0 ? { frequency, rows: [] } : null;
+      if (current) blocks.push(current);
+      continue;
+    }
+    if (/^\s*</.test(line)) {
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const values = trimmed.split(/[\s,;]+/).map(Number);
+    if (values.length && values.every((value) => Number.isFinite(value))) current.rows.push(values);
+  }
+  return blocks.filter((block) => block.rows.length > 0);
+}
+
+/**
+ * Measure a decoded balloon: its shape, and the 6 dB width per band along the
+ * horizontal and vertical planes, from the levels themselves.
+ */
+function measureBalloon(blocks, symmetry) {
+  const columns = blocks[0].rows[0].length;
+  const consistent = blocks.filter((block) => block.rows.every((row) => row.length === columns));
+  const incomplete = blocks.length - consistent.length;
+  const rows = consistent.length ? consistent[0].rows.length : 0;
+  const span = balloonSpan(symmetry);
+  const azimuthStep = rows > 1 && span > 0 ? span / (rows - 1) : 0;
+  const polarStep = columns > 1 ? 180 / (columns - 1) : 0;
+  const middle = Math.floor(columns / 2);
+  const horizontal = [];
+  const vertical = [];
+  for (const block of consistent) {
+    const axis = block.rows[0][middle];
+    if (rows > 1 && azimuthStep > 0) {
+      horizontal.push({
+        frequency: block.frequency,
+        widthDeg: crossingWidth(
+          block.rows.map((row, index) => ({ angle: index * azimuthStep, db: row[middle] })),
+          axis,
+        ),
+      });
+    }
+    if (columns > 2) {
+      vertical.push({
+        frequency: block.frequency,
+        widthDeg: crossingWidth(
+          block.rows[0].map((value, index) => ({ angle: Math.abs(index * polarStep - 90), db: value })),
+          axis,
+        ),
+      });
+    }
+  }
+  return {
+    symmetry: symmetry || '',
+    bands: consistent.length,
+    azimuths: rows,
+    parallels: columns,
+    span,
+    azimuthStep,
+    polarStep,
+    horizontal,
+    vertical,
+    incomplete,
+  };
+}
+
+/** The measured width nearest a band, or null when the balloon gave none. */
+function nearestWidth(list, frequency) {
+  if (!Array.isArray(list) || !list.length || !Number.isFinite(frequency)) return null;
+  let best = null;
+  let bestDistance = Infinity;
+  for (const entry of list) {
+    const distance = Math.abs(Math.log2(entry.frequency / frequency));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = entry;
+    }
+  }
+  return best ? best.widthDeg : null;
+}
+
+/* ---------- the CLF writer ---------- */
+
 
 /** The flat response index of a meridian/parallel pair, poles stored once. */
 function responseIndex(meridian, parallel, parallels) {
@@ -519,13 +647,35 @@ function crossingWidth(points, axisDb) {
   return 360;
 }
 
-function clfFileName(name) {
+function clfFileName(name, format) {
   const base = String(name || '')
     .replace(/[^a-z0-9._ -]+/gi, '')
     .trim()
     .replace(/\s+/g, '-')
     .toLowerCase();
-  return (base || 'align-loudspeaker') + '.cf2';
+  return (base || 'align-loudspeaker') + (format === 1 ? '.cf1' : '.cf2');
+}
+
+/** The CLF symmetry tag for a balloon, from the span its meridians cover. */
+function clfSymmetry(balloon) {
+  const span = Math.max(0, (balloon.meridians - 1) * balloon.meridianStep);
+  if (balloon.symmetry === 0 || span < 1) return { tag: 'rotational', span: 0 };
+  if (Math.abs(span - 90) < 1e-6) return { tag: 'full', span: 90 };
+  if (Math.abs(span - 270) < 1e-6) return { tag: 'polar', span: 270 };
+  if (span >= 355) return { tag: 'none', span: 360 };
+  return { tag: 'horizontal', span: 180 };
+}
+
+/** How many azimuth rows a CLF file stores for a tag at a given step. */
+function azimuthCountFor(tag, step) {
+  switch (tag) {
+    case 'rotational': return 1;
+    case 'vertical': return 1;
+    case 'polar': return 4;
+    case 'full': return Math.round(90 / step) + 1;
+    case 'none': return Math.round(360 / step);
+    default: return Math.round(180 / step) + 1;
+  }
 }
 
 /**
@@ -535,6 +685,16 @@ function clfFileName(name) {
  * the axial spectrum is the on-axis response, and the 6 dB widths are measured
  * from that same balloon — no width, level or band is invented here. Nothing is
  * claimed about the source: the GLL's own description travels into the CLF.
+ */
+/**
+ * Write a CLF text file from a parsed GLL.
+ *
+ * `options.format` is 'clf2' (the default: 24 third-octave bands, 5° grid) or
+ * 'clf1' (8 octave bands, 10° grid). The band centres come from the format, the
+ * angular rows and columns are sampled from the file's own balloon, and the 6 dB
+ * widths are measured from that balloon rather than invented. A balloon that
+ * covers less than a full sphere is mirrored where a CLF file needs the far side,
+ * and the mirroring is reported rather than left implicit.
  */
 export function clfFromGll(parsed, options = {}) {
   if (!parsed || parsed.ok !== true) {
@@ -548,7 +708,9 @@ export function clfFromGll(parsed, options = {}) {
     return { ok: false, message: 'That source carries no balloon data to convert.' };
   }
 
-  const bands = CLF2_BANDS.slice();
+  const format = options.format === 'clf1' || options.version === 1 ? 1 : 2;
+  const bands = (format === 1 ? CLF1_BANDS : CLF2_BANDS).slice();
+  const step = format === 1 ? 10 : 5;
   const meridians = Math.max(1, balloon.meridians);
   const parallels = Math.max(1, balloon.parallels);
   const middle = Math.floor(parallels / 2);
@@ -588,24 +750,52 @@ export function clfFromGll(parsed, options = {}) {
     return crossingWidth(points, axial[band]);
   });
 
+  const symmetry = clfSymmetry(balloon);
+  const azimuthCount = azimuthCountFor(symmetry.tag, step);
+  const parallelCount = Math.round(180 / step) + 1;
+  const sourceSpan = Math.max(0, (meridians - 1) * balloon.meridianStep);
+  const azimuthRows = [];
+  let mirrored = 0;
+  for (let row = 0; row < azimuthCount; row += 1) {
+    const angle = row * step;
+    let wanted = angle;
+    if (wanted > sourceSpan + 1e-6) {
+      wanted = 360 - wanted;
+      if (wanted > sourceSpan + 1e-6) wanted = sourceSpan;
+      else mirrored += 1;
+    }
+    azimuthRows.push({
+      angle,
+      index: Math.min(meridians - 1, Math.max(0, Math.round(wanted / balloon.meridianStep))),
+    });
+  }
+  if (mirrored) {
+    warnings.push(mirrored + ' azimuth row(s) beyond the file\u2019s own ' + sourceSpan +
+      '\u00b0 span were mirrored from the opposite side');
+  }
+  if (balloon.parallelStep > step + 1e-6) {
+    warnings.push('the file\u2019s ' + balloon.parallelStep + '\u00b0 polar step was sampled onto ' +
+      step + '\u00b0 CLF rows');
+  }
+
   const oneLine = (value) => String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
   const or = (value, fallback) => (oneLine(value) === '' ? fallback : oneLine(value));
   const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
   const today = new Date();
   const date = today.getUTCFullYear() + '-' + months[today.getUTCMonth()] + '-' +
     String(today.getUTCDate()).padStart(2, '0');
-  const symmetryTag = GLL_SYMMETRY[balloon.symmetry] || 'none';
+  const tag = 'CLF' + format;
   const cabinet = parsed.boxes
     .filter((box) => box.placements.some((placement) => placement.sourceKey === source.key))
     .map((box) => box.label)
     .join(', ');
-  const weight = parsed.boxes.find((box) => box.placements.some((placement) => placement.sourceKey === source.key)
-    && box.weight) || null;
+  const box = parsed.boxes.find((entry) => entry.placements.some((placement) => placement.sourceKey === source.key)
+    && entry.weight) || null;
 
   const lines = [];
   const write = (line) => lines.push(line);
-  write('<CLF2>');
-  write('<VERSION>\t2');
+  write('<' + tag + '>');
+  write('<VERSION>\t' + format);
   write('<MODELNAME>\t' + or(source.label || parsed.label, 'Align loudspeaker'));
   write('<INFOFILE>\t#');
   write('<MANUFACTURER>\t' + or(source.company || parsed.company, '#'));
@@ -613,7 +803,7 @@ export function clfFromGll(parsed, options = {}) {
   write('<DESCRIPTION>\t' + or(source.description || parsed.info, '#'));
   write('<COLORS>\t#');
   write('<MOUNTING>\t#');
-  write('<WEIGHT>\t' + (weight ? weight.weight.toFixed(1) : '0.0'));
+  write('<WEIGHT>\t' + (box ? box.weight.toFixed(1) : '0.0'));
   write('<MINBAND>\t' + bands[0].toFixed(0));
   write('<MAXBAND>\t' + bands[bands.length - 1].toFixed(0));
   write('<MEASUREMENT-CONTACT>\t#');
@@ -637,47 +827,51 @@ export function clfFromGll(parsed, options = {}) {
   write('<6DB-WIDTH-VER>\t' + vertical.map((value) => value.toFixed(1)).join('\t'));
   write('<6DB-WIDTH-HOR-INFO>\tmeasured from the GLL balloon at 6 dB');
   write('<6DB-WIDTH-VER-INFO>\tmeasured from the GLL balloon at 6 dB');
-  write('<BALLOON-SYMMETRY>\t<' + symmetryTag + '>');
+  write('<BALLOON-SYMMETRY>\t<' + symmetry.tag + '>');
   write('<BALLOON-ARC-ORDER>\t<default>');
   write('<BALLOON-REF>\t<absolute>\t<SIGN>\t<actual>');
 
   for (let band = 0; band < bands.length; band += 1) {
     write('<BAND>\t' + bands[band].toFixed(0));
-    for (let meridian = 0; meridian < meridians; meridian += 1) {
+    for (const azimuth of azimuthRows) {
+      const row = grid[azimuth.index];
       const values = [];
-      for (let parallel = 0; parallel < parallels; parallel += 1) {
-        const pole = parallel === 0 || parallel === parallels - 1;
-        const row = pole ? grid[0] : grid[meridian];
-        values.push((row[parallel] ? row[parallel][band] : 0).toFixed(2));
+      for (let column = 0; column < parallelCount; column += 1) {
+        const columnIndex = Math.min(parallels - 1,
+          Math.max(0, Math.round((column * step) / balloon.parallelStep)));
+        values.push((row[columnIndex] ? row[columnIndex][band] : 0).toFixed(2));
       }
       write(values.join('\t'));
     }
   }
 
   write('<CABINET-SYSTEM>\t' + or(cabinet, ''));
-  write('<CLF2END>');
+  write('<' + tag + 'END>');
 
   const text = lines.join('\n') + '\n';
   return {
     ok: true,
     text,
-    fileName: clfFileName(options.name || source.label || parsed.label),
+    fileName: clfFileName(options.name || source.label || parsed.label, format),
     summary: {
       label: oneLine(source.label || parsed.label),
+      format: tag,
       bands: bands.length,
       fromHz: bands[0],
       toHz: bands[bands.length - 1],
       meridians,
       parallels,
-      responses: meridians * parallels,
-      symmetry: symmetryTag,
+      azimuths: azimuthCount,
+      rows: parallelCount,
+      responses: azimuthCount * parallelCount,
+      symmetry: symmetry.tag,
       bytes: text.length,
     },
     warnings,
   };
 }
 
-/** Read a GLL and write CLF2 text from it, in one step. */
+/** Read a GLL and write CLF text from it, in one step. */
 export function clfTextFromGllBytes(bytes, options = {}) {
   const parsed = parseGll(bytes);
   if (!parsed.ok) return parsed;
@@ -775,7 +969,10 @@ export function clfToSpec(clf, options = {}) {
     spec,
     warnings,
     message: 'Read ' + readings.length + ' bands from CLF ' + (meta.version || '') +
-      ' (' + low + '–' + high + ' Hz). ' + (warnings.length ? warnings.join(' · ') + '. ' : '') +
+      ' (' + low + '–' + high + ' Hz)' +
+      (clf.polar ? ', and decoded its ' + clf.polar.bands + ' × ' + clf.polar.azimuths + ' × ' +
+        clf.polar.parallels + ' balloon for the widths' : '') +
+      '. ' + (warnings.length ? warnings.join(' · ') + '. ' : '') +
       'Nothing has been saved yet: the draft can be edited and saved as a library entry.',
   };
 }
