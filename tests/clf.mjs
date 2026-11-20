@@ -26,11 +26,15 @@
 import {
   CLF1_BANDS,
   CLF2_BANDS,
+  clfDiff,
   clfFromGll,
+  clfParts,
+  clfResponse,
   clfToSpec,
   parseClf,
   parseGll,
 } from '../js/modeler/clf.js';
+import { datasetBalloon, normalizeModel } from '../js/modeler/model.js';
 import { createGllFromSpec } from '../js/modeler/gll.js';
 import { normalizeSpec, pioneerExample } from '../js/modeler/speaker-builder.js';
 
@@ -355,6 +359,84 @@ report('a file with no width keys still yields widths from its balloon',
 report('that file still becomes a specification with directivity',
   polarSpec.ok && polarSpec.spec.directivity && polarSpec.spec.directivity.points.length === 2,
   polarSpec.ok ? polarSpec.message.split('.')[1] : polarSpec.message);
+
+/* ---------- the balloon survives a save and a reopen ---------- */
+
+const keptClf = parseClf(converted.text, converted.fileName);
+const projected = clfResponse(keptClf);
+const keptModel = normalizeModel({
+  name: 'CLF import',
+  datasets: [{
+    label: 'Polar kept',
+    provenance: 'manufacturer',
+    curve: { magDb: Array.from({ length: 400 }, (_, index) => index * 0.01), phaseDeg: null },
+    balloon: projected.balloon,
+  }],
+});
+const kept = keptModel && keptModel.datasets[0] && keptModel.datasets[0].balloon;
+report('the dataset keeps the balloon in a compact form', !!kept &&
+  typeof kept.levels === 'string' && kept.levels.length > 1000 &&
+  kept.azimuths === 37 && kept.parallels === 37 && kept.frequencies.length === 24,
+  kept ? kept.frequencies.length + ' bands, ' + kept.levels.length + ' base64 characters' : 'no balloon');
+
+const reopenedModel = normalizeModel(JSON.parse(JSON.stringify(keptModel)));
+const decoded = datasetBalloon(reopenedModel.datasets[0]);
+report('the balloon survives JSON save and reopen', !!decoded &&
+  decoded.levels.length === 24 && decoded.levels[0].length === 37 &&
+  decoded.levels[0][0].length === 37 && decoded.levels[0][0][18] > 0,
+  decoded ? decoded.levels.length + ' × ' + decoded.levels[0].length + ' × ' +
+    decoded.levels[0][0].length : 'none');
+
+let worstKept = 0;
+if (decoded) {
+  for (let band = 0; band < decoded.levels.length; band += 1) {
+    for (let azimuth = 0; azimuth < decoded.levels[band].length; azimuth += 1) {
+      for (let parallel = 0; parallel < decoded.levels[band][azimuth].length; parallel += 1) {
+        worstKept = Math.max(worstKept, Math.abs(
+          decoded.levels[band][azimuth][parallel] - projected.balloon.levels[band][azimuth][parallel],
+        ));
+      }
+    }
+  }
+}
+report('the kept levels are the file’s own within the one-byte quantisation',
+  worstKept <= 0.51, worstKept.toFixed(2) + ' dB worst');
+
+/* ---------- import, rebuild the GLL, convert again: no drift ---------- */
+
+const specBack = clfToSpec(keptClf, { fileName: 'back.cf2' });
+const rebuilt = specBack.ok
+  ? createGllFromSpec(normalizeSpec(specBack.spec), { name: specBack.spec.name })
+  : { ok: false, message: specBack.message };
+const rebuiltParsed = rebuilt.ok ? parseGll(rebuilt.bytes) : { ok: false, message: rebuilt.message };
+const rebuiltClf = rebuiltParsed.ok ? clfFromGll(rebuiltParsed) : { ok: false, message: rebuiltParsed.message };
+const secondClf = rebuiltClf.ok ? parseClf(rebuiltClf.text, 'second.cf2') : { ok: false };
+const drift = clfDiff(keptClf, secondClf);
+report('a CLF that is imported, rebuilt and converted again does not drift',
+  drift.ok === true && drift.missing === 0 && drift.maxDriftDb <= 1 && drift.maxWidthDriftDeg <= 5,
+  drift.ok ? drift.message : drift.message);
+
+/* ---------- a multi-part GLL is written one part at a time ---------- */
+
+const twoParts = {
+  ...parsed,
+  sources: [parsed.sources[0], {
+    ...parsed.sources[0],
+    key: parsed.sources[0].key + '-hf',
+    label: parsed.sources[0].label + ' (HF)',
+  }],
+};
+const partTwo = clfFromGll(twoParts, { sourceIndex: 1 });
+report('the chosen part is written and says which part it is',
+  partTwo.ok && partTwo.summary.part.index === 2 && partTwo.summary.part.count === 2 &&
+    /-part2\.cf2$/.test(partTwo.fileName) &&
+    /Part 2 of 2/.test(keyedFields(partTwo.text).get('MEASUREMENT-NOTE') || ''),
+  partTwo.ok ? partTwo.fileName + ' · part ' + partTwo.summary.part.index + ' of ' +
+    partTwo.summary.part.count : partTwo.message);
+const listed = clfParts(twoParts);
+report('the parts can be listed for a chooser',
+  listed.length === 2 && listed[1].label.endsWith('(HF)') && listed[0].responses === 1297,
+  listed.map((part) => part.label.slice(0, 26)).join(' | '));
 
 /* ---------- the honest refusals ---------- */
 

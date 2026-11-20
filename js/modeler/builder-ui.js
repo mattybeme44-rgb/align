@@ -46,7 +46,7 @@ import {
 import { drawCabinetChart, drawPolarChart, drawResponseChart, curveColour } from './builder-chart.js';
 import { normalizeModel } from './model.js';
 import { createGllFromSpec } from './gll.js';
-import { clfTextFromGllBytes, clfToSpec, parseClf } from './clf.js';
+import { clfFromGll, clfToSpec, parseClf, parseGll } from './clf.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -158,6 +158,7 @@ export function createSpeakerBuilder(options = {}) {
   let message = '';
   let messageKind = '';
   let aim = { h: 0, v: 0 };
+  let pendingGll = null; // a GLL whose parts are waiting for a choice
   let refs = {};
   let bound = false;
 
@@ -504,33 +505,55 @@ export function createSpeakerBuilder(options = {}) {
     render();
   }
 
-  /** Convert a GLL to CLF2 text and hand it to the share sheet. */
+  /** Convert one part of a GLL to CLF text and hand it to the share sheet. */
+  function writeClf(parsed, format, name, partIndex) {
+    const built = clfFromGll(parsed, { format, name, sourceIndex: partIndex });
+    if (!built.ok) {
+      setMessage(built.message, 'err');
+      render();
+      return;
+    }
+    if (typeof opts.share !== 'function') {
+      setMessage('Sharing a file is not available in this browser, so the CLF was not written.', 'err');
+      render();
+      return;
+    }
+    const part = built.summary.part;
+    setMessage('Converted ' + (part.count > 1 ? 'part ' + part.index + ' of ' + part.count + ' ' : '') +
+      '\u201c' + built.summary.label + '\u201d to ' + built.summary.format + ': ' +
+      built.summary.bands + ' bands ' + built.summary.fromHz + '\u2013' + built.summary.toHz + ' Hz, ' +
+      built.summary.azimuths + ' \u00d7 ' + built.summary.rows + ' polar rows, and the 6 dB widths ' +
+      'measured from the file\u2019s own balloon. The GLL was read by Align\u2019s own reader, not AFMG\u2019s ' +
+      'SDK, so nothing here is AFMG-authorised.' +
+      (built.warnings.length ? ' ' + built.warnings.join('; ') + '.' : ''), 'ok');
+    opts.share(new Blob([built.text], { type: 'text/plain' }), built.fileName, 'CLF loudspeaker');
+    render();
+  }
+
+  /** Read a GLL and convert it, asking which part first when it holds several. */
   function convertGllToClf(input, formatSelect) {
     const file = input && input.files && input.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       const format = formatSelect && formatSelect.value === 'clf1' ? 'clf1' : 'clf2';
-      const built = clfTextFromGllBytes(new Uint8Array(reader.result || []),
-        { name: draft ? draft.name : file.name, format });
-      if (!built.ok) {
-        setMessage(built.message, 'err');
+      const parsed = parseGll(new Uint8Array(reader.result || []));
+      if (!parsed.ok) {
+        pendingGll = null;
+        setMessage(parsed.message, 'err');
         render();
         return;
       }
-      if (typeof opts.share !== 'function') {
-        setMessage('Sharing a file is not available in this browser, so the CLF was not written.', 'err');
+      const name = draft ? draft.name : file.name;
+      if (parsed.sources.length > 1) {
+        pendingGll = { parsed, format, name };
+        setMessage('That GLL holds ' + parsed.sources.length + ' parts. Choose one: a multi-way set is ' +
+          'distributed by the CLF group as one file per part, so each part is written on its own.', 'ok');
         render();
         return;
       }
-      setMessage('Converted \u201c' + built.summary.label + '\u201d to ' + built.summary.format + ': ' +
-        built.summary.bands + ' bands ' + built.summary.fromHz + '\u2013' + built.summary.toHz + ' Hz, ' +
-        built.summary.azimuths + ' \u00d7 ' + built.summary.rows + ' polar rows, and the 6 dB widths ' +
-        'measured from the file\u2019s own balloon. The GLL was read by Align\u2019s own reader, not AFMG\u2019s ' +
-        'SDK, so nothing here is AFMG-authorised.' +
-        (built.warnings.length ? ' ' + built.warnings.join('; ') + '.' : ''), 'ok');
-      opts.share(new Blob([built.text], { type: 'text/plain' }), built.fileName, 'CLF loudspeaker');
-      render();
+      pendingGll = null;
+      writeClf(parsed, format, name, 0);
     };
     reader.onerror = () => {
       setMessage('That file could not be read.', 'err');
@@ -1331,6 +1354,20 @@ export function createSpeakerBuilder(options = {}) {
     clfRow.appendChild(clfInput);
     clfRow.appendChild(button('Import CLF', 'btn', () => clfInput.click()));
     box.appendChild(clfRow);
+
+    if (pendingGll) {
+      const partsRow = el('div', 'row btns');
+      partsRow.appendChild(el('span', 'dm-sub', 'Parts in that GLL:'));
+      pendingGll.parsed.sources.forEach((source, index) => {
+        partsRow.appendChild(button('Part ' + (index + 1) + ' · ' +
+          String(source.label || '').slice(0, 28), 'dm-mini', () => {
+          const held = pendingGll;
+          pendingGll = null;
+          writeClf(held.parsed, held.format, held.name, index);
+        }));
+      });
+      box.appendChild(partsRow);
+    }
     box.appendChild(el('p', 'dm-sub',
       'A saved speaker is a library entry like any other: add it as a source, place it in the Room Designer, ' +
       'aim it, set gain, delay, polarity and EQ, and predict its coverage with the same engine.'));

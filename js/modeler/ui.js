@@ -2627,6 +2627,7 @@ export function createDataModeler(options = {}) {
           venue: meta.environment || '',
         },
         note: [meta.description, projected.message, clf.message].filter(Boolean).join(' · '),
+        balloon: projected.balloon,
       });
       if (!dataset) return;
       if (attached) {
@@ -2663,7 +2664,11 @@ export function createDataModeler(options = {}) {
 
     if (model) renderAll();
     setImportMessage('Read ' + clf.readings.length + ' bands from CLF ' +
-      (meta.version || '') + '. ' + (clf.message || projected.message || ''), false);
+      (meta.version || '') + '. ' +
+      (projected.balloon ? 'Kept its ' + projected.balloon.frequencies.length + ' × ' +
+        projected.balloon.azimuths + ' × ' + projected.balloon.parallels +
+        ' balloon with the dataset. ' : '') +
+      (clf.message || projected.message || ''), false);
   }
 
   /** A measured model saved as a reusable loudspeaker, from the capture library. */

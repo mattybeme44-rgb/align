@@ -217,6 +217,19 @@ export function clfResponse(clf) {
     directivity: clf.readings
       .filter((reading) => Number.isFinite(reading.beamwidthDeg) && reading.beamwidthDeg > 0)
       .map((reading) => ({ frequency: reading.frequency, widthDeg: reading.beamwidthDeg })),
+    // The sphere the file carries, in band/azimuth/polar order, so the import can
+    // keep it with the dataset instead of reducing it to widths.
+    balloon: clf.polar && Array.isArray(clf.polar.levels) && clf.polar.levels.length
+      ? {
+          symmetry: clf.polar.symmetry,
+          azimuths: clf.polar.azimuths,
+          parallels: clf.polar.parallels,
+          stepAzDeg: clf.polar.azimuthStep,
+          stepPolDeg: clf.polar.polarStep,
+          frequencies: clf.polar.frequencies,
+          levels: clf.polar.levels,
+        }
+      : null,
   };
 }
 
@@ -576,6 +589,8 @@ function measureBalloon(blocks, symmetry) {
   return {
     symmetry: symmetry || '',
     bands: consistent.length,
+    frequencies: consistent.map((block) => block.frequency),
+    levels: consistent.map((block) => block.rows),
     azimuths: rows,
     parallels: columns,
     span,
@@ -647,13 +662,14 @@ function crossingWidth(points, axisDb) {
   return 360;
 }
 
-function clfFileName(name, format) {
+function clfFileName(name, format, part) {
   const base = String(name || '')
     .replace(/[^a-z0-9._ -]+/gi, '')
     .trim()
     .replace(/\s+/g, '-')
     .toLowerCase();
-  return (base || 'align-loudspeaker') + (format === 1 ? '.cf1' : '.cf2');
+  const suffix = part && part.count > 1 ? '-part' + part.index : '';
+  return (base || 'align-loudspeaker') + suffix + (format === 1 ? '.cf1' : '.cf2');
 }
 
 /** The CLF symmetry tag for a balloon, from the span its meridians cover. */
@@ -785,6 +801,7 @@ export function clfFromGll(parsed, options = {}) {
   const date = today.getUTCFullYear() + '-' + months[today.getUTCMonth()] + '-' +
     String(today.getUTCDate()).padStart(2, '0');
   const tag = 'CLF' + format;
+  const part = { index: index + 1, count: parsed.sources.length };
   const cabinet = parsed.boxes
     .filter((box) => box.placements.some((placement) => placement.sourceKey === source.key))
     .map((box) => box.label)
@@ -810,7 +827,9 @@ export function clfFromGll(parsed, options = {}) {
   write('<MEASUREMENT-EMAIL>\t' + or(parsed.email, '#'));
   write('<MEASUREMENT-DATE>\t' + date);
   write('<MEASUREMENT-NOTE>\tConverted from a GLL file by Align; the GLL layout is not published by AFMG ' +
-    'and the data is the file\u2019s own model, not a measurement.');
+    'and the data is the file\u2019s own model, not a measurement.' +
+    (part.count > 1 ? ' Part ' + part.index + ' of ' + part.count +
+      ' of a multi-way set; the CLF group distributes each part as its own file.' : ''));
   write('<MEASUREMENT-ENVIRONMENT>\t#');
   write('<MEASUREMENT-DISTANCE>\t0.0');
   write('<MEASUREMENT-INPUTVOLTAGE>\t0');
@@ -852,7 +871,7 @@ export function clfFromGll(parsed, options = {}) {
   return {
     ok: true,
     text,
-    fileName: clfFileName(options.name || source.label || parsed.label, format),
+    fileName: clfFileName(options.name || source.label || parsed.label, format, part),
     summary: {
       label: oneLine(source.label || parsed.label),
       format: tag,
@@ -865,6 +884,7 @@ export function clfFromGll(parsed, options = {}) {
       rows: parallelCount,
       responses: azimuthCount * parallelCount,
       symmetry: symmetry.tag,
+      part,
       bytes: text.length,
     },
     warnings,
@@ -975,4 +995,69 @@ export function clfToSpec(clf, options = {}) {
       '. ' + (warnings.length ? warnings.join(' · ') + '. ' : '') +
       'Nothing has been saved yet: the draft can be edited and saved as a library entry.',
   };
+}
+
+/* ---------- comparing two CLF files ---------- */
+
+/**
+ * Compare two read CLF files band by band: the level at each band centre and the
+ * 6 dB width, horizontal and vertical. Used to prove that a converted file survives
+ * an import, a rebuild and a second conversion without drifting, and to say by how
+ * much when it does. A band missing on either side is reported, never assumed equal.
+ */
+export function clfDiff(before, after) {
+  if (!before || before.ok !== true || !after || after.ok !== true) {
+    return { ok: false, message: 'Both files have to be read before they can be compared.' };
+  }
+  const bands = Math.min(before.readings.length, after.readings.length);
+  const levels = [];
+  const widths = [];
+  let missing = 0;
+  for (let index = 0; index < bands; index += 1) {
+    const a = before.readings[index];
+    const b = after.readings[index];
+    const frequency = Number.isFinite(a.frequency) ? a.frequency : b.frequency;
+    if (Number.isFinite(a.levelDb) && Number.isFinite(b.levelDb)) {
+      levels.push({ frequency, driftDb: b.levelDb - a.levelDb });
+    } else if (Number.isFinite(a.levelDb) !== Number.isFinite(b.levelDb)) {
+      missing += 1;
+    }
+    if (Number.isFinite(a.beamwidthDeg) && Number.isFinite(b.beamwidthDeg)) {
+      widths.push({ frequency, driftDeg: b.beamwidthDeg - a.beamwidthDeg, axis: 'horizontal' });
+    }
+    if (Number.isFinite(a.beamwidthVDeg) && Number.isFinite(b.beamwidthVDeg)) {
+      widths.push({ frequency, driftDeg: b.beamwidthVDeg - a.beamwidthVDeg, axis: 'vertical' });
+    }
+  }
+  const magnitude = (list, key) => list.reduce((max, entry) => Math.max(max, Math.abs(entry[key])), 0);
+  const mean = levels.length
+    ? levels.reduce((total, entry) => total + entry.driftDb, 0) / levels.length
+    : 0;
+  const maxDriftDb = magnitude(levels, 'driftDb');
+  const maxWidthDriftDeg = magnitude(widths, 'driftDeg');
+  return {
+    ok: true,
+    bands,
+    levels,
+    widths,
+    missing,
+    maxDriftDb,
+    meanDriftDb: mean,
+    maxWidthDriftDeg,
+    message: bands + ' bands compared: levels drift at most ' + maxDriftDb.toFixed(2) +
+      ' dB, widths at most ' + maxWidthDriftDeg.toFixed(1) + '\u00b0' +
+      (missing ? '; ' + missing + ' band(s) carry a level on one side only' : '') + '.',
+  };
+}
+
+/** The parts a GLL holds, for a caller that has to choose one to convert. */
+export function clfParts(parsed) {
+  if (!parsed || parsed.ok !== true) return [];
+  return parsed.sources.map((source, index) => ({
+    index,
+    label: String(source.label || parsed.label || 'Part ' + (index + 1)),
+    fromHz: source.fromHz,
+    toHz: source.toHz,
+    responses: source.balloon ? (source.balloon.responses || []).length : 0,
+  }));
 }
