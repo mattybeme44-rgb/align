@@ -617,13 +617,12 @@ body {
 .tool-tabs {
   display: flex;
   flex: none;
-  overflow-x: auto;
+  /* Seven tabs need 411px and the column is 360px, so this used to scroll the
+     last ones out of sight behind a hidden scrollbar — invisible, not merely
+     tight. Wrapping a tab strip is worse than a shorter one is, but far better
+     than a tab you cannot see or know exists. */
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--line);
-  scrollbar-width: none;
-}
-
-.tool-tabs::-webkit-scrollbar {
-  display: none;
 }
 
 .tool-tabs button {
@@ -631,7 +630,9 @@ body {
   font-size: 10px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  padding: 8px 10px;
+  /* Tighter side padding is what keeps all seven on one row at 360px; the wrap
+     above is the fallback when it still does not fit. */
+  padding: 8px 6px;
   color: var(--dim);
   background: none;
   border: 0;
