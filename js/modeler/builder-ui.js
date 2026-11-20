@@ -43,10 +43,10 @@ import {
   validateSpec,
   widthsAt,
 } from './speaker-builder.js';
-import { drawCabinetChart, drawPolarChart, drawResponseChart, curveColour } from './builder-chart.js';
-import { normalizeModel } from './model.js';
+import { drawBalloonChart, drawCabinetChart, drawPolarChart, drawResponseChart, curveColour } from './builder-chart.js';
+import { datasetBalloon, normalizeModel } from './model.js';
 import { createGllFromSpec } from './gll.js';
-import { clfFromGll, clfToSpec, parseClf, parseGll } from './clf.js';
+import { clfDiff, clfFromGll, clfResponse, clfToSpec, parseClf, parseGll } from './clf.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -159,6 +159,8 @@ export function createSpeakerBuilder(options = {}) {
   let messageKind = '';
   let aim = { h: 0, v: 0 };
   let pendingGll = null; // a GLL whose parts are waiting for a choice
+  let clfBands = { minHz: null, maxHz: null }; // the span of the grid to write
+  let importedClf = null; // the file a round trip is checked against
   let refs = {};
   let bound = false;
 
@@ -203,6 +205,7 @@ export function createSpeakerBuilder(options = {}) {
   /* ---------- state changes ---------- */
 
   function startNew() {
+    importedClf = null;
     draft = normalizeSpec({
       type: 'full-range',
       name: uniqueName('New loudspeaker', models()),
@@ -217,6 +220,7 @@ export function createSpeakerBuilder(options = {}) {
   }
 
   function loadExample() {
+    importedClf = null;
     const example = pioneerExample();
     // Loading the example twice must not make a second identical library entry:
     // an existing example is opened for editing instead.
@@ -241,6 +245,7 @@ export function createSpeakerBuilder(options = {}) {
   }
 
   function edit(modelId) {
+    importedClf = null;
     const model = models().find((entry) => entry.id === modelId);
     if (!model) {
       setMessage('Choose a loudspeaker in the library first.', 'err');
@@ -507,7 +512,7 @@ export function createSpeakerBuilder(options = {}) {
 
   /** Convert one part of a GLL to CLF text and hand it to the share sheet. */
   function writeClf(parsed, format, name, partIndex) {
-    const built = clfFromGll(parsed, { format, name, sourceIndex: partIndex });
+    const built = clfFromGll(parsed, { format, name, sourceIndex: partIndex, bandRange: clfBands });
     if (!built.ok) {
       setMessage(built.message, 'err');
       render();
@@ -585,6 +590,7 @@ export function createSpeakerBuilder(options = {}) {
       editingId = '';
       unit = 'mm';
       aim = { h: 0, v: 0 };
+      importedClf = { clf, fileName: file.name, balloon: clfResponse(clf).balloon || null };
       setMessage(imported.message, 'ok');
       render();
     };
@@ -594,6 +600,52 @@ export function createSpeakerBuilder(options = {}) {
     };
     reader.readAsText(file);
     input.value = '';
+  }
+
+  /**
+   * Rebuild this speaker as a GLL, convert that back to CLF and compare it with
+   * the file that was imported. The drift is the loss of going round the circle,
+   * so it is measured and stated rather than assumed to be zero.
+   */
+  function checkClfRoundTrip() {
+    if (!importedClf || !draft) return;
+    const spec = normalizeSpec(draft);
+    const built = createGllFromSpec(spec, { name: spec.name });
+    if (!built.ok) {
+      setMessage(built.message, 'err');
+      render();
+      return;
+    }
+    const parsedGll = parseGll(built.bytes);
+    if (!parsedGll.ok) {
+      setMessage(parsedGll.message, 'err');
+      render();
+      return;
+    }
+    const back = clfFromGll(parsedGll);
+    if (!back.ok) {
+      setMessage(back.message, 'err');
+      render();
+      return;
+    }
+    const diff = clfDiff(importedClf.clf, parseClf(back.text, back.fileName));
+    setMessage(diff.ok
+      ? 'Round trip “' + importedClf.fileName + '” → GLL → CLF: ' + diff.message +
+        ' The widths are measured from each file’s own balloon, so a narrow band moves its width ' +
+        'before its level.'
+      : diff.message, diff.ok ? 'ok' : 'err');
+    render();
+  }
+
+  /** The sphere to draw: the imported file's own, or one kept with the model's dataset. */
+  function balloonOf() {
+    if (importedClf && importedClf.balloon) return importedClf.balloon;
+    const model = editingModel();
+    if (!model) return null;
+    const preferredId = model.generic && model.generic.preferredDatasetId;
+    const dataset = (model.datasets || []).find((entry) => entry.id === preferredId) ||
+      (model.datasets || [])[0];
+    return dataset ? datasetBalloon(dataset) : null;
   }
 
   function importFile(input) {
@@ -690,6 +742,15 @@ export function createSpeakerBuilder(options = {}) {
       aimV: aim.v,
       height: 150,
     });
+
+    const balloon = balloonOf();
+    if (refs.balloon && refs.balloonNote) {
+      refs.balloon.hidden = !balloon;
+      refs.balloonNote.hidden = !balloon;
+      if (balloon) {
+        drawBalloonChart(refs.balloon, { balloon, bandHz: 1000, rotationDeg: aim.h, height: 220 });
+      }
+    }
 
     if (refs.combined) {
       refs.combined.textContent = computed.sections.length > 1
@@ -1244,6 +1305,15 @@ export function createSpeakerBuilder(options = {}) {
       'Cabinet geometry from the entered dimensions: outline, front face, acoustic centre, coverage cone and ' +
       'preview aim. Mounting and aim in a room are set in the Room Designer.'));
 
+    refs.balloon = el('canvas', 'dm-builder-canvas tall');
+    refs.balloon.setAttribute('aria-label', 'Imported balloon drawn as a three-dimensional directivity sphere');
+    box.appendChild(refs.balloon);
+    refs.balloonNote = el('p', 'dm-sub',
+      'A balloon from an imported CLF or GLL file, drawn at the 1 kHz band: the radius at each angle is ' +
+      'that angle’s level, on the file’s own angular grid, and the preview aim turns it. ' +
+      'Without an imported balloon this panel stays hidden, because there is nothing measured to draw.');
+    box.appendChild(refs.balloonNote);
+
     refs.accuracy = el('div', 'dm-builder-accuracy-block');
     box.appendChild(refs.accuracy);
     refs.warnings = el('div', 'dm-builder-warnings');
@@ -1345,6 +1415,14 @@ export function createSpeakerBuilder(options = {}) {
       clfFormat.appendChild(option);
     }
     clfRow.appendChild(clfFormat);
+    clfRow.appendChild(field('Bands from Hz', numericInput(clfBands.minHz, {
+      step: 1, min: 20, max: 40000, title: 'Leave empty to write every band of the grid',
+      onChange: (value) => { clfBands.minHz = value; },
+    })));
+    clfRow.appendChild(field('to Hz', numericInput(clfBands.maxHz, {
+      step: 1, min: 20, max: 40000, title: 'Leave empty to write every band of the grid',
+      onChange: (value) => { clfBands.maxHz = value; },
+    })));
     clfRow.appendChild(button('Convert GLL to CLF', 'btn', () => convertGllToClf(gllInput, clfFormat)));
     const clfInput = el('input');
     clfInput.type = 'file';
@@ -1353,6 +1431,7 @@ export function createSpeakerBuilder(options = {}) {
     clfInput.addEventListener('change', () => importClfFile(clfInput));
     clfRow.appendChild(clfInput);
     clfRow.appendChild(button('Import CLF', 'btn', () => clfInput.click()));
+    if (importedClf) clfRow.appendChild(button('Check CLF round trip', 'btn', checkClfRoundTrip));
     box.appendChild(clfRow);
 
     if (pendingGll) {

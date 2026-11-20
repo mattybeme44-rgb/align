@@ -725,13 +725,35 @@ export function clfFromGll(parsed, options = {}) {
   }
 
   const format = options.format === 'clf1' || options.version === 1 ? 1 : 2;
-  const bands = (format === 1 ? CLF1_BANDS : CLF2_BANDS).slice();
+  const gridBands = (format === 1 ? CLF1_BANDS : CLF2_BANDS).slice();
   const step = format === 1 ? 10 : 5;
   const meridians = Math.max(1, balloon.meridians);
   const parallels = Math.max(1, balloon.parallels);
   const middle = Math.floor(parallels / 2);
   const warnings = [];
   let missing = 0;
+
+  // A file can be written for part of the grid: the caller may ask for a span,
+  // and a band outside it is left out rather than written as a 0 dB row.
+  const range = options.bandRange && typeof options.bandRange === 'object' ? options.bandRange : null;
+  const lowHz = range && Number.isFinite(Number(range.minHz)) ? Number(range.minHz) : null;
+  const highHz = range && Number.isFinite(Number(range.maxHz)) ? Number(range.maxHz) : null;
+  let bands = gridBands;
+  if (lowHz !== null || highHz !== null) {
+    const chosen = gridBands.filter((frequency) => (lowHz === null || frequency >= lowHz - 1e-6) &&
+      (highHz === null || frequency <= highHz + 1e-6));
+    if (chosen.length) {
+      bands = chosen;
+      if (chosen.length < gridBands.length) {
+        warnings.push(chosen.length + ' of ' + gridBands.length + ' bands written (' + chosen[0] +
+          '\u2013' + chosen[chosen.length - 1] + ' Hz)');
+      }
+    } else {
+      warnings.push('no band of the CLF' + format + ' grid falls inside ' +
+        (lowHz === null ? '' : lowHz) + '\u2013' + (highHz === null ? '' : highHz) +
+        ' Hz, so the whole ' + gridBands.length + '-band grid was written');
+    }
+  }
 
   const grid = [];
   for (let meridian = 0; meridian < meridians; meridian += 1) {

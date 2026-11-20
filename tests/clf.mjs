@@ -35,6 +35,7 @@ import {
   parseGll,
 } from '../js/modeler/clf.js';
 import { datasetBalloon, normalizeModel } from '../js/modeler/model.js';
+import { balloonProjection } from '../js/modeler/builder-chart.js';
 import { createGllFromSpec } from '../js/modeler/gll.js';
 import { normalizeSpec, pioneerExample } from '../js/modeler/speaker-builder.js';
 
@@ -437,6 +438,80 @@ const listed = clfParts(twoParts);
 report('the parts can be listed for a chooser',
   listed.length === 2 && listed[1].label.endsWith('(HF)') && listed[0].responses === 1297,
   listed.map((part) => part.label.slice(0, 26)).join(' | '));
+
+/* ---------- writing part of the band grid ---------- */
+
+const expectedSpan = CLF2_BANDS.filter((frequency) => frequency >= 1000 && frequency <= 4000);
+const spanned = clfFromGll(parsed, { bandRange: { minHz: 1000, maxHz: 4000 } });
+const bandLines = spanned.ok
+  ? Array.from(spanned.text.matchAll(/^<BAND>\t(\d+)/gm), (match) => Number(match[1]))
+  : [];
+report('a band span writes only the bands inside it',
+  spanned.ok && spanned.summary.bands === expectedSpan.length &&
+    bandLines.join(',') === expectedSpan.join(',') &&
+    /<MINBAND>\t1000/.test(spanned.text) && /<MAXBAND>\t4000/.test(spanned.text),
+  spanned.ok ? bandLines.join(', ') + ' Hz' : spanned.message);
+const spannedBack = spanned.ok ? parseClf(spanned.text, spanned.fileName) : { ok: false };
+report('the written span still reads back as a CLF',
+  spannedBack.ok === true && spannedBack.readings.length === expectedSpan.length,
+  spannedBack.ok ? spannedBack.readings.length + ' readings' : 'not written');
+
+const outsideSpan = clfFromGll(parsed, { bandRange: { minHz: 21000, maxHz: 40000 } });
+report('a span with no band inside it writes the whole grid and says so',
+  outsideSpan.ok && outsideSpan.summary.bands === CLF2_BANDS.length &&
+    /whole 24-band grid/.test(outsideSpan.warnings.join(' ')),
+  outsideSpan.ok ? outsideSpan.warnings.join('; ') : outsideSpan.message);
+
+/* ---------- the balloon as a sphere ---------- */
+
+const sphereParallels = projected.balloon.parallels;
+const sphereMiddle = Math.floor(sphereParallels / 2);
+const flatSphere = balloonProjection(projected.balloon, 1000, 0);
+const axialPoint = flatSphere.ok ? flatSphere.points[0 * sphereParallels + sphereMiddle] : null;
+const sidePoint = flatSphere.ok ? flatSphere.points[18 * sphereParallels + sphereMiddle] : null;
+report('the balloon projects one point per angle in its 1 kHz band',
+  flatSphere.ok && flatSphere.frequency === 1000 &&
+    flatSphere.points.length === projected.balloon.azimuths * sphereParallels,
+  flatSphere.ok ? flatSphere.frequency + ' Hz · ' + flatSphere.points.length + ' points' : flatSphere.message);
+report('the file’s own 90° level is what shrinks its radius',
+  !!axialPoint && !!sidePoint && Math.abs(axialPoint.x) < 1e-9 && Math.abs(axialPoint.y) < 1e-9 &&
+    axialPoint.depth > 0.99 && sidePoint.x > 0 && sidePoint.x < axialPoint.depth,
+  axialPoint && sidePoint
+    ? 'on axis ' + axialPoint.x.toFixed(3) + ' / ' + axialPoint.y.toFixed(3) + ' / ' + axialPoint.depth.toFixed(3) +
+      ' · 90° ' + sidePoint.x.toFixed(3) + ' / ' + sidePoint.depth.toFixed(3) + ' (attenuated to the floor)'
+    : 'not projected');
+
+// A flat balloon gives the geometry itself: every radius is 1, so the angles are
+// the only thing under test rather than the cabinet's own directivity.
+const uniform = {
+  frequencies: [1000],
+  stepAzDeg: 10,
+  stepPolDeg: 10,
+  levels: [Array.from({ length: 19 }, () => new Array(19).fill(0))],
+};
+const uniformSphere = balloonProjection(uniform, 1000, 0);
+const uniformAxial = uniformSphere.ok ? uniformSphere.points[0 * 19 + 9] : null;
+const uniformSide = uniformSphere.ok ? uniformSphere.points[9 * 19 + 9] : null;
+report('a flat balloon is a unit sphere: on axis at the centre, 90° at the rim',
+  !!uniformAxial && !!uniformSide && Math.abs(uniformAxial.x) < 1e-9 && Math.abs(uniformAxial.y) < 1e-9 &&
+    Math.abs(uniformAxial.depth - 1) < 1e-9 && Math.abs(uniformSide.x - 1) < 1e-9 &&
+    Math.abs(uniformSide.depth) < 1e-9,
+  uniformSide ? 'rim ' + uniformSide.x.toFixed(3) + ' / ' + uniformSide.depth.toFixed(3) : 'not projected');
+const uniformTurned = balloonProjection(uniform, 1000, 180);
+const turnedSide = uniformTurned.ok ? uniformTurned.points[9 * 19 + 9] : null;
+report('turning the view by 180° moves that rim point to the left',
+  !!turnedSide && Math.abs(turnedSide.x + 1) < 1e-9 && Math.abs(turnedSide.depth) < 1e-9,
+  turnedSide ? turnedSide.x.toFixed(3) + ' / ' + turnedSide.depth.toFixed(3) : 'not projected');
+const keptSphere = decoded ? balloonProjection(decoded, 1000, 0) : { ok: false };
+report('the balloon kept with the dataset projects the same shape as the file it came from',
+  keptSphere.ok && Math.abs(keptSphere.points[0 * sphereParallels + sphereMiddle].depth - axialPoint.depth) < 0.05,
+  keptSphere.ok
+    ? 'radius ' + keptSphere.points[0 * sphereParallels + sphereMiddle].depth.toFixed(3) +
+      ' against ' + axialPoint.depth.toFixed(3)
+    : 'not projected');
+report('a dataset with no balloon has no sphere to draw',
+  balloonProjection(null, 1000, 0).ok === false && balloonProjection({ levels: [] }, 1000, 0).ok === false,
+  balloonProjection(null, 1000, 0).message);
 
 /* ---------- the honest refusals ---------- */
 
