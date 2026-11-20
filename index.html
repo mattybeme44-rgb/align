@@ -533,8 +533,10 @@
     <nav class="tool-tabs" id="toolTabs" aria-label="Measurement panels">
       <button type="button" class="on" data-tool="impulsePanel">Impulse</button>
       <button type="button" data-tool="roomPanel">Room</button>
+      <button type="button" data-tool="qualityPanel">Quality</button>
       <button type="button" data-tool="tracesPanel">Traces</button>
-      <button type="button" data-tool="analysisPanel">Analysis</button>
+      <button type="button" data-tool="targetPanel">Target</button>
+      <button type="button" data-tool="eqPanel">EQ</button>
       <button type="button" data-tool="sharePanel">Share</button>
     </nav>
 
@@ -602,6 +604,9 @@
         <p id="roomDecayNote" class="source-hint" hidden></p>
         <p class="source-hint">From the measured decay of the impulse response; it only holds where that decay is real.</p>
 
+      </section>
+
+      <section class="panel" id="qualityPanel" hidden>
         <div class="panel-head">
           <h2>Measurement quality</h2>
           <span class="readout" id="qualityHeadline">—</span>
@@ -693,7 +698,7 @@
         </section>
       </section>
 
-      <section class="panel" id="analysisPanel" hidden>
+      <section class="panel" id="targetPanel" hidden>
         <div class="panel-head"><h2>Target</h2></div>
         <div class="row">
           <label for="selTarget">Target curve</label>
@@ -728,6 +733,9 @@
         <label class="chk"><input type="checkbox" id="chkSpl" /> Show input level as dB SPL</label>
         <label class="chk"><input type="checkbox" id="chkSpectrographAnalysis" /> Show live spectrograph</label>
 
+      </section>
+
+      <section class="panel" id="eqPanel" hidden>
         <div class="panel-head"><h2>EQ suggestions</h2></div>
         <ul class="eq-list" id="eqList">
           <li class="muted">Start the measurement to get suggestions.</li>
