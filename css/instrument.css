@@ -592,6 +592,20 @@ body {
   font-size: 8.5px;
 }
 
+/* The six capture differences share one tile: letter-and-value cells in a
+   narrow grid, so six readings cost one slot in the strip instead of six. */
+.metrics.compact .metric-deltas .v {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 0 6px;
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.metrics.compact .metric-delta {
+  white-space: nowrap;
+}
+
 .metrics.compact .metric-action {
   flex: 0 0 auto;
   padding: 3px 12px;
@@ -624,6 +638,13 @@ body {
 
   .metrics.compact .metric-action {
     padding: 2px 8px;
+  }
+
+  .metrics.compact .metric-deltas .v {
+    grid-template-columns: repeat(2, auto);
+    gap: 0 7px;
+    font-size: 9.5px;
+    line-height: 1.2;
   }
 }
 

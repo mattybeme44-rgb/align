@@ -1814,12 +1814,7 @@ function resetTraces() {
   $('btnArmPeak').textContent = 'Arm peak hold';
   $('btnArmAverage').textContent = 'Arm average';
   $('btnCaptureAverage').disabled = true;
-  $('rdDelta').textContent = '—';
-  $('rdDeltaB').textContent = '—';
-  $('rdDeltaC').textContent = '—';
-  $('rdDeltaD').textContent = '—';
-  $('rdDeltaE').textContent = '—';
-  $('rdDeltaF').textContent = '—';
+  writeDeltaCells(NaN);
   $('rdCapturePolarity').textContent = '—';
   $('rdCapturePolarityNote').textContent = '';
   lastPolarityKey = '';
@@ -2197,12 +2192,7 @@ function applyRecommendedDelay() {
 
   // The corrected arrival is now the one the capture stands for.
   capture.trace.delayMs = state.totalDelayMs;
-  $('rdDelta').textContent = state.snapshot
-    ? (state.totalDelayMs - state.snapshot.delayMs).toFixed(2) + ' ms'
-    : '—';
-  $('rdDeltaB').textContent = state.snapshotB
-    ? (state.totalDelayMs - state.snapshotB.delayMs).toFixed(2) + ' ms'
-    : '—';
+  writeDeltaCells(state.totalDelayMs);
   updateDelayAdvice();
   renderBalance();
   updateTraceSummary();
@@ -2346,6 +2336,27 @@ function renderBalance() {
   });
 }
 
+/**
+ * Write the six capture differences into their cells in the shared Δ tile.
+ * The unit lives in the tile label, so a cell reads "A 0.42" and six readings
+ * take one strip slot instead of six.
+ */
+function writeDeltaCells(totalMs) {
+  let held = false;
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const cell = $(letter === 'A' ? 'rdDelta' : 'rdDelta' + letter);
+    if (!cell) continue;
+    const trace = heldSnapshot(letter);
+    if (trace) held = true;
+    cell.hidden = !trace;
+    cell.textContent = trace && Number.isFinite(totalMs)
+      ? letter + ' ' + (totalMs - trace.delayMs).toFixed(2)
+      : '—';
+  }
+  const tile = $('metricDeltas');
+  if (tile) tile.hidden = !held;
+}
+
 function updateTraceSummary() {
   const parts = [];
   for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
@@ -2360,14 +2371,9 @@ function updateTraceSummary() {
   if (summary) summary.textContent = text;
   $('traceSummary').textContent = text;
 
-  // The difference figures only take a cell when there is a capture to
-  // compare with, so the strip stays a line of live readings rather than a table.
-  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
-    const figure = $(letter === 'A' ? 'rdDelta' : 'rdDelta' + letter);
-    if (!figure) continue;
-    const cell = figure.closest('.metric');
-    if (cell) cell.hidden = !heldSnapshot(letter);
-  }
+  // One tile carries all six differences, and it only shows once a capture is
+  // held; each cell keeps its own slot and its own letter.
+  writeDeltaCells(state.totalDelayMs);
 
   const anyHeld = !!(state.snapshot || state.snapshotB || state.snapshotC || state.snapshotD || state.snapshotE || state.snapshotF);
   $('capturePhaseRow').hidden = !anyHeld;
@@ -2437,8 +2443,6 @@ function clearSlot(label) {
   if (state.selectedCapture === label) state.selectedCapture = null;
   const labelEl = $('phase' + label + 'Label');
   if (labelEl) labelEl.hidden = true;
-  const deltaEl = $('rdDelta' + label);
-  if (deltaEl) deltaEl.textContent = '—';
   renderPhaseDelayBar();
   renderCaptureDelays();
   renderBalance();
@@ -4638,19 +4642,7 @@ function updateReadouts(res) {
   checkInputHealth(res, coherence);
   $('rdRate').textContent = (res.sampleRate / 1000).toFixed(1) + 'k · ' + res.df.toFixed(1) + ' Hz';
 
-  $('rdDelta').textContent = state.snapshot
-    ? (totalMs - state.snapshot.delayMs).toFixed(2) + ' ms'
-    : '—';
-  $('rdDeltaB').textContent = state.snapshotB
-    ? (totalMs - state.snapshotB.delayMs).toFixed(2) + ' ms'
-    : '—';
-  for (const letter of ['C', 'D', 'E', 'F']) {
-    const trace = heldSnapshot(letter);
-    const el = $('rdDelta' + letter);
-    if (el) el.textContent = trace
-      ? (totalMs - trace.delayMs).toFixed(2) + ' ms'
-      : '—';
-  }
+  writeDeltaCells(totalMs);
 
   updateDelayAdvice();
   updateCapturePolarity();

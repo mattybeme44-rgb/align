@@ -508,12 +508,18 @@
       <div class="metric"><span class="k">Input</span><span class="v" id="rdLevel">—</span></div>
       <div class="metric"><span class="k">Noise</span><span class="v" id="rdNoise">—</span></div>
       <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
-      <div class="metric"><span class="k">Δ A</span><span class="v" id="rdDelta">—</span></div>
-      <div class="metric"><span class="k">Δ B</span><span class="v" id="rdDeltaB">—</span></div>
-      <div class="metric"><span class="k">Δ C</span><span class="v" id="rdDeltaC">—</span></div>
-      <div class="metric"><span class="k">Δ D</span><span class="v" id="rdDeltaD">—</span></div>
-      <div class="metric"><span class="k">Δ E</span><span class="v" id="rdDeltaE">—</span></div>
-      <div class="metric"><span class="k">Δ F</span><span class="v" id="rdDeltaF">—</span></div>
+      <div class="metric metric-deltas" id="metricDeltas" hidden
+           title="Delay difference in milliseconds against each held capture, A to F">
+        <span class="k">Δ ms</span>
+        <span class="v">
+          <span class="metric-delta" id="rdDelta" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaB" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaC" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaD" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaE" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaF" hidden>—</span>
+        </span>
+      </div>
       <div class="metric"><span class="k">Capture pol.</span><span class="v" id="rdCapturePolarity">—</span><span class="metric-detail" id="rdCapturePolarityNote"></span></div>
       <div class="metric"><span class="k">Recommended</span><span class="v" id="rdAdvice">—</span><span class="metric-detail" id="rdAdviceDetail"></span></div>
       <button id="btnApplyDelay" class="metric metric-action" type="button"><span class="k">Apply</span><span class="v">→</span></button>
