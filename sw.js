@@ -53,6 +53,7 @@ const SHELL = [
   './js/modeler/curve.js',
   './js/modeler/analysis.js',
   './js/modeler/clf.js',
+  './js/modeler/gll.js',
   './js/modeler/lpif.js',
   './js/modeler/filters.js',
   './js/modeler/wav.js',

@@ -170,6 +170,106 @@ function normalizeOrigin(raw) {
   };
 }
 
+/* ---------- a decoded balloon, kept with the dataset ---------- */
+
+/*
+ * A CLF2 file carries a sphere of levels, and an import that throws it away leaves
+ * only band widths behind. It is kept here as a compact, lossless-enough record:
+ * one signed byte per point, relative to the balloon's own peak, base64 encoded,
+ * so 24 bands × 37 × 37 costs about 44 kB of storage rather than megabytes of JSON.
+ */
+
+function decodeBalloonLevels(encoded) {
+  const binary = atob(encoded);
+  const levels = new Int8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) levels[index] = binary.charCodeAt(index);
+  return levels;
+}
+
+function encodeBalloonLevels(values, peakDb) {
+  const bytes = new Uint8Array(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    bytes[index] = Math.max(-127, Math.min(0, Math.round(values[index] - peakDb))) & 0xff;
+  }
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + 8192));
+  }
+  return btoa(binary);
+}
+
+/** Keep a parsed balloon: shape, band centres and the levels in band/azimuth/polar order. */
+function normalizeBalloon(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const azimuths = Math.round(Number(raw.azimuths));
+  const parallels = Math.round(Number(raw.parallels));
+  const frequencies = (Array.isArray(raw.frequencies) ? raw.frequencies : [])
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .slice(0, 32);
+  if (!(azimuths >= 1 && azimuths <= 72) || !(parallels >= 1 && parallels <= 37) || !frequencies.length) {
+    return null;
+  }
+  const expected = azimuths * parallels * frequencies.length;
+  let levels = null;
+  let peakDb = Number(raw.peakDb);
+  if (typeof raw.levels === 'string' && raw.levels) {
+    try {
+      if (decodeBalloonLevels(raw.levels).length === expected) levels = raw.levels;
+    } catch (error) {
+      levels = null;
+    }
+  } else if (Array.isArray(raw.levels)) {
+    const flat = raw.levels.flat(2).map(Number);
+    if (flat.length === expected && flat.every((value) => Number.isFinite(value))) {
+      const peak = flat.reduce((max, value) => Math.max(max, value), -Infinity);
+      levels = encodeBalloonLevels(flat, peak);
+      peakDb = peak;
+    }
+  }
+  if (!levels) return null;
+  return {
+    symmetry: text(raw.symmetry, 20),
+    azimuths,
+    parallels,
+    stepAzDeg: clamp(raw.stepAzDeg, 0.5, 90, 5),
+    stepPolDeg: clamp(raw.stepPolDeg, 0.5, 90, 5),
+    frequencies,
+    peakDb: clamp(peakDb, -40, 200, 100),
+    levels,
+  };
+}
+
+/**
+ * The stored balloon as levels again: `levels[band][azimuth][polar]` in dB, with the
+ * peak added back. Returns null when the dataset carries no balloon.
+ */
+export function datasetBalloon(dataset) {
+  const balloon = dataset && dataset.balloon;
+  if (!balloon) return null;
+  let flat;
+  try {
+    flat = decodeBalloonLevels(balloon.levels);
+  } catch (error) {
+    return null;
+  }
+  const levels = [];
+  let index = 0;
+  for (let band = 0; band < balloon.frequencies.length; band += 1) {
+    const rows = [];
+    for (let azimuth = 0; azimuth < balloon.azimuths; azimuth += 1) {
+      const values = [];
+      for (let parallel = 0; parallel < balloon.parallels; parallel += 1) {
+        values.push(balloon.peakDb + flat[index]);
+        index += 1;
+      }
+      rows.push(values);
+    }
+    levels.push(rows);
+  }
+  return { ...balloon, levels };
+}
+
 export function normalizeDataset(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const curve = normalizeCurve(source.curve || source);
@@ -214,6 +314,7 @@ export function normalizeDataset(raw) {
           })
       : [],
     directivityProfile: text(source.directivityProfile, 20),
+    balloon: normalizeBalloon(source.balloon),
     generated: source.generated === true,
     sectionId: text(source.sectionId, 60),
     note: text(source.note, 200),

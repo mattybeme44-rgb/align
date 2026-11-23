@@ -446,3 +446,164 @@ export function drawCabinetChart(canvas, payload) {
   axisText(ctx, (centreOffset ? 'acoustic centre' : 'centre · offset unknown'), 6, height - 8);
   axisText(ctx, 'aim ' + Math.round(aimH) + '° H / ' + Math.round(aimV) + '° V', 6, 10);
 }
+
+/* ---------- the imported balloon ---------- */
+
+/** The band nearest a wanted frequency, by ratio so the choice is musical. */
+function closestBand(frequencies, wanted) {
+  if (!frequencies.length) return 0;
+  let best = 0;
+  let distance = Infinity;
+  for (let index = 0; index < frequencies.length; index += 1) {
+    const current = Math.abs(Math.log((frequencies[index] || 1) / wanted));
+    if (current < distance) {
+      distance = current;
+      best = index;
+    }
+  }
+  return best;
+}
+
+/** Radius for a level: 0 dB at the rim, −30 dB at the smallest the sphere can be. */
+function sphereRadius(db, peak) {
+  return Math.max(0.15, 1 - ((peak - db) / 30) * 0.85);
+}
+
+/**
+ * Project one band of a balloon onto a unit sphere, in the balloon's own angles.
+ *
+ * `balloon`: { levels: [band][azimuth][polar], frequencies, stepAzDeg, stepPolDeg }.
+ * Positive x is to the right of the cabinet, positive y is up, positive depth is
+ * towards the viewer. Rotation is about the vertical axis, in degrees.
+ *
+ * The radius at an angle is that angle's level, so the surface is the directivity
+ * the file states; the angles are the file's own steps, not a resampled grid.
+ */
+export function balloonProjection(balloon, bandHz, rotationDeg) {
+  const levels = balloon && Array.isArray(balloon.levels) ? balloon.levels : [];
+  if (!levels.length) return { ok: false, message: 'That dataset carries no balloon.' };
+  const frequencies = (Array.isArray(balloon.frequencies) ? balloon.frequencies : [])
+    .map((value) => Number(value));
+  const band = closestBand(frequencies, Number(bandHz) > 0 ? Number(bandHz) : 1000);
+  const rows = levels[band];
+  if (!Array.isArray(rows) || !rows.length) {
+    return { ok: false, message: 'That balloon has no rows in the ' + (frequencies[band] || 1000) + ' Hz band.' };
+  }
+  const parallels = Array.isArray(rows[0]) ? rows[0].length : 0;
+  if (!parallels) return { ok: false, message: 'That balloon band has no polar rows.' };
+  const stepAz = Number(balloon.stepAzDeg) > 0
+    ? Number(balloon.stepAzDeg)
+    : (rows.length > 1 ? 180 / (rows.length - 1) : 10);
+  const stepPol = Number(balloon.stepPolDeg) > 0
+    ? Number(balloon.stepPolDeg)
+    : (parallels > 1 ? 180 / (parallels - 1) : 5);
+
+  let peak = -Infinity;
+  for (const row of rows) {
+    for (const value of row) {
+      const level = Number(value);
+      if (Number.isFinite(level) && level > peak) peak = level;
+    }
+  }
+  if (!Number.isFinite(peak)) return { ok: false, message: 'That balloon band holds no level to draw.' };
+
+  const turn = ((Number(rotationDeg) || 0) * Math.PI) / 180;
+  const cosTurn = Math.cos(turn);
+  const sinTurn = Math.sin(turn);
+  const points = [];
+  for (let azimuth = 0; azimuth < rows.length; azimuth += 1) {
+    const phi = ((azimuth * stepAz) * Math.PI) / 180;
+    for (let parallel = 0; parallel < rows[azimuth].length; parallel += 1) {
+      const level = Number(rows[azimuth][parallel]);
+      if (!Number.isFinite(level)) continue;
+      // The polar row runs from one pole to the other, so 90° is on axis.
+      const elevation = ((90 - parallel * stepPol) * Math.PI) / 180;
+      const radius = sphereRadius(level, peak);
+      const flat = radius * Math.cos(elevation);
+      const x = flat * Math.sin(phi);
+      const y = radius * Math.sin(elevation);
+      const z = flat * Math.cos(phi);
+      points.push({
+        x: x * cosTurn + z * sinTurn,
+        y,
+        depth: -x * sinTurn + z * cosTurn,
+        db: level,
+      });
+    }
+  }
+  return {
+    ok: true,
+    band,
+    frequency: frequencies[band],
+    peakDb: peak,
+    azimuthStep: stepAz,
+    polarStep: stepPol,
+    points,
+  };
+}
+
+/**
+ * `payload`: { balloon, bandHz, rotationDeg, height }.
+ *
+ * The sphere is the file's own balloon, drawn back to front so the near side
+ * covers the far side. Rings state what the radius means, because a level drawn
+ * as a size says nothing on its own.
+ */
+export function drawBalloonChart(canvas, payload) {
+  const drawn = prepare(canvas, payload && payload.height);
+  if (!drawn) return;
+  const { ctx, width, height } = drawn;
+  const rotation = Number(payload && payload.rotationDeg) || 0;
+  const projected = balloonProjection(payload && payload.balloon, payload && payload.bandHz, rotation);
+  if (!projected.ok) {
+    axisText(ctx, projected.message, 8, height / 2);
+    return;
+  }
+  const radius = Math.max(20, (Math.min(width, height) - 42) / 2);
+  const cx = width / 2;
+  const cy = height / 2 + 4;
+
+  ctx.strokeStyle = AXIS;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 3]);
+  for (const drop of [6, 12, 18]) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, sphereRadius(projected.peakDb - drop, projected.peakDb) * radius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  axisText(ctx, '\u22126 dB', cx + 4, cy - sphereRadius(projected.peakDb - 6, projected.peakDb) * radius + 6);
+  axisText(ctx, '\u221218 dB', cx + 4, cy - sphereRadius(projected.peakDb - 18, projected.peakDb) * radius + 6);
+
+  // The forward axis, so the sphere has a heading: it moves with the rotation.
+  const turn = (rotation * Math.PI) / 180;
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.sin(turn) * radius * 1.12, cy);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillRect(cx - 2, cy - 2, 4, 4);
+  axisText(ctx, 'on axis', cx + Math.sin(turn) * radius * 1.12 + (Math.sin(turn) >= 0 ? 3 : -42), cy - 8);
+
+  // A finer file than the canvas can show is decimated, not silently dropped:
+  // the count of skipped points is not claimed as nothing.
+  const stride = Math.max(1, Math.ceil(projected.points.length / 4000));
+  const ordered = [];
+  for (let index = 0; index < projected.points.length; index += stride) ordered.push(projected.points[index]);
+  ordered.sort((a, b) => a.depth - b.depth);
+  for (const point of ordered) {
+    const shade = Math.max(0, Math.min(1, (projected.peakDb - point.db) / 24));
+    const near = (point.depth + 1) / 2;
+    ctx.fillStyle = 'hsla(' + (187 - 168 * shade).toFixed(0) + ', 85%, 60%, ' +
+      (0.28 + 0.62 * near).toFixed(2) + ')';
+    const size = 1.4 + 1.6 * (1 - shade);
+    ctx.beginPath();
+    ctx.arc(cx + point.x * radius, cy - point.y * radius, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  axisText(ctx, Math.round(projected.frequency) + ' Hz', 8, 10);
+  axisText(ctx, 'peak ' + projected.peakDb.toFixed(1) + ' dB', 8, 22);
+  axisText(ctx, 'turned ' + Math.round(rotation) + '\u00b0', width - 8, height - 8, 'right');
+}

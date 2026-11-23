@@ -2627,6 +2627,7 @@ export function createDataModeler(options = {}) {
           venue: meta.environment || '',
         },
         note: [meta.description, projected.message, clf.message].filter(Boolean).join(' · '),
+        balloon: projected.balloon,
       });
       if (!dataset) return;
       if (attached) {
@@ -2670,7 +2671,11 @@ export function createDataModeler(options = {}) {
         ' 6 dB widths. The entered specification is kept.', 'ok');
     }
     setImportMessage('Read ' + clf.readings.length + ' bands from CLF ' +
-      (meta.version || '') + '. ' + (clf.message || projected.message || ''), false);
+      (meta.version || '') + '. ' +
+      (projected.balloon ? 'Kept its ' + projected.balloon.frequencies.length + ' × ' +
+        projected.balloon.azimuths + ' × ' + projected.balloon.parallels +
+        ' balloon with the dataset. ' : '') +
+      (clf.message || projected.message || ''), false);
   }
 
   /** A measured model saved as a reusable loudspeaker, from the capture library. */
@@ -2918,11 +2923,10 @@ export function createDataModeler(options = {}) {
 
     if (lower.endsWith('.gll') || lower.endsWith('.spk') || lower.endsWith('.dll')) {
       const kind = lower.slice(-3).toUpperCase();
-      refuseImport('Nothing was imported: a .' + lower.slice(-3) + ' file cannot be read here, and it cannot be ' +
-        'converted into a CLF. ' +
+      refuseImport('Nothing was imported: this picker reads CLF, FRD, TXT, CSV and WAV. ' +
         (kind === 'GLL'
-          ? 'GLL is AFMG’s compiled Generic Loudspeaker Library; decoding it needs AFMG’s licensed SDK, ' +
-            'which is an annual subscription with AFMG signing for plug-in authors, and no public reader exists. '
+          ? 'A .gll file is converted to a CLF in the Speaker Builder’s “Convert GLL to CLF”, and the CLF it ' +
+            'writes is then imported here. '
           : 'EASE’s ' + kind + ' format has no public specification — only vendor descriptions exist. ') +
         'Ask the manufacturer for a CLF (.cf1/.cf2), export the loudspeaker from EASE as text or FRD, ' +
         'or import a measured response — those are all read here.', targetModel);

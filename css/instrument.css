@@ -558,12 +558,11 @@ body {
 .metrics.compact {
   display: flex;
   flex: none;
-  flex-wrap: nowrap;
+  /* The fifteen tiles need 642px and a phone column is 320-430px, so the strip
+     wraps onto extra rows instead of scrolling the last tiles out of sight. */
+  flex-wrap: wrap;
   gap: 0;
   margin: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
   border-top: 1px solid var(--line);
   background: #0d1114;
 }
@@ -593,6 +592,20 @@ body {
   font-size: 8.5px;
 }
 
+/* The six capture differences share one tile: letter-and-value cells in a
+   narrow grid, so six readings cost one slot in the strip instead of six. */
+.metrics.compact .metric-deltas .v {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 0 6px;
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.metrics.compact .metric-delta {
+  white-space: nowrap;
+}
+
 .metrics.compact .metric-action {
   flex: 0 0 auto;
   padding: 3px 12px;
@@ -602,6 +615,37 @@ body {
 
 .metrics.compact .metric-action .v {
   color: var(--accent);
+}
+
+/* A phone column is 320-430px and the strip keeps the tiles at their natural
+   widths, so the desktop 62px floor forces a fourth row. A 50px floor with
+   tighter padding and a hair less label tracking packs all fifteen tiles into
+   three rows on every phone width, without shortening any label. */
+@media (max-width: 470px) {
+  .metrics.compact .metric {
+    min-width: 50px;
+    padding: 2px 4px;
+  }
+
+  .metrics.compact .metric .k {
+    font-size: 8px;
+    letter-spacing: 0.06em;
+  }
+
+  .metrics.compact .metric .v {
+    font-size: 11px;
+  }
+
+  .metrics.compact .metric-action {
+    padding: 2px 8px;
+  }
+
+  .metrics.compact .metric-deltas .v {
+    grid-template-columns: repeat(2, auto);
+    gap: 0 7px;
+    font-size: 9.5px;
+    line-height: 1.2;
+  }
 }
 
 /* ---------- tool column ---------- */
@@ -617,13 +661,12 @@ body {
 .tool-tabs {
   display: flex;
   flex: none;
-  overflow-x: auto;
+  /* Seven tabs need 411px and the column is 360px, so this used to scroll the
+     last ones out of sight behind a hidden scrollbar — invisible, not merely
+     tight. Wrapping a tab strip is worse than a shorter one is, but far better
+     than a tab you cannot see or know exists. */
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--line);
-  scrollbar-width: none;
-}
-
-.tool-tabs::-webkit-scrollbar {
-  display: none;
 }
 
 .tool-tabs button {
@@ -631,7 +674,9 @@ body {
   font-size: 10px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  padding: 8px 10px;
+  /* Tighter side padding is what keeps all seven on one row at 360px; the wrap
+     above is the fallback when it still does not fit. */
+  padding: 8px 6px;
   color: var(--dim);
   background: none;
   border: 0;

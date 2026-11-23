@@ -57,12 +57,14 @@ function turnsOnly(delta) {
  * and it is what a fractional-octave analyser shows. A band whose vector sum
  * collapses keeps its own bin rather than snapping to a meaningless angle.
  */
-export function smoothComplex(re, im, df, octaves, outRe, outIm) {
+export function smoothComplex(re, im, df, octaves, outRe, outIm, cumReIn, cumImIn) {
   const bins = re.length;
   if (!(bins > 2) || !(df > 0) || !(octaves > 0)) return { re, im };
 
-  const cumRe = new Float64Array(bins + 1);
-  const cumIm = new Float64Array(bins + 1);
+  // Optional scratch buffers, so a live measurement reuses them instead of
+  // allocating two bins + 1 arrays on every frame.
+  const cumRe = cumReIn && cumReIn.length === bins + 1 ? cumReIn : new Float64Array(bins + 1);
+  const cumIm = cumImIn && cumImIn.length === bins + 1 ? cumImIn : new Float64Array(bins + 1);
   for (let k = 0; k < bins; k++) {
     cumRe[k + 1] = cumRe[k] + re[k];
     cumIm[k + 1] = cumIm[k] + im[k];
@@ -173,6 +175,9 @@ export class Analyser {
     this.sxyIm = new Float64Array(this.bins);
     this.fullRe = new Float64Array(size);
     this.fullIm = new Float64Array(size);
+    // Real impulse response written by the half-size inverse, before it is
+    // copied into the buffers a caller sees.
+    this.realIr = new Float64Array(size);
     this.ir = new Float64Array(size);
     // The complex impulse response, kept so a time gate can window it and
     // transform it back for a gated magnitude curve.
@@ -212,6 +217,9 @@ export class Analyser {
     this.scratchHIm = new Float64Array(this.bins);
     this.scratchHReOut = new Float64Array(this.bins);
     this.scratchHImOut = new Float64Array(this.bins);
+    // Cumulative sums for the phase-aware smoothing, reused every frame.
+    this.scratchCumRe = new Float64Array(this.bins + 1);
+    this.scratchCumIm = new Float64Array(this.bins + 1);
     this.updateRate = 0.1;
     this.frames = 0;
     this.peakIndex = 0;
@@ -311,29 +319,50 @@ export class Analyser {
     const re = this.fullRe;
     const im = this.fullIm;
 
-    re.fill(0);
-    im.fill(0);
+    // Only bins 0..N/2 are filled. The negative frequencies are these bins'
+    // conjugates, and the transform below reconstructs them itself.
     re[0] = this.sxyRe[0];
     im[0] = 0;
     this.rotRe[0] = this.sxyRe[0];
     this.rotIm[0] = 0;
 
+    // The rotation angle advances by a constant step from bin to bin, so one
+    // sine and one cosine seed the sweep and a complex multiply carries it:
+    // two trig calls per frame instead of two per bin (16384 of them at
+    // 16384/48 kHz). The running product is renormalised periodically so
+    // rounding cannot drift its magnitude, and the angle error across a whole
+    // sweep stays far below a millionth of a degree.
+    const stepAngle = shift !== 0 ? (2 * Math.PI * shift) / n : 0;
+    const stepRe = shift !== 0 ? Math.cos(stepAngle) : 1;
+    const stepIm = shift !== 0 ? Math.sin(stepAngle) : 0;
+    let rotCos = stepRe;
+    let rotSin = stepIm;
+
     for (let k = 1; k < half; k++) {
       let rr = this.sxyRe[k];
       let ii = this.sxyIm[k];
       if (shift !== 0) {
-        const theta = (2 * Math.PI * k * shift) / n;
-        const c = Math.cos(theta);
-        const s = Math.sin(theta);
+        const c = rotCos;
+        const s = rotSin;
         const nr = rr * c - ii * s;
         const ni = rr * s + ii * c;
         rr = nr;
         ii = ni;
+
+        const advanceRe = rotCos * stepRe - rotSin * stepIm;
+        const advanceIm = rotCos * stepIm + rotSin * stepRe;
+        rotCos = advanceRe;
+        rotSin = advanceIm;
+        if ((k & 255) === 0) {
+          const norm = Math.sqrt(rotCos * rotCos + rotSin * rotSin);
+          if (norm > 0) {
+            rotCos /= norm;
+            rotSin /= norm;
+          }
+        }
       }
       re[k] = rr;
       im[k] = ii;
-      re[n - k] = rr;
-      im[n - k] = -ii;
       // Kept so results() can read the transfer function straight from the
       // spectrum this rotation already produced.
       this.rotRe[k] = rr;
@@ -344,12 +373,17 @@ export class Analyser {
     this.rotRe[half] = this.sxyRe[half];
     this.rotIm[half] = 0;
 
-    this.fft.inverse(re, im);
+    // A Hermitian spectrum has a real inverse, so this transforms at half size
+    // rather than running a full complex transform and discarding an imaginary
+    // half that is known to be zero.
+    const real = this.realIr;
+    this.fft.realInverse(re, im, real);
 
-    for (let i = 0; i < n; i++) {
-      this.irRe[i] = re[i];
-      this.irIm[i] = im[i];
-    }
+    this.irRe.set(real);
+    // The imaginary half of a real inverse is zero, and it was already only
+    // rounding residue. The gate, the spectrogram and the decay curve all read
+    // irRe² + irIm², so they see the same energy to within 1e-32.
+    this.irIm.fill(0);
 
     const ir = this.ir;
     // The peak is only looked for in a neighbourhood of zero unless the caller
@@ -363,7 +397,9 @@ export class Analyser {
     let peak = 0;
     let peakValue = -Infinity;
     for (let i = 0; i < n; i++) {
-      const magnitude = Math.hypot(re[i], im[i]);
+      // abs, not hypot: the inverse is real, so there is no imaginary part to
+      // combine, and hypot is a guarded, far slower call.
+      const magnitude = Math.abs(real[i]);
       ir[i] = magnitude;
       const distance = i <= half ? i : i - n;
       if (distance < -radius || distance > radius) continue;
@@ -384,7 +420,7 @@ export class Analyser {
       let signed = peak + frac;
       if (signed > n / 2) signed -= n;
       this.peakIndex = signed;
-      this.peakRe = re[peak];
+      this.peakRe = real[peak];
     }
 
     return peak;
@@ -476,21 +512,22 @@ export class Analyser {
   buildTransferIR(hRe, hIm) {
     const n = this.fftSize;
     const half = n >> 1;
-    const re = this.hIrRe;
-    const im = this.hIrIm;
-    re.fill(0);
-    im.fill(0);
+    // The half-spectrum goes through the spectrum buffers computeIR() has
+    // finished with; hIrRe is the real result the gate windows.
+    const re = this.fullRe;
+    const im = this.fullIm;
     re[0] = hRe[0];
     im[0] = 0;
     for (let k = 1; k < half; k++) {
       re[k] = hRe[k];
       im[k] = hIm[k];
-      re[n - k] = hRe[k];
-      im[n - k] = -hIm[k];
     }
     re[half] = hRe[half];
     im[half] = 0;
-    this.fft.inverse(re, im);
+    const real = this.realIr;
+    this.fft.realInverse(re, im, real);
+    this.hIrRe.set(real);
+    this.hIrIm.fill(0);
   }
 
   /**
@@ -628,7 +665,7 @@ export class Analyser {
     // measurement never was.
     if (phaseSmoothing > 0) {
       const averaged = smoothComplex(hRe, hIm, this.df, phaseSmoothing,
-        this.scratchHReOut, this.scratchHImOut);
+        this.scratchHReOut, this.scratchHImOut, this.scratchCumRe, this.scratchCumIm);
       hRe = averaged.re;
       hIm = averaged.im;
     }

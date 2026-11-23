@@ -508,12 +508,18 @@
       <div class="metric"><span class="k">Input</span><span class="v" id="rdLevel">—</span></div>
       <div class="metric"><span class="k">Noise</span><span class="v" id="rdNoise">—</span></div>
       <div class="metric"><span class="k">Rate</span><span class="v" id="rdRate">—</span></div>
-      <div class="metric"><span class="k">Δ A</span><span class="v" id="rdDelta">—</span></div>
-      <div class="metric"><span class="k">Δ B</span><span class="v" id="rdDeltaB">—</span></div>
-      <div class="metric"><span class="k">Δ C</span><span class="v" id="rdDeltaC">—</span></div>
-      <div class="metric"><span class="k">Δ D</span><span class="v" id="rdDeltaD">—</span></div>
-      <div class="metric"><span class="k">Δ E</span><span class="v" id="rdDeltaE">—</span></div>
-      <div class="metric"><span class="k">Δ F</span><span class="v" id="rdDeltaF">—</span></div>
+      <div class="metric metric-deltas" id="metricDeltas" hidden
+           title="Delay difference in milliseconds against each held capture, A to F">
+        <span class="k">Δ ms</span>
+        <span class="v">
+          <span class="metric-delta" id="rdDelta" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaB" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaC" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaD" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaE" hidden>—</span>
+          <span class="metric-delta" id="rdDeltaF" hidden>—</span>
+        </span>
+      </div>
       <div class="metric"><span class="k">Capture pol.</span><span class="v" id="rdCapturePolarity">—</span><span class="metric-detail" id="rdCapturePolarityNote"></span></div>
       <div class="metric"><span class="k">Recommended</span><span class="v" id="rdAdvice">—</span><span class="metric-detail" id="rdAdviceDetail"></span></div>
       <button id="btnApplyDelay" class="metric metric-action" type="button"><span class="k">Apply</span><span class="v">→</span></button>
@@ -533,8 +539,10 @@
     <nav class="tool-tabs" id="toolTabs" aria-label="Measurement panels">
       <button type="button" class="on" data-tool="impulsePanel">Impulse</button>
       <button type="button" data-tool="roomPanel">Room</button>
+      <button type="button" data-tool="qualityPanel">Quality</button>
       <button type="button" data-tool="tracesPanel">Traces</button>
-      <button type="button" data-tool="analysisPanel">Analysis</button>
+      <button type="button" data-tool="targetPanel">Target</button>
+      <button type="button" data-tool="eqPanel">EQ</button>
       <button type="button" data-tool="sharePanel">Share</button>
     </nav>
 
@@ -605,6 +613,9 @@
           <button id="btnRoomModes" class="btn" type="button">Room modes</button>
         </div>
 
+      </section>
+
+      <section class="panel" id="qualityPanel" hidden>
         <div class="panel-head">
           <h2>Measurement quality</h2>
           <span class="readout" id="qualityHeadline">—</span>
@@ -696,7 +707,7 @@
         </section>
       </section>
 
-      <section class="panel" id="analysisPanel" hidden>
+      <section class="panel" id="targetPanel" hidden>
         <div class="panel-head"><h2>Target</h2></div>
         <div class="row">
           <label for="selTarget">Target curve</label>
@@ -731,6 +742,9 @@
         <label class="chk"><input type="checkbox" id="chkSpl" /> Show input level as dB SPL</label>
         <label class="chk"><input type="checkbox" id="chkSpectrographAnalysis" /> Show live spectrograph</label>
 
+      </section>
+
+      <section class="panel" id="eqPanel" hidden>
         <div class="panel-head"><h2>EQ suggestions</h2></div>
         <ul class="eq-list" id="eqList">
           <li class="muted">Start the measurement to get suggestions.</li>
@@ -1207,9 +1221,9 @@
           </div>
           <p class="source-hint">
             CLF1 and CLF2 (.cf1, .cf2, .clf) are read by their published keys and their result appears in the
-            Import card. An EASE .gll or .spk file cannot be decoded — GLL needs AFMG’s licensed SDK and SPK has
-            no public specification — so it is refused with a message naming what to export instead; nothing is
-            guessed at and no CLF is invented from it.
+            Import card. An EASE .gll is not imported here: the Speaker Builder’s “Convert GLL to CLF” writes a
+            CLF from it, and that file is imported here. SPK is not read at all — its format has no public
+            specification — and nothing is guessed at in either case.
           </p>
         </div>
       </section>
