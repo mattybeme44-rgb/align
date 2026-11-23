@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-19-22" />
+<meta name="align-build" content="2026-11-20-01" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -601,6 +601,9 @@
         <p id="roomDecayEmpty" class="source-hint">Start the measurement to read the room's decay.</p>
         <p id="roomDecayNote" class="source-hint" hidden></p>
         <p class="source-hint">From the measured decay of the impulse response; it only holds where that decay is real.</p>
+        <div class="row btns">
+          <button id="btnRoomModes" class="btn" type="button">Room modes</button>
+        </div>
 
         <div class="panel-head">
           <h2>Measurement quality</h2>
@@ -759,6 +762,11 @@
           <button id="btnShareChart" class="btn" type="button" disabled>Chart image</button>
           <button id="btnShareReport" class="btn" type="button" disabled>PDF report</button>
         </div>
+        <div class="row btns">
+          <button id="btnExportIr" class="btn" type="button" disabled>Export IR</button>
+          <button id="btnSessionLog" class="btn" type="button">Session log</button>
+        </div>
+        <p id="exportIrNote" class="source-hint" hidden></p>
 
         <section class="card services-card">
           <div class="card-head">
@@ -1197,6 +1205,12 @@
             </select>
             <button id="btnDmSpatial" class="btn" type="button">Average positions</button>
           </div>
+          <p class="source-hint">
+            CLF1 and CLF2 (.cf1, .cf2, .clf) are read by their published keys and their result appears in the
+            Import card. An EASE .gll or .spk file cannot be decoded — GLL needs AFMG’s licensed SDK and SPK has
+            no public specification — so it is refused with a message naming what to export instead; nothing is
+            guessed at and no CLF is invented from it.
+          </p>
         </div>
       </section>
 
@@ -2210,6 +2224,12 @@
       <button id="btnResetEq" class="btn" type="button">Reset</button>
     </div>
     <button id="btnAutoEq" class="btn btn-power eq-copy-btn" type="button">Auto-EQ from measurement</button>
+    <div class="row">
+      <label for="eqMatchCurve">Match to</label>
+      <select id="eqMatchCurve"></select>
+      <button id="btnEqMatch" class="btn" type="button">Match</button>
+    </div>
+    <p class="source-hint" id="eqMatchStatus" hidden></p>
     <p class="source-hint" id="eqAutoStatus" hidden></p>
     <p class="source-hint">
       Auto-EQ reads the third-octave bands from 40 Hz to 16 kHz against the chosen target (or the
@@ -2528,6 +2548,68 @@
     evidence behind it, what a change would predict, how far the measurement supports it and the
     measurement that would verify it. Nothing is proposed that the two captures cannot support.
   </p>
+</section>
+
+<section id="roomModesSheet" class="sheet room-modes-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Room modes</h2>
+      <p class="sheet-sub">axial, tangential and oblique · 20–300 Hz</p>
+    </div>
+    <button id="btnCloseRoomModes" class="btn" type="button">Done</button>
+  </div>
+  <div class="rm-dims">
+    <label class="rm-field"><span>Width m</span>
+      <input id="rmWidth" type="number" step="0.05" min="1" max="60" inputmode="decimal" />
+    </label>
+    <label class="rm-field"><span>Length m</span>
+      <input id="rmLength" type="number" step="0.05" min="1" max="60" inputmode="decimal" />
+    </label>
+    <label class="rm-field"><span>Height m</span>
+      <input id="rmHeight" type="number" step="0.05" min="1" max="20" inputmode="decimal" />
+    </label>
+  </div>
+  <p class="source-hint" id="rmSource"></p>
+  <div class="card rm-chart-card">
+    <div class="chart-wrap rm-chart-wrap">
+      <canvas id="rmChart" aria-label="The measured curve from 20 to 300 hertz with the room's mode frequencies marked"></canvas>
+    </div>
+    <div class="rm-legend">
+      <span class="rm-swatch measured">Measured</span>
+      <span class="rm-swatch mode">Room mode</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>Modes</h2>
+      <span class="card-detail" id="rmCount">—</span>
+    </div>
+    <div id="rmRows" class="rm-rows"></div>
+  </div>
+  <p class="sheet-foot-note">
+    Computed from the dimensions alone — a mode predicts where energy collects, not what will be
+    measured. Nothing here changes the measurement, the gate or the captures.
+  </p>
+</section>
+
+<section id="sessionLogSheet" class="sheet session-log-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Session log</h2>
+      <p class="sheet-sub">this device · newest first</p>
+    </div>
+    <button id="btnCloseSessionLog" class="btn" type="button">Done</button>
+  </div>
+  <div class="row sl-tools">
+    <input id="sessionLogSearch" type="search" placeholder="Capture, preset, curve or room" aria-label="Search the session log" />
+    <button id="btnClearSessionLog" class="link-btn" type="button">Clear</button>
+  </div>
+  <p class="card-detail" id="sessionLogCount"></p>
+  <div id="sessionLogList" class="sl-list"></div>
+  <div class="row btns">
+    <button id="btnExportSessionLog" class="btn btn-power" type="button">Export CSV</button>
+  </div>
+  <p class="sheet-foot-note">What the app did, in order. Nothing here re-applies a change.</p>
 </section>
 
 <input id="calFile" type="file" accept=".txt,.csv,.cal,text/plain,text/csv" hidden />

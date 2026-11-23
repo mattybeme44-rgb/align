@@ -1294,5 +1294,14 @@ export function createSpeakerBuilder(options = {}) {
     get editingId() { return editingId; },
     save: (asNew) => save(!!asNew),
     validate: () => validateSpec(draft || {}),
+    /*
+     * What a file attach did. The picker is opened from this card, so a refusal
+     * has to be said here too: the Import card's own hint line is in another
+     * card, and on a phone it is off-screen when the file comes back.
+     */
+    reportImport: (text, kind) => {
+      setMessage(text, kind || 'ok');
+      render();
+    },
   };
 }

@@ -2602,7 +2602,7 @@ export function createDataModeler(options = {}) {
   function importManufacturer(clf, fileName, targetModelId) {
     const projected = clfResponse(clf);
     if (!projected.ok) {
-      setImportMessage(projected.message, true);
+      refuseImport(projected.message, targetModelId);
       return;
     }
     const meta = clf.manufacturer;
@@ -2662,6 +2662,13 @@ export function createDataModeler(options = {}) {
         projected.directivity.length + ' 6 dB widths. ' + (projected.message || ''));
 
     if (model) renderAll();
+    if (attached && typeof builder.reportImport === 'function') {
+      // The picker was opened from the builder, so the builder says what arrived
+      // rather than leaving its own “choose a file” line standing.
+      builder.reportImport('Attached the CLF’s ' + clf.readings.length + ' bands to “' + attached.name +
+        '” as manufacturer data: magnitude only, no phase, ' + projected.directivity.length +
+        ' 6 dB widths. The entered specification is kept.', 'ok');
+    }
     setImportMessage('Read ' + clf.readings.length + ' bands from CLF ' +
       (meta.version || '') + '. ' + (clf.message || projected.message || ''), false);
   }
@@ -2732,6 +2739,41 @@ export function createDataModeler(options = {}) {
     line.classList.toggle('clip-warning', !!bad);
   }
 
+  /**
+   * Open the Import card and bring its message into view.
+   *
+   * The buttons that open the file picker sit in other cards — “Import CLF / EASE”
+   * in the model workspace, “Attach measured or manufacturer data” in the speaker
+   * builder — so a line written only into the Import card happens off-screen on a
+   * phone and reads as nothing having happened at all.
+   */
+  function revealImportCard() {
+    if (layout.collapsed.import) {
+      layout.collapsed.import = false;
+      saveLayout();
+      applyDocks();
+    }
+    const line = $('dmImportMessage');
+    if (line && typeof line.scrollIntoView === 'function') {
+      line.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  /**
+   * Report a refused import where the operator is looking: the Import card, the
+   * modeler's status line and the app's status pill, and the speaker builder when
+   * the file was aimed at one. Nothing is imported — the message says why and
+   * what this build can read instead.
+   */
+  function refuseImport(message, targetModelId) {
+    setImportMessage(message, true);
+    say(message, 'err');
+    if (targetModelId && typeof builder.reportImport === 'function') {
+      builder.reportImport(message, 'err');
+    }
+    revealImportCard();
+  }
+
   function showMapping(described, name, text, attachModel) {
     pendingFile = described;
     pendingText = text;
@@ -2739,6 +2781,9 @@ export function createDataModeler(options = {}) {
     const block = $('dmMapBlock');
     if (!block) return;
     block.hidden = false;
+    if (typeof block.scrollIntoView === 'function') {
+      block.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
 
     const title = $('dmMapTitle');
     if (title) {
@@ -2812,7 +2857,7 @@ export function createDataModeler(options = {}) {
     if (!pendingFile) return;
     const parsed = parseResponseText(pendingText, { mapping: readMapping() });
     if (!parsed.ok) {
-      setImportMessage(parsed.message, true);
+      refuseImport(parsed.message, pendingAttachModel);
       return;
     }
     pendingFile = null;
@@ -2866,19 +2911,21 @@ export function createDataModeler(options = {}) {
     const lower = name.toLowerCase();
 
     if (lower.endsWith('.trf')) {
-      setImportMessage('A Smaart .trf file is not read here — the format is proprietary. ' +
-        'Export the trace from Smaart as text or FRD, or import the running measurement directly.', true);
+      refuseImport('Nothing was imported: a Smaart .trf file is not read here — the format is proprietary. ' +
+        'Export the trace from Smaart as text or FRD, or import the running measurement directly.', targetModel);
       return;
     }
 
     if (lower.endsWith('.gll') || lower.endsWith('.spk') || lower.endsWith('.dll')) {
       const kind = lower.slice(-3).toUpperCase();
-      setImportMessage('An EASE ' + kind + ' file is not read here. ' +
+      refuseImport('Nothing was imported: a .' + lower.slice(-3) + ' file cannot be read here, and it cannot be ' +
+        'converted into a CLF. ' +
         (kind === 'GLL'
-          ? 'GLL is AFMG’s compiled Generic Loudspeaker Library; decoding needs AFMG’s licensed SDK, ' +
+          ? 'GLL is AFMG’s compiled Generic Loudspeaker Library; decoding it needs AFMG’s licensed SDK, ' +
             'which is an annual subscription with AFMG signing for plug-in authors, and no public reader exists. '
-          : 'The EASE SPK format has no public specification — only vendor descriptions exist. ') +
-        'Export the loudspeaker data from EASE as text or FRD, or import a CLF (.cf1/.cf2) file.', true);
+          : 'EASE’s ' + kind + ' format has no public specification — only vendor descriptions exist. ') +
+        'Ask the manufacturer for a CLF (.cf1/.cf2), export the loudspeaker from EASE as text or FRD, ' +
+        'or import a measured response — those are all read here.', targetModel);
       return;
     }
 
@@ -2887,12 +2934,12 @@ export function createDataModeler(options = {}) {
       reader.onload = () => {
         const clf = parseClf(String(reader.result || ''), name);
         if (!clf.ok) {
-          setImportMessage(clf.message, true);
+          refuseImport(clf.message, targetModel);
           return;
         }
         importManufacturer(clf, name, targetModel);
       };
-      reader.onerror = () => setImportMessage('That file could not be read.', true);
+      reader.onerror = () => refuseImport('That file could not be read.', targetModel);
       reader.readAsText(file);
       return;
     }
@@ -2900,7 +2947,7 @@ export function createDataModeler(options = {}) {
     const finish = (text) => {
       const described = describeResponseText(text);
       if (!described.ok) {
-        setImportMessage(described.message, true);
+        refuseImport(described.message, targetModel);
         return;
       }
       showMapping(described, name, text, targetModel);
@@ -2912,12 +2959,12 @@ export function createDataModeler(options = {}) {
       reader.onload = () => {
         const parsed = parseWav(reader.result);
         if (!parsed.ok) {
-          setImportMessage(parsed.message, true);
+          refuseImport(parsed.message, targetModel);
           return;
         }
         const transformed = impulseToResponse(parsed.samples, parsed.sampleRate, { beforeMs: 1, widthMs: 20 });
         if (!transformed.ok) {
-          setImportMessage(transformed.message, true);
+          refuseImport(transformed.message, targetModel);
           return;
         }
         const block = $('dmMapBlock');
@@ -2939,14 +2986,14 @@ export function createDataModeler(options = {}) {
         setImportMessage('Read the impulse at ' + transformed.peakMs.toFixed(2) + ' ms · ' +
           transformed.message, false);
       };
-      reader.onerror = () => setImportMessage('That file could not be read.', true);
+      reader.onerror = () => refuseImport('That file could not be read.', targetModel);
       reader.readAsArrayBuffer(file);
       return;
     }
 
     const reader = new FileReader();
     reader.onload = () => finish(String(reader.result || ''));
-    reader.onerror = () => setImportMessage('That file could not be read.', true);
+    reader.onerror = () => refuseImport('That file could not be read.', targetModel);
     reader.readAsText(file);
   }
 
@@ -3815,7 +3862,13 @@ export function createDataModeler(options = {}) {
       setImportMessage('', false);
     });
 
-    $('btnDmImportEase')?.addEventListener('click', () => $('dmFile')?.click());
+    $('btnDmImportEase')?.addEventListener('click', () => {
+      // Nothing is attached to a loudspeaker here, so a target left over from the
+      // speaker builder must not send this file into it.
+      attachTarget = '';
+      pendingAttachModel = '';
+      $('dmFile')?.click();
+    });
     $('btnDmSpatial')?.addEventListener('click', averagePositions);
     $('btnDmLinkGroup')?.addEventListener('click', linkToGroup);
     $('btnDmExportLpif')?.addEventListener('click', exportLpif);

@@ -7,6 +7,10 @@ import { createRoomDesigner } from './modeler/roomui.js';
 import { persistProject as persistModelProject } from './modeler/store.js';
 import { Analyser, suggestEq } from './analyser.js';
 import { TransferChart, ImpulseChart, wrapDegrees } from './charts.js';
+import { createRoomModes } from './roommodes.js';
+import { createSessionLog } from './sessionlog.js';
+import { encodeFloat32Wav, impulseFileName, impulseSlice } from './irwav.js';
+import { matchFiltersToCurve } from './eq-match.js';
 import {
   TARGET_CURVES,
   targetDb,
@@ -920,7 +924,8 @@ function updateSheetLock() {
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
     !$('sumSheet').hidden || !$('levelLogSheet').hidden ||
     !$('rtaSheet').hidden || !$('distortionSheet').hidden || !$('guideSheet').hidden ||
-    !$('speakerSheet').hidden || !$('subArraySheet').hidden;
+    !$('speakerSheet').hidden || !$('subArraySheet').hidden ||
+    !$('roomModesSheet').hidden || !$('sessionLogSheet').hidden;
   document.body.classList.toggle('sheet-open', open);
 }
 
@@ -1587,6 +1592,7 @@ function stopDemo() {
   $('btnExportCsv').disabled = true;
   $('btnShareChart').disabled = true;
   $('btnShareReport').disabled = true;
+  if ($('btnExportIr')) $('btnExportIr').disabled = true;
   resetRoomInsights();
   renderSaved();
   setStatus('idle');
@@ -4660,6 +4666,7 @@ function updateReadouts(res) {
   $('btnExportCsv').disabled = false;
   $('btnShareChart').disabled = false;
   $('btnShareReport').disabled = false;
+  if ($('btnExportIr')) $('btnExportIr').disabled = false;
   $('btnSaveCurrent').disabled = false;
 
   updateCursorReadout();
@@ -6614,6 +6621,7 @@ function stopAll() {
   $('btnExportCsv').disabled = true;
   $('btnShareChart').disabled = true;
   $('btnShareReport').disabled = true;
+  if ($('btnExportIr')) $('btnExportIr').disabled = true;
   renderSaved(); // A/B remain available to name and save after stopping.
 
   const button = $('btnPower');
@@ -7127,7 +7135,10 @@ $('selPhaseSmooth').addEventListener('change', () => {
 /* ---------- the capture bar above the plot ---------- */
 
 renderPhaseDelayBar();
-$('btnExportCsv').addEventListener('click', exportCSV);
+$('btnExportCsv').addEventListener('click', () => {
+  exportCSV();
+  noteAfter(null, 'export', 'Measurement CSV');
+});
 // The stacked reading lives inside the Decay screen now.
 $('btnSpectrogram').addEventListener('click', openSpectrogram);
 $('btnCloseSpectrogram').addEventListener('click', closeSpectrogram);
@@ -7135,6 +7146,239 @@ $('btnBands').addEventListener('click', openBands);
 $('btnCloseBands').addEventListener('click', closeBands);
 $('btnGroupDelay').addEventListener('click', openGroupDelay);
 $('btnCloseGroup').addEventListener('click', closeGroupDelay);
+
+/* ---------- the room's modes ---------- */
+
+const roomModes = createRoomModes({
+  measurement: () => state.results,
+  setStatus,
+  onOpen: updateSheetLock,
+  onClose: updateSheetLock,
+});
+
+$('btnRoomModes').addEventListener('click', () => roomModes.open());
+$('btnCloseRoomModes').addEventListener('click', () => roomModes.close());
+
+/* ---------- the session log ---------- */
+
+function statusText() {
+  const pill = $('status');
+  return pill ? pill.textContent : '';
+}
+
+function shareFile(blob, filename, title) {
+  return new Promise((resolve) => {
+    let file = null;
+    try {
+      if (typeof File !== 'undefined') file = new File([blob], filename, { type: blob.type });
+    } catch (error) {
+      file = null;
+    }
+    if (file && navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+      navigator.share({ files: [file], title }).then(() => resolve('shared'))
+        .catch((error) => resolve(error && error.name === 'AbortError' ? 'cancelled' : 'downloaded'));
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    resolve('downloaded');
+  });
+}
+
+const sessionLog = createSessionLog({
+  share: shareFile,
+  setStatus,
+  onOpen: updateSheetLock,
+  onClose: updateSheetLock,
+});
+
+$('btnSessionLog').addEventListener('click', () => sessionLog.open());
+$('btnCloseSessionLog').addEventListener('click', () => sessionLog.close());
+$('btnClearSessionLog').addEventListener('click', () => sessionLog.clear());
+$('btnExportSessionLog').addEventListener('click', () => sessionLog.exportCsv());
+$('sessionLogSearch').addEventListener('input', () => sessionLog.setQuery($('sessionLogSearch').value));
+
+/* The log records what the app did. Each hook reads the app's own status line, so an
+ * action that refused says so in the entry rather than being reported as done. */
+function noteAfter(action, kind, label, detail) {
+  setTimeout(() => {
+    sessionLog.log(kind, label, detail || statusText());
+    if (action) return action;
+    return undefined;
+  }, 0);
+}
+
+const tracesPanel = $('tracesPanel');
+if (tracesPanel) {
+  tracesPanel.addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button || !/^btnCapture[ABCDEF]$/.test(button.id)) return;
+    noteAfter(null, 'capture', 'Capture ' + button.id.slice(-1));
+  });
+}
+
+const presetPanel = $('presetList');
+if (presetPanel) {
+  presetPanel.addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button || !/apply/i.test(button.textContent || '')) return;
+    const row = button.closest('li, .preset-item');
+    const name = row ? String(row.querySelector('strong, .preset-name') ? row.querySelector('strong, .preset-name').textContent : row.textContent).trim().slice(0, 60) : 'preset';
+    noteAfter(null, 'preset', name || 'preset');
+  });
+}
+
+const eqSetPanel = $('eqSetList');
+if (eqSetPanel) {
+  eqSetPanel.addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button || !/apply|load/i.test(button.textContent || '')) return;
+    const row = button.closest('li, .preset-item');
+    const name = row ? String(row.textContent).trim().slice(0, 60) : 'EQ set';
+    noteAfter(null, 'eqset', name || 'EQ set');
+  });
+}
+
+/* ---------- the impulse response as a file ---------- */
+
+async function exportImpulseResponse() {
+  const res = state.results;
+  const note = $('exportIrNote');
+  if (!res) {
+    setStatus('nothing to export yet — start a measurement first', 'err');
+    return;
+  }
+  const gateWidth = Number($('numGateWidth') && $('numGateWidth').value);
+  const slice = impulseSlice(res, Number.isFinite(gateWidth) && gateWidth > 0 ? gateWidth : 20);
+  if (!slice) {
+    setStatus('the impulse response is not available yet', 'err');
+    return;
+  }
+  const bytes = encodeFloat32Wav(slice.samples, slice.sampleRate);
+  if (!bytes) {
+    setStatus('the impulse response could not be written', 'err');
+    return;
+  }
+  const name = impulseFileName(slice, state.totalDelayMs);
+  const outcome = await shareFile(new Blob([bytes], { type: 'audio/wav' }), name,
+    'Align impulse response');
+  if (outcome === 'cancelled') {
+    setStatus('export cancelled', 'err');
+    return;
+  }
+  const message = 'impulse response written — ' + name;
+  if (note) {
+    note.textContent = message + ' · ' + slice.lengthMs.toFixed(1) + ' ms from the peak, 32-bit float, ' +
+      Math.round(slice.sampleRate) + ' Hz';
+    note.hidden = false;
+  }
+  setStatus(message, 'ok');
+  sessionLog.log('export', name, slice.lengthMs.toFixed(1) + ' ms · ' + Math.round(slice.sampleRate) + ' Hz');
+}
+
+$('btnExportIr').addEventListener('click', exportImpulseResponse);
+
+/* ---------- matching the EQ to another measured curve ---------- */
+
+function setEqMatchStatus(message, isError) {
+  const el = $('eqMatchStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+  el.classList.toggle('clip-warning', !!isError);
+  el.style.color = isError ? '' : 'var(--dim)';
+}
+
+function eqMatchCurves() {
+  const curves = [];
+  for (const slot of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(slot);
+    if (trace && trace.magDb && trace.bins > 2) {
+      curves.push({ value: 'held:' + slot, label: 'Capture ' + slot, trace });
+    }
+  }
+  const saved = Array.isArray(state.saved) ? state.saved : [];
+  saved.forEach((entry, index) => {
+    const trace = entry && (entry.trace || entry);
+    if (!trace || !trace.magDb || !(trace.bins > 2)) return;
+    const name = entry && typeof entry.name === 'string' && entry.name ? entry.name : 'saved curve';
+    curves.push({ value: 'saved:' + index, label: name.slice(0, 40), trace });
+  });
+  return curves;
+}
+
+function fillEqMatchCurves() {
+  const select = $('eqMatchCurve');
+  if (!select) return;
+  const previous = select.value;
+  const curves = eqMatchCurves();
+  select.replaceChildren();
+  if (!curves.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'no held or saved curve yet';
+    select.appendChild(option);
+    return;
+  }
+  for (const curve of curves) {
+    const option = document.createElement('option');
+    option.value = curve.value;
+    option.textContent = curve.label;
+    select.appendChild(option);
+  }
+  if (curves.some((curve) => curve.value === previous)) select.value = previous;
+}
+
+function applyEqMatch() {
+  const res = state.results;
+  if (!res) {
+    setEqMatchStatus('start a measurement first — there is nothing to match', true);
+    return;
+  }
+  const select = $('eqMatchCurve');
+  const chosen = eqMatchCurves().find((curve) => curve.value === (select && select.value));
+  if (!chosen) {
+    setEqMatchStatus('hold a capture or save a curve to match against first', true);
+    return;
+  }
+  const free = EQ_FILTER_LIMIT - state.eqFilters.length;
+  if (free <= 0) {
+    setEqMatchStatus('eight filters is the limit — remove one before matching', true);
+    return;
+  }
+
+  const outcome = matchFiltersToCurve(res, chosen.trace, { limit: Math.min(6, free) });
+  if (!outcome.added) {
+    setEqMatchStatus(outcome.message, true);
+    return;
+  }
+
+  for (const spec of outcome.filters) {
+    const filter = newEqFilter(spec.frequency);
+    filter.gainDb = Math.min(EQ_GAIN_RANGE.max, Math.max(EQ_GAIN_RANGE.min, spec.gainDb));
+    filter.q = spec.q;
+    filter.enabled = true;
+    state.eqFilters.push(filter);
+  }
+  state.eqDirty = true;
+  persistEqFilters(state.eqFilters);
+  setEqMatchStatus(outcome.message + ' — matched to ' + chosen.label, false);
+  renderEQSheet();
+  draw();
+}
+
+$('btnEqMatch').addEventListener('click', applyEqMatch);
+$('btnEQDesigner').addEventListener('click', fillEqMatchCurves);
+
+/* Two more things the log records, wired on the controls themselves. */
+if ($('calFile')) $('calFile').addEventListener('change', () => noteAfter(null, 'calibration', 'Microphone calibration'));
+if ($('selTarget')) $('selTarget').addEventListener('change', () => noteAfter(null, 'target', 'Target curve'));
 
 /* ---------- sum preview ---------- */
 
@@ -8578,13 +8822,22 @@ $('chkInvertB').addEventListener('change', (event) => {
   updateCursorReadout();
   draw();
 });
-$('btnApplyDelay').addEventListener('click', applyRecommendedDelay);
+$('btnApplyDelay').addEventListener('click', () => {
+  applyRecommendedDelay();
+  noteAfter(null, 'delay', 'Recommended delay applied');
+});
 $('btnPresets').addEventListener('click', openPresets);
 $('btnClosePresets').addEventListener('click', closePresets);
 $('btnSavePreset').addEventListener('click', savePresetFromCurrent);
 $('presetSearch').addEventListener('input', renderPresets);
-$('btnShareChart').addEventListener('click', shareChartImage);
-$('btnShareReport').addEventListener('click', shareReport);
+$('btnShareChart').addEventListener('click', () => {
+  shareChartImage();
+  noteAfter(null, 'export', 'Chart image');
+});
+$('btnShareReport').addEventListener('click', () => {
+  shareReport();
+  noteAfter(null, 'export', 'Measurement report');
+});
 
 function groupPointer(event) {
   if (!state.groupDelayOpen) return;
