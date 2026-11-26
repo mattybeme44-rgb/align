@@ -441,6 +441,9 @@ than by boosting.
 - `js/charts.js` — canvas plots: magnitude, phase and coherence on one frequency axis, the target,
   the ghost traces, and the impulse response with its gate
 - `js/waterfall.js` — the waterfall's slices and its canvas plot
+- `js/auto-align.js` — the automatic alignment engine: complex summation over the
+  detected overlap, the delay and polarity search, the all-pass stage, the
+  per-channel settings report and its two charts
 - `js/app.js` — UI wiring
 - `manifest.webmanifest` — home-screen name, icon and full-screen launch
 - `sw.js` — offline shell (network first)
@@ -544,6 +547,69 @@ can be upgraded with measured or manufacturer data without losing what was
 typed, and the result is placed, aimed, delayed, equalised and mapped in the
 Room Designer exactly like any other loudspeaker. `SPEAKER-BUILDER.md` documents
 the behaviour, the accuracy labels and the `align.custom-speaker/1` JSON schema.
+
+## Automatic alignment
+
+`AUTO ALIGN` sits directly under the transfer chart and in the Data Modeler. It
+takes two measured curves — Capture A and Capture B, two saved captures, or the
+live measurement — and works out the delay, the polarity and, only if it earns
+its place, an all-pass chain that brings them into their best complex sum across
+their overlap.
+
+- **The overlap is found, not assumed.** The engine looks for the acoustic
+  crossover, where the two measured magnitude curves are level while both are
+  still strong, and takes the octave around it, so a main crossed over at 80 Hz is
+  aligned across 57–113 Hz rather than at 80 Hz exactly. A pair that never
+  crosses is aligned across the whole range both curves cover, and the range can
+  be set by hand instead.
+- **The maths is complex.** Every candidate rotation is applied to the second
+  curve's phase, the two are added as complex pressures, and the result is
+  measured against what the same two signals would give uncorrelated — so a gain
+  change cannot pass itself off as alignment, and a null reads as a null. The
+  phase slope across the overlap gives the arrival in one step at any resolution
+  down to 0.01 ms, and the sum is then searched around it.
+- **Nothing is invented.** A curve without measured phase, a pair with too little
+  usable overlap, coherence below 35%, a clipped or too-quiet measurement and a
+  capture taken with phase compensation on are all refused or flagged rather
+  than answered. Bins are weighted by their coherence, so an unreliable stretch
+  cannot decide the result.
+- **Quick, advanced and custom.** Quick searches delay and polarity. Advanced
+  adds up to two all-pass sections, and only when each gains at least 0.35 dB
+  over delay and polarity and is worth the latency it costs. Custom adds a gain
+  change (off by default, within your limit), the search window, the resolution
+  and the polarity choices. A gain change is reported in the warnings when it was
+  used, because a level fault is a level fault.
+- **Physically realizable.** A delay is never recommended as a negative number:
+  when the target arrives later, the same rotation is reported as a positive
+  delay on the reference, and the per-channel figures are shown for both.
+- **Before and after, side by side.** Two charts draw the main and the sub as
+  measured, the pair summed as it arrives now and the sum the alignment
+  predicts, with a phase pane showing the correction applied to the target and
+  the phase of the predicted sum. Every trace can be toggled, the original
+  captures are never replaced, and the charts are a prediction rather than a
+  measurement.
+- **Apply, copy, verify, undo.** `Apply to model` writes the two curves into the
+  Data Modeler as sources and the recommendation onto the target as real delay,
+  polarity and biquads, so its predicted sum changes at once and its own undo
+  takes it back. `Copy DSP settings` puts the per-channel settings, the overlap,
+  the resolution and the predicted improvement on the clipboard, naming what to
+  enter on which loudspeaker. `Verify alignment` compares a fresh measurement of
+  both loudspeakers running against the prediction, names the delay or the level
+  the difference comes from, and offers a recalculation that trims the delay by
+  what was measured.
+- **Several seats at once.** `Multi-microphone` finds one delay and one polarity
+  that serve several measured positions, weighted, and says plainly that it is a
+  compromise across the seats rather than a perfect result at any one of them.
+  It runs in the Data Modeler, which holds the positions; the browser sheet says
+  so instead of pretending. Aligning more than two loudspeakers is a series of
+  pair alignments, and each one is reported on its own.
+
+`tests/auto-align.mjs` is the numerical evidence: known arrivals, a known
+polarity inversion, a known second-order all-pass, a designed Linkwitz-Riley
+crossover pair, a frequency-dependent phase difference, noisy data, low
+coherence, several positions and a verification, each with its own expected
+answer. Everything it checks is synthetic — a pass there is evidence about the
+maths, not about a room.
 
 ## Room Designer and acoustic prediction
 

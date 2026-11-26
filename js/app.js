@@ -81,6 +81,18 @@ import { loadPresets, persistPresets, newPreset, uniqueCopyName, PRESET_LIMIT } 
 import { chartImageBlob, reportPdfBlob, shareOrDownload } from './sharing.js';
 import { appearance } from './graph-appearance.js';
 import { buildSumPreview, bestOverlap, drawSumChart } from './sum-preview.js';
+import {
+  ALIGN_LEVELS,
+  ALIGN_MODES,
+  alignTrace,
+  autoAlign,
+  drawAlignMagnitude,
+  drawAlignPhase,
+  dspSettingsText,
+  recalculateAlignment,
+  traceFromAnalyser,
+  verifyAlignment,
+} from './auto-align.js';
 import { parseMeasurementCsv } from './measurement-import.js';
 import { EQ_SET_LIMIT, loadEqSets, persistEqSets, newEqSet } from './eq-sets.js';
 import {
@@ -922,7 +934,7 @@ function updateSheetLock() {
     !$('meterSheet').hidden || !$('spectrogramSheet').hidden ||
     !$('groupSheet').hidden || !$('bandSheet').hidden || !$('presetsSheet').hidden ||
     !$('eqSheet').hidden || !$('targetSheet').hidden || !$('calSheet').hidden ||
-    !$('sumSheet').hidden || !$('levelLogSheet').hidden ||
+    !$('sumSheet').hidden || !$('autoAlignSheet').hidden || !$('levelLogSheet').hidden ||
     !$('rtaSheet').hidden || !$('distortionSheet').hidden || !$('guideSheet').hidden ||
     !$('speakerSheet').hidden || !$('subArraySheet').hidden ||
     !$('roomModesSheet').hidden || !$('sessionLogSheet').hidden;
@@ -7372,6 +7384,507 @@ $('btnEQDesigner').addEventListener('click', fillEqMatchCurves);
 if ($('calFile')) $('calFile').addEventListener('change', () => noteAfter(null, 'calibration', 'Microphone calibration'));
 if ($('selTarget')) $('selTarget').addEventListener('change', () => noteAfter(null, 'target', 'Target curve'));
 
+/* ---------- automatic alignment ---------- */
+
+/*
+ * One press turns the two measured curves into a recommended delay, polarity and
+ * any all-pass, and the charts show the pair summed before and after. Nothing
+ * here changes the measurement, the gate or the audio path: the only thing it
+ * writes is the model, through the Data Modeler, and that is undoable.
+ */
+
+const autoAlignView = { main: true, sub: true, beforeSum: true, afterSum: true, phaseMode: 'wrapped' };
+const autoAlignState = { result: null, applied: null, verification: null };
+
+function autoAlignSigned(value) {
+  const number = Number(value) || 0;
+  return (number >= 0 ? '+' : '') + number.toFixed(1);
+}
+
+/** The curves an operator can align: only those that carry measured phase. */
+function autoAlignTraceItems() {
+  const items = [];
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const trace = heldSnapshot(letter);
+    if (trace && trace.phaseDeg) items.push({ value: 'held:' + letter, label: 'Capture ' + letter });
+  }
+  state.saved.slice(0, 60).forEach((entry) => {
+    if (!Array.isArray(entry.curve) || entry.curve.length < 2) return;
+    if (!Array.isArray(entry.phase)) return;
+    items.push({ value: 'saved:' + entry.id, label: entry.name });
+  });
+  if (state.results && state.results.phaseDeg) items.push({ value: 'live', label: 'Live measurement' });
+  return items;
+}
+
+function renderAutoAlignSelects() {
+  const items = autoAlignTraceItems();
+  for (const id of ['selAaReference', 'selAaTarget']) {
+    const select = $(id);
+    if (!select) continue;
+    const previous = select.value;
+    select.replaceChildren();
+    if (!items.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'no curve with phase';
+      select.appendChild(option);
+      continue;
+    }
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = item.value;
+      option.textContent = item.label;
+      select.appendChild(option);
+    }
+    if (items.some((item) => item.value === previous)) select.value = previous;
+    else select.value = items[0].value;
+  }
+
+  const reference = $('selAaReference');
+  const target = $('selAaTarget');
+  if (reference && target && reference.value === target.value && items.length > 1) {
+    const other = items.find((item) => item.value !== reference.value);
+    if (other) target.value = other.value;
+  }
+}
+
+function autoAlignTraceFor(value) {
+  const text = String(value || '');
+  if (!text) return null;
+  const cut = text.indexOf(':');
+  const kind = cut < 0 ? text : text.slice(0, cut);
+  const id = cut < 0 ? '' : text.slice(cut + 1);
+
+  if (kind === 'held') {
+    const trace = heldSnapshot(id);
+    if (!trace || !trace.phaseDeg) return null;
+    return alignTrace({
+      magDb: trace.magDb,
+      phaseDeg: trace.phaseDeg,
+      coh: trace.coh,
+      fftSize: trace.fftSize,
+      sampleRate: trace.sampleRate,
+      label: 'Capture ' + id,
+      phaseCompensated: !!trace.phaseCompensated,
+    });
+  }
+  if (kind === 'saved') {
+    const entry = state.saved.find((item) => item.id === id);
+    if (!entry) return null;
+    return alignTrace({ ...entry, label: entry.name });
+  }
+  if (kind === 'live' && state.results) {
+    const trace = traceFromAnalyser(state.results, 'Live measurement');
+    if (trace) trace.phaseCompensated = !!state.compensate;
+    return trace;
+  }
+  return null;
+}
+
+/** What the engine is given: the operator's limits and the measurement's quality. */
+function autoAlignOptions() {
+  const level = $('selAaLevel').value;
+  const mode = $('selAaMode').value;
+  const channelLevel = engine && !state.demo ? engine.channelLevel[state.micChannel] || 0 : 0;
+  const inputDb = channelLevel > 0 ? 20 * Math.log10(channelLevel) : null;
+  const snrDb = inputDb !== null && Number.isFinite(state.noiseFloorDb)
+    ? inputDb - state.noiseFloorDb
+    : undefined;
+  const clipped = !state.demo && state.running &&
+    (engine.channelClippedUntil[state.micChannel] || 0) > Date.now();
+  const arrival = mode === 'mainDelay' || mode === 'mainFill'
+    ? Number($('numAaArrival').value) || 0
+    : 0;
+
+  return {
+    level,
+    mode,
+    range: $('selAaRange').value === 'manual' ? 'manual' : 'auto',
+    minHz: Number($('numAaLow').value) || 40,
+    maxHz: Number($('numAaHigh').value) || 160,
+    resolutionMs: Number($('selAaResolution').value) || 0.01,
+    maxDelayMs: Number($('numAaMaxDelay').value) || 10,
+    maxAllPass: Number($('numAaMaxAllPass').value) || 2,
+    allowGain: level === 'custom' && $('chkAaGain').checked,
+    maxGainDb: Number($('numAaMaxGain').value) || 3,
+    polarity: $('selAaPolarity').value,
+    arrivalOffsetMs: arrival,
+    snrDb,
+    clipped,
+  };
+}
+
+function setAutoAlignMessage(message, bad) {
+  const line = $('aaMessage');
+  if (!line) return;
+  line.textContent = message || '';
+  line.hidden = !message;
+  line.classList.toggle('clip-warning', !!bad);
+}
+
+function openAutoAlign() {
+  renderAutoAlignSelects();
+  autoAlignState.verification = null;
+  const note = $('aaVerifyNote');
+  if (note) note.hidden = true;
+  const recalc = $('btnAaRecalculate');
+  if (recalc) recalc.hidden = true;
+  $('autoAlignSheet').hidden = false;
+  updateSheetLock();
+  renderAutoAlignResult();
+}
+
+function closeAutoAlign() {
+  closeSheet('autoAlignSheet');
+}
+
+function drawAutoAlignCharts() {
+  drawAlignMagnitude($('aaMagChart'), autoAlignState.result, autoAlignView);
+  drawAlignPhase($('aaPhaseChart'), autoAlignState.result, autoAlignView);
+}
+
+function autoAlignRow(holder, key, value, strong) {
+  const row = document.createElement('div');
+  row.className = 'aa-row' + (strong ? ' strong' : '');
+  const label = document.createElement('span');
+  label.className = 'aa-key';
+  label.textContent = key;
+  const figure = document.createElement('span');
+  figure.className = 'aa-value';
+  figure.textContent = value;
+  row.append(label, figure);
+  holder.appendChild(row);
+}
+
+function renderAutoAlignResult() {
+  const holder = $('aaResult');
+  if (!holder) return;
+  holder.replaceChildren();
+
+  const result = autoAlignState.result;
+  const card = $('aaChartCard');
+  const copy = $('btnAaCopy');
+  const applyModel = $('btnAaApplyModel');
+  const undo = $('btnAaUndo');
+  const subtitle = $('aaSubtitle');
+  if (undo) undo.disabled = !autoAlignState.applied;
+
+  if (!result) {
+    if (card) card.hidden = true;
+    if (copy) copy.disabled = true;
+    if (applyModel) applyModel.disabled = true;
+    if (subtitle) subtitle.textContent = 'complex sum of two measured curves · prediction only';
+    const empty = document.createElement('p');
+    empty.className = 'aa-note';
+    empty.textContent = 'Press AUTO ALIGN to predict the alignment of the two curves.';
+    holder.appendChild(empty);
+    drawAutoAlignCharts();
+    return;
+  }
+
+  const mode = ALIGN_MODES.find((entry) => entry.id === result.mode);
+  const targetName = (result.target && result.target.label) || 'Target';
+  const referenceName = (result.reference && result.reference.label) || 'Reference';
+
+  autoAlignRow(holder, 'Delay', result.delay.ms >= 0.005
+    ? 'Add ' + result.delay.ms.toFixed(2) + ' ms to ' +
+      (result.applyTo === 'reference' ? referenceName : targetName)
+    : 'Both channels already arrive together', true);
+  autoAlignRow(holder, 'Polarity', targetName + ' ' + result.polarity);
+  autoAlignRow(holder, 'All-pass', result.allPass.length
+    ? result.allPass.map((entry) => (entry.order === 1 ? 'first' : 'second') + ' order at ' +
+      entry.frequency.toFixed(0) + ' Hz' +
+      (entry.order === 1 ? '' : ', Q ' + entry.q.toFixed(2))).join(' · ')
+    : 'none');
+  autoAlignRow(holder, 'Gain', result.gainDb
+    ? autoAlignSigned(result.gainDb) + ' dB on ' + targetName
+    : 'none');
+  autoAlignRow(holder, 'Overlap', result.band.minHz.toFixed(0) + ' – ' +
+    result.band.maxHz.toFixed(0) + ' Hz · ' + result.band.octaves.toFixed(2) + ' octaves' +
+    (result.band.detected === 'manual'
+      ? ' (set by hand)'
+      : result.band.crossingHz
+        ? ' (crossover ' + result.band.crossingHz.toFixed(0) + ' Hz)'
+        : ' (the whole overlap)'));
+  autoAlignRow(holder, 'Resolution', result.delay.resolutionMs.toFixed(2) + ' ms' +
+    (Math.abs(result.delay.lostMs) > 1e-9
+      ? ' · ' + autoAlignSigned(result.delay.lostMs) + ' ms from the exact answer'
+      : ' · on the grid'));
+  autoAlignRow(holder, 'Phase deviation', (Number.isFinite(result.before.phaseErrorDeg)
+    ? result.before.phaseErrorDeg.toFixed(0) + '° before · ' : 'no phase before · ') +
+    (Number.isFinite(result.after.phaseErrorDeg) ? result.after.phaseErrorDeg.toFixed(0) + '° after' : '—'));
+  autoAlignRow(holder, 'Predicted sum', autoAlignSigned(result.after.meanDb) + ' dB over uncorrelated · ' +
+    autoAlignSigned(result.improvement.summationDb) + ' dB better than now');
+  autoAlignRow(holder, 'Latency added', result.latency.maxAddedMs > 0
+    ? 'up to ' + result.latency.maxAddedMs.toFixed(2) + ' ms'
+    : 'none');
+  autoAlignRow(holder, 'Confidence', result.confidence.level + ' — ' + result.confidence.note);
+
+  for (const warning of result.warnings) {
+    const note = document.createElement('p');
+    note.className = 'aa-note';
+    note.textContent = warning;
+    holder.appendChild(note);
+  }
+
+  if (card) card.hidden = false;
+  if (subtitle) {
+    subtitle.textContent = (mode ? mode.label.toLowerCase() : 'pair') + ' · ' +
+      (ALIGN_LEVELS.find((entry) => entry.id === result.level) || { label: result.level }).label.toLowerCase() +
+      ' · prediction only';
+  }
+  const chartDetail = $('aaChartDetail');
+  if (chartDetail) {
+    chartDetail.textContent = result.polarity === 'inverted'
+      ? 'B inverted · ' + result.delay.ms.toFixed(2) + ' ms'
+      : result.delay.ms.toFixed(2) + ' ms';
+  }
+  const chartNote = $('aaChartNote');
+  if (chartNote) {
+    chartNote.textContent = 'The dim dashed line is the pair summed as it arrives now; the bright line is the ' +
+      'sum this alignment predicts. The phase chart shows the correction applied to ' + targetName + ' and the ' +
+      'phase of the predicted sum. Toggle any trace above.';
+  }
+  if (copy) copy.disabled = false;
+  if (applyModel) applyModel.disabled = !!autoAlignState.applied;
+  drawAutoAlignCharts();
+}
+
+function runAutoAlign() {
+  const mode = $('selAaMode').value;
+  const reference = autoAlignTraceFor($('selAaReference').value);
+  const target = autoAlignTraceFor($('selAaTarget').value);
+
+  autoAlignState.result = null;
+  autoAlignState.verification = null;
+  autoAlignState.applied = null;
+  const recalc = $('btnAaRecalculate');
+  if (recalc) recalc.hidden = true;
+  const verifyNote = $('aaVerifyNote');
+  if (verifyNote) verifyNote.hidden = true;
+
+  if (mode === 'multiMic') {
+    renderAutoAlignResult();
+    setAutoAlignMessage('Multi-microphone alignment needs a measurement at every seat, and those positions ' +
+      'live in the Data Modeler: save a measurement at each position there and press its AUTO ALIGN.', true);
+    return;
+  }
+  if (mode === 'multiple') {
+    renderAutoAlignResult();
+    setAutoAlignMessage('Several loudspeakers are aligned one target at a time: choose one pair here, or use ' +
+      'the Data Modeler’s AUTO ALIGN across its own sources.', true);
+    return;
+  }
+  if (!reference || !target) {
+    renderAutoAlignResult();
+    setAutoAlignMessage('Both curves need measured phase. Hold Capture A and Capture B, or choose two saved ' +
+      'captures stored with phase; a magnitude-only curve cannot be aligned in time.', true);
+    return;
+  }
+  if (reference.label === target.label && $('selAaReference').value === $('selAaTarget').value) {
+    renderAutoAlignResult();
+    setAutoAlignMessage('Choose two different loudspeakers to align.', true);
+    return;
+  }
+
+  const result = autoAlign({ reference, target, ...autoAlignOptions() });
+  autoAlignState.result = result.ok ? result : null;
+  renderAutoAlignResult();
+  if (!result.ok) {
+    setAutoAlignMessage(result.message, true);
+    setStatus(result.message, 'err');
+    return;
+  }
+  setAutoAlignMessage('', false);
+  setStatus('auto aligned: ' + result.delay.ms.toFixed(2) + ' ms on the ' + result.applyTo +
+    ' · ' + result.polarity, 'ok');
+}
+
+/** The two curves as the modeler imports them, on their own log grids. */
+function autoAlignResponse(trace) {
+  return {
+    label: trace.label,
+    frequencies: Array.from(trace.frequencies),
+    magDb: Array.from(trace.magDb),
+    phaseDeg: trace.phaseDeg ? Array.from(trace.phaseDeg) : null,
+    coherence: trace.coherence ? Array.from(trace.coherence) : null,
+    sampleRate: trace.sampleRate || 48000,
+    fftSize: trace.fftSize || 16384,
+  };
+}
+
+function applyAutoAlignToModel() {
+  const result = autoAlignState.result;
+  if (!result || !result.ok) {
+    setAutoAlignMessage('Run AUTO ALIGN before applying it.', true);
+    return;
+  }
+  const reference = autoAlignTraceFor($('selAaReference').value);
+  const target = autoAlignTraceFor($('selAaTarget').value);
+  if (!reference || !target) {
+    setAutoAlignMessage('The two curves are no longer held, so the model cannot be written.', true);
+    return;
+  }
+
+  const applied = dataModeler.applyAlignment({
+    reference: autoAlignResponse(reference),
+    target: autoAlignResponse(target),
+    labels: { reference: reference.label, target: target.label },
+    settings: {
+      delayMs: result.delay.ms,
+      applyTo: result.applyTo,
+      polarity: result.polarity,
+      gainDb: result.gainDb,
+      allPass: result.allPass,
+      arrivalOffsetMs: result.delay.arrivalOffsetMs,
+    },
+  });
+
+  if (!applied || !applied.ok) {
+    setAutoAlignMessage((applied && applied.message) || 'The model could not take the alignment.', true);
+    setStatus((applied && applied.message) || 'the model refused the alignment', 'err');
+    return;
+  }
+
+  autoAlignState.applied = { written: true };
+  const undo = $('btnAaUndo');
+  if (undo) undo.disabled = false;
+  const applyModel = $('btnAaApplyModel');
+  if (applyModel) applyModel.disabled = true;
+  setAutoAlignMessage(applied.message, false);
+  setStatus(applied.message, 'ok');
+  renderAutoAlignResult();
+}
+
+async function copyAutoAlignSettings() {
+  const result = autoAlignState.result;
+  if (!result || !result.ok) {
+    setAutoAlignMessage('Run AUTO ALIGN before copying its settings.', true);
+    return;
+  }
+  const text = dspSettingsText(result, {});
+  const copied = await copyText(text, 'aaCopyField');
+  const field = $('aaCopyField');
+  if (field) {
+    field.hidden = copied;
+    field.value = copied ? '' : text;
+  }
+  setAutoAlignMessage(copied
+    ? 'The settings are on the clipboard — paste them into your processor notes.'
+    : 'This browser will not let a page write to the clipboard; the settings are below, ready to select.', !copied);
+  setStatus(copied ? 'DSP settings copied' : 'DSP settings ready below', copied ? 'ok' : 'err');
+}
+
+function verifyAutoAlign() {
+  const result = autoAlignState.result;
+  if (!result || !result.ok) {
+    setAutoAlignMessage('Run AUTO ALIGN before verifying it.', true);
+    return;
+  }
+  if (!state.results) {
+    setAutoAlignMessage('Verification needs a new measurement with both loudspeakers running: start the ' +
+      'measurement with the pair playing, then press VERIFY ALIGNMENT.', true);
+    return;
+  }
+
+  const measured = traceFromAnalyser(state.results, 'Both loudspeakers running');
+  const verification = verifyAlignment(result, measured, {});
+  const note = $('aaVerifyNote');
+  const recalc = $('btnAaRecalculate');
+
+  if (!verification.ok) {
+    autoAlignState.verification = null;
+    if (recalc) recalc.hidden = true;
+    if (note) {
+      note.textContent = verification.message;
+      note.hidden = false;
+      note.classList.add('clip-warning');
+    }
+    setStatus(verification.message, 'err');
+    return;
+  }
+
+  autoAlignState.verification = verification;
+  if (note) {
+    note.classList.remove('clip-warning');
+    note.textContent = verification.verdict.toUpperCase() + ' — ' + verification.note +
+      ' (' + verification.deviation.rmsDb.toFixed(1) + ' dB RMS over ' + verification.bins +
+      ' bins, residual ' + verification.residualMs.toFixed(2) + ' ms)';
+    note.hidden = false;
+  }
+  if (recalc) {
+    recalc.hidden = verification.verdict === 'matches' ||
+      !(Math.abs(verification.residualMs) > 0.02);
+  }
+  setStatus('verified: ' + verification.verdict + ' against the prediction',
+    verification.verdict === 'matches' ? 'ok' : 'err');
+}
+
+function recalculateAutoAlign() {
+  const result = autoAlignState.result;
+  const verification = autoAlignState.verification;
+  if (!result || !verification) {
+    setAutoAlignMessage('Verify the alignment before recalculating it.', true);
+    return;
+  }
+  const next = recalculateAlignment(result, verification, {
+    resolutionMs: Number($('selAaResolution').value) || 0.01,
+  });
+  if (!next.ok) {
+    setAutoAlignMessage(next.message, true);
+    return;
+  }
+  autoAlignState.result = next.result;
+  autoAlignState.applied = null;
+  const recalc = $('btnAaRecalculate');
+  if (recalc) recalc.hidden = true;
+  renderAutoAlignResult();
+  const warnings = next.result.warnings || [];
+  setAutoAlignMessage(warnings[warnings.length - 1] || 'Recalculated from the verification.', false);
+  setStatus('recalculated: ' + next.result.delay.ms.toFixed(2) + ' ms on the ' + next.result.applyTo, 'ok');
+}
+
+function undoAutoAlign() {
+  if (!autoAlignState.applied) {
+    setAutoAlignMessage('Nothing has been written to the model yet.', true);
+    return;
+  }
+  const undone = dataModeler.undo();
+  autoAlignState.applied = null;
+  const undo = $('btnAaUndo');
+  if (undo) undo.disabled = true;
+  const applyModel = $('btnAaApplyModel');
+  if (applyModel) applyModel.disabled = false;
+  const ok = !!(undone && undone.ok);
+  setAutoAlignMessage(ok
+    ? undone.message
+    : (undone && undone.message) || 'The Data Modeler holds nothing to undo.', !ok);
+  setStatus(ok ? undone.message : 'nothing to undo in the model', ok ? 'ok' : 'err');
+  renderAutoAlignResult();
+}
+
+function resetAutoAlign() {
+  autoAlignState.result = null;
+  autoAlignState.applied = null;
+  autoAlignState.verification = null;
+  const note = $('aaVerifyNote');
+  if (note) {
+    note.hidden = true;
+    note.classList.remove('clip-warning');
+  }
+  const recalc = $('btnAaRecalculate');
+  if (recalc) recalc.hidden = true;
+  const field = $('aaCopyField');
+  if (field) {
+    field.value = '';
+    field.hidden = true;
+  }
+  setAutoAlignMessage('', false);
+  renderAutoAlignResult();
+  setStatus('auto alignment reset — the captures are untouched', 'ok');
+}
+
 /* ---------- sum preview ---------- */
 
 const sumPreviewState = { delayMs: 0, levelDb: 0, inverted: false };
@@ -8658,6 +9171,45 @@ $('sumReset').addEventListener('click', () => {
   renderSumPreview();
 });
 $('sumBest').addEventListener('click', findBestOverlap);
+
+/* ---------- automatic alignment ---------- */
+
+$('btnAutoAlignOpen').addEventListener('click', openAutoAlign);
+$('btnCloseAutoAlign').addEventListener('click', closeAutoAlign);
+$('btnAutoAlign').addEventListener('click', runAutoAlign);
+$('btnAaApplyModel').addEventListener('click', applyAutoAlignToModel);
+$('btnAaCopy').addEventListener('click', copyAutoAlignSettings);
+$('btnAaVerify').addEventListener('click', verifyAutoAlign);
+$('btnAaRecalculate').addEventListener('click', recalculateAutoAlign);
+$('btnAaUndo').addEventListener('click', undoAutoAlign);
+$('btnAaReset').addEventListener('click', resetAutoAlign);
+
+$('selAaRange').addEventListener('change', () => {
+  const manual = $('selAaRange').value === 'manual';
+  $('numAaLow').disabled = !manual;
+  $('numAaHigh').disabled = !manual;
+});
+$('selAaLevel').addEventListener('change', () => {
+  $('aaCustomRow').hidden = $('selAaLevel').value !== 'custom';
+});
+$('selAaMode').addEventListener('change', () => {
+  const mode = $('selAaMode').value;
+  $('numAaArrival').disabled = !(mode === 'mainDelay' || mode === 'mainFill');
+});
+$('numAaArrival').disabled = !($('selAaMode').value === 'mainDelay' ||
+  $('selAaMode').value === 'mainFill');
+
+for (const [id, key] of [['chkAaMain', 'main'], ['chkAaSub', 'sub'],
+  ['chkAaBefore', 'beforeSum'], ['chkAaAfter', 'afterSum']]) {
+  $(id).addEventListener('change', () => {
+    autoAlignView[key] = $(id).checked;
+    drawAutoAlignCharts();
+  });
+}
+$('selAaPhaseMode').addEventListener('change', () => {
+  autoAlignView.phaseMode = $('selAaPhaseMode').value;
+  drawAutoAlignCharts();
+});
 
 $('btnLevelLog').addEventListener('click', openLevelLog);
 $('btnCloseLevelLog').addEventListener('click', closeLevelLog);

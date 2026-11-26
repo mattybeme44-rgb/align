@@ -68,6 +68,7 @@ import { loadLayout, loadProject, persistLayout } from './store.js';
 import { reportPdfBlob } from '../sharing.js';
 import { createSpeakerBuilder } from './builder-ui.js';
 import { accuracyBadge, accuracyOf } from './speaker-builder.js';
+import { autoAlign, drawAlignMagnitude } from '../auto-align.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -380,13 +381,14 @@ export function createDataModeler(options = {}) {
   }
 
   function undo() {
-    if (!past.length) return;
+    if (!past.length) return { ok: false, message: 'The Data Modeler holds nothing to undo.' };
     const current = JSON.stringify(project);
     project = normalizeProject(JSON.parse(past.pop()));
     future.push(current);
     opts.persist ? opts.persist(project) : null;
     renderAll();
     say('Undone.', 'ok');
+    return { ok: true, message: 'The last change in the Data Modeler was undone.' };
   }
 
   function redo() {
@@ -1358,6 +1360,281 @@ export function createDataModeler(options = {}) {
   }
 
   /* ---------- the optimizer ---------- */
+
+  /* ---------- automatic alignment ---------- */
+
+  /*
+   * One press aligns the chosen target source to the reference source across
+   * their overlap. The engine in ../auto-align.js reads the two modelled curves
+   * as complex transfer functions, and what it recommends is written into the
+   * target as real delay, polarity and all-pass — never as a suggestion that
+   * the chart only pretends to follow.
+   */
+
+  const autoView = { main: true, sub: true, beforeSum: true, afterSum: true, phaseMode: 'wrapped' };
+  let autoResult = null;
+
+  function withLabel(response) {
+    if (!response) return null;
+    return { ...response, label: response.label || response.name || 'Source' };
+  }
+
+  function setAutoMessage(message, bad) {
+    const line = $('dmAutoMessage');
+    if (!line) return;
+    line.textContent = message || '';
+    line.hidden = !message;
+    line.classList.toggle('clip-warning', !!bad);
+  }
+
+  function autoOptionsFor() {
+    const level = $('dmAutoLevel') ? $('dmAutoLevel').value : 'quick';
+    const from = Number($('dmOptDelayMin') && $('dmOptDelayMin').value) || -20;
+    const to = Number($('dmOptDelayMax') && $('dmOptDelayMax').value) || 20;
+    return {
+      level,
+      range: 'manual',
+      minHz: Number($('dmOptBandLow') && $('dmOptBandLow').value) || 1000,
+      maxHz: Number($('dmOptBandHigh') && $('dmOptBandHigh').value) || 2000,
+      resolutionMs: Number($('dmOptDelayStep') && $('dmOptDelayStep').value) || 0.05,
+      maxDelayMs: Math.max(Math.abs(from), Math.abs(to)),
+      maxAllPass: 2,
+      allowGain: level === 'custom',
+      maxGainDb: 3,
+      polarity: $('dmOptPolarity') ? $('dmOptPolarity').value : 'auto',
+    };
+  }
+
+  function runAutoAlign() {
+    const reference = withLabel(sourceResponseById($('dmOptReference') ? $('dmOptReference').value : ''));
+    const target = withLabel(sourceResponseById($('dmOptTarget') ? $('dmOptTarget').value : ''));
+    autoResult = null;
+    renderAutoResult();
+
+    if (!reference || !target) {
+      setAutoMessage('Choose two sources that both carry a modelled response.', true);
+      return;
+    }
+    if (reference.id === target.id) {
+      setAutoMessage('A source cannot be aligned to itself — choose a different target.', true);
+      return;
+    }
+
+    const result = autoAlign({
+      reference,
+      target,
+      mode: 'mainSub',
+      sampleRate: Number(target.sampleRate) || Number(reference.sampleRate) || 48000,
+      ...autoOptionsFor(),
+    });
+    if (!result.ok) {
+      setAutoMessage(result.message, true);
+      renderAutoResult();
+      return;
+    }
+
+    autoResult = result;
+    autoResult.referenceId = reference.id;
+    autoResult.targetId = target.id;
+    renderAutoResult();
+    const apply = $('btnDmAutoApply');
+    if (apply) apply.disabled = false;
+    setAutoMessage('Aligned ' + target.label + ' to ' + reference.label + ' over ' +
+      formatRangeText(result.band.minHz, result.band.maxHz) + ': ' + formatDelay(result.delay.ms) +
+      ' on the ' + result.applyTo + ', ' + result.polarity + '.', false);
+  }
+
+  function renderAutoResult() {
+    const holder = $('dmAutoResult');
+    if (!holder) return;
+    holder.replaceChildren();
+
+    if (!autoResult) {
+      drawAlignMagnitude($('dmAutoChart'), null, autoView);
+      holder.appendChild(el('p', 'dm-empty',
+        'AUTO ALIGN predicts the delay, the polarity and any all-pass between the two sources above.'));
+      const apply = $('btnDmAutoApply');
+      if (apply) apply.disabled = true;
+      return;
+    }
+
+    const target = withLabel(sourceResponseById(autoResult.targetId));
+    const name = target ? target.label : 'the target';
+    const rows = [
+      ['Delay', formatDelay(autoResult.delay.ms) + ' on the ' + autoResult.applyTo + ' · ' +
+        Math.round(autoResult.delay.pathMm) + ' mm of path'],
+      ['Polarity', name + ' ' + autoResult.polarity],
+      ['All-pass', autoResult.allPass.length
+        ? autoResult.allPass.map((entry) => (entry.order === 1 ? 'first' : 'second') + ' order at ' +
+          formatFrequency(entry.frequency) +
+          (entry.order === 1 ? '' : ', Q ' + entry.q.toFixed(2))).join(' · ')
+        : 'none'],
+      ['Gain', autoResult.gainDb ? signed(autoResult.gainDb) + ' dB on ' + name : 'none'],
+      ['Resolution', autoResult.delay.resolutionMs.toFixed(2) + ' ms'],
+      ['Phase deviation', (Number.isFinite(autoResult.before.phaseErrorDeg)
+        ? autoResult.before.phaseErrorDeg.toFixed(0) + '° before · ' : 'no phase before · ') +
+        (Number.isFinite(autoResult.after.phaseErrorDeg)
+          ? autoResult.after.phaseErrorDeg.toFixed(0) + '° after' : '—')],
+      ['Predicted summation', signed(autoResult.after.meanDb) + ' dB · ' +
+        signed(autoResult.improvement.summationDb) + ' dB better than now'],
+      ['Latency added', autoResult.latency.maxAddedMs > 0
+        ? 'up to ' + autoResult.latency.maxAddedMs.toFixed(2) + ' ms' : 'none'],
+      ['Confidence', autoResult.confidence.level + ' — ' + autoResult.confidence.note],
+    ];
+    for (const [key, value] of rows) {
+      const row = el('div', 'dm-opt-row');
+      row.appendChild(el('span', 'dm-opt-key', key));
+      row.appendChild(el('span', 'dm-opt-value', value));
+      holder.appendChild(row);
+    }
+    for (const warning of autoResult.warnings) {
+      holder.appendChild(el('p', 'dm-sub', warning));
+    }
+    drawAlignMagnitude($('dmAutoChart'), autoResult, autoView);
+  }
+
+  function applyAutoResult() {
+    if (!autoResult) {
+      setAutoMessage('Run AUTO ALIGN before applying it.', true);
+      return;
+    }
+    const target = project.sources.find((source) => source.id === autoResult.targetId);
+    const reference = project.sources.find((source) => source.id === autoResult.referenceId);
+    if (!target || !reference) {
+      setAutoMessage('The sources are no longer in the project.', true);
+      return;
+    }
+
+    const result = autoResult;
+    const targetDelay = result.applyTo === 'target' ? result.delay.targetMs : 0;
+    const referenceDelay = result.applyTo === 'reference' ? result.delay.referenceMs : 0;
+    const polarityBox = $('chkDmApplyPolarity');
+    const ok = commit(() => {
+      if (targetDelay) {
+        target.delayMs = Math.min(100, Math.max(-50, Number(target.delayMs) + targetDelay));
+      }
+      if (referenceDelay) {
+        reference.delayMs = Math.min(100, Math.max(-50, Number(reference.delayMs) + referenceDelay));
+      }
+      if (!polarityBox || polarityBox.checked) {
+        target.polarity = result.polarity === 'inverted' ? 'inverted' : 'normal';
+      }
+      if (result.gainDb) {
+        target.gainDb = Math.min(30, Math.max(-30, Number(target.gainDb) + result.gainDb));
+      }
+      for (const entry of result.allPass) {
+        const filter = newFilter(entry.order === 1 ? 'allPass1' : 'allPass2', entry.frequency);
+        filter.q = entry.order === 1 ? 0.7071 : Math.min(10, Math.max(0.3, Number(entry.q) || 0.7071));
+        filter.gainDb = 0;
+        target.filters = (target.filters || []).concat([filter]);
+      }
+    }, 'Applied the automatic alignment to ' + target.name + ' — ' + formatDelay(result.delay.ms) +
+      ', ' + result.polarity + (result.allPass.length ? ', ' + result.allPass.length + ' all-pass' : '') +
+      '. Check it against a measurement.');
+
+    if (!ok) return;
+    autoResult = null;
+    renderAutoResult();
+    const apply = $('btnDmAutoApply');
+    if (apply) apply.disabled = true;
+    setAutoMessage('Written into the model; the Undo button puts it back. Nothing was sent to a processor.', false);
+  }
+
+  /**
+   * Write an alignment sent from the measurement screen: the two curves become
+   * datasets and sources, and the recommended settings are written onto the
+   * target source, so the model's own predicted sum changes at once. It is a
+   * normal edit of the project, so the modeler's undo takes it back.
+   */
+  function applyAlignment(payload) {
+    if (!payload || !payload.reference || !payload.target) {
+      return { ok: false, message: 'An alignment needs two measured curves to write into the model.' };
+    }
+    const settings = payload.settings || {};
+    const labels = payload.labels || {};
+    const built = [];
+
+    for (const key of ['reference', 'target']) {
+      const response = payload[key];
+      if (!response || !response.magDb) {
+        return { ok: false, message: 'One of the curves carries nothing to model.' };
+      }
+      const dataset = buildDataset(response, {
+        label: labels[key] || (key === 'reference' ? 'Reference' : 'Target'),
+        provenance: 'measured',
+        importedFrom: 'Automatic alignment',
+        sampleRate: response.sampleRate,
+        fftSize: response.fftSize,
+        delayMs: 0,
+        conditions: { phaseCompensated: false },
+        note: 'Sent by the automatic alignment from the measurement screen.',
+      });
+      if (!dataset.ok) return { ok: false, message: dataset.message };
+      built.push(dataset.dataset);
+    }
+
+    if (!active) open();
+    let written = null;
+    const ok = commit(() => {
+      const model = newModel({
+        name: 'Automatic alignment · ' + (labels.target || 'target'),
+        type: 'Custom',
+        provenance: 'measured',
+        notes: 'Written by the automatic alignment; every change is undoable.',
+      });
+      model.datasets = built.slice();
+      project.models.unshift(model);
+
+      const sources = built.map((dataset, index) => normalizeSource({
+        modelId: model.id,
+        datasetId: dataset.id,
+        name: labels[index === 0 ? 'reference' : 'target'] ||
+          (index === 0 ? 'Reference' : 'Target'),
+        reference: index === 0,
+      }));
+      project.sources.push(...sources);
+
+      const targetSource = sources[1];
+      const referenceSource = sources[0];
+      const delayMs = Number(settings.delayMs) || 0;
+      if (settings.applyTo === 'reference') {
+        referenceSource.delayMs = Math.min(100,
+          Math.max(-50, Number(referenceSource.delayMs) + delayMs));
+      } else {
+        targetSource.delayMs = Math.min(100, Math.max(-50, Number(targetSource.delayMs) + delayMs));
+      }
+      if (settings.polarity === 'inverted') targetSource.polarity = 'inverted';
+      const gainDb = Number(settings.gainDb) || 0;
+      if (gainDb) {
+        targetSource.gainDb = Math.min(30, Math.max(-30, Number(targetSource.gainDb) + gainDb));
+      }
+      for (const entry of settings.allPass || []) {
+        const filter = newFilter(entry.order === 1 ? 'allPass1' : 'allPass2',
+          Number(entry.frequency) || 1000);
+        filter.q = entry.order === 1
+          ? 0.7071
+          : Math.min(10, Math.max(0.3, Number(entry.q) || 0.7071));
+        filter.gainDb = 0;
+        targetSource.filters = (targetSource.filters || []).concat([filter]);
+      }
+      written = targetSource.id;
+    }, 'Automatic alignment written into the model: ' + formatDelay(Number(settings.delayMs) || 0) +
+      ' on the ' + (settings.applyTo === 'reference' ? 'reference' : 'target') + '.');
+
+    if (!ok) return { ok: false, message: 'The model project could not be saved.' };
+    renderAll();
+    return {
+      ok: true,
+      message: 'Written into the Data Modeler: ' + formatDelay(Number(settings.delayMs) || 0) + ' on the ' +
+        (settings.applyTo === 'reference'
+          ? (labels.reference || 'the reference')
+          : (labels.target || 'the target')) + ', ' + (settings.polarity || 'normal') +
+        (settings.allPass && settings.allPass.length
+          ? ', ' + settings.allPass.length + ' all-pass'
+          : '') + '. Its own chart shows the predicted sum, and Undo takes it back.',
+      targetId: written,
+    };
+  }
 
   function renderOptimizerSelects() {
     const sources = project.sources;
@@ -3554,6 +3831,7 @@ export function createDataModeler(options = {}) {
     renderSummation();
     renderPins();
     renderOptimizerResult();
+    renderAutoResult();
     renderMultiPositionsResult();
     drawSweep();
     refreshHistory();
@@ -4397,6 +4675,12 @@ export function createDataModeler(options = {}) {
 
     $('btnDmRunOptimizer')?.addEventListener('click', runOptimizer);
     $('btnDmApplyOptimizer')?.addEventListener('click', applyOptimizer);
+    $('btnDmAutoAlign')?.addEventListener('click', runAutoAlign);
+    $('btnDmAutoApply')?.addEventListener('click', applyAutoResult);
+    $('btnDmAutoUndo')?.addEventListener('click', () => {
+      const undone = undo();
+      setAutoMessage(undone.message, !undone.ok);
+    });
 
     $('btnDmCompare')?.addEventListener('click', runComparison);
     $('btnDmClearCompare')?.addEventListener('click', () => {
@@ -4600,6 +4884,12 @@ export function createDataModeler(options = {}) {
     sendCapture: (entry) => sendCapture(entry),
     optimize: () => runOptimizer(),
     applyOptimization: () => applyOptimizer(),
+    /** The one-press alignment of the chosen target to the chosen reference. */
+    autoAlign: () => runAutoAlign(),
+    applyAutoAlign: () => applyAutoResult(),
+    /** An alignment sent from the measurement screen, written as a real edit. */
+    applyAlignment: (payload) => applyAlignment(payload),
+    undo: () => undo(),
     compareMeasurement: () => runComparison(),
     optimizePositions: () => runPositionsOptimizer(),
     comparePositions: () => runPositionsCompare(),

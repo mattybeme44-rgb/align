@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0e1113" />
-<meta name="align-build" content="2026-11-20-01" />
+<meta name="align-build" content="2026-11-23-02" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -449,6 +449,11 @@
 
     <div class="chart-wrap tf">
       <canvas id="tfChart"></canvas>
+    </div>
+
+    <div class="auto-align-bar" id="autoAlignBar">
+      <button id="btnAutoAlignOpen" class="btn btn-power auto-align-power" type="button">AUTO ALIGN</button>
+      <span class="auto-align-note" id="autoAlignBarNote">Hold the main and the sub, or pick two saved captures, then press it.</span>
     </div>
 
     <div class="plot-foot">
@@ -1448,6 +1453,31 @@
           </div>
         </div>
         <div class="dm-card-body">
+          <div class="dm-auto">
+            <div class="row btns">
+              <button id="btnDmAutoAlign" class="btn btn-power auto-align-power" type="button">AUTO ALIGN</button>
+              <select id="dmAutoLevel" class="dm-select" aria-label="Automatic alignment level">
+                <option value="quick" selected>Quick · delay and polarity</option>
+                <option value="advanced">Advanced · with all-pass</option>
+                <option value="custom">Custom · with gain</option>
+              </select>
+            </div>
+            <p class="source-hint" id="dmAutoMessage" hidden></p>
+            <div id="dmAutoResult" class="dm-opt-result"></div>
+            <div class="chart-wrap sum">
+              <canvas id="dmAutoChart"
+                aria-label="The two modelled sources, their sum before the automatic alignment and the sum it predicts"></canvas>
+            </div>
+            <div class="row btns">
+              <button id="btnDmAutoApply" class="btn btn-power" type="button" disabled>Apply to the target source</button>
+              <button id="btnDmAutoUndo" class="btn" type="button">Undo</button>
+            </div>
+            <p class="source-hint">
+              Used with the reference, the target and the band above. It aligns the two modelled curves across their
+              overlap and writes the delay, the polarity and any all-pass into the target source as real filters, so the
+              predicted sum on the chart changes at once. Nothing is sent to a processor.
+            </p>
+          </div>
           <div class="dm-grid">
             <label>Reference<select id="dmOptReference" class="dm-select"></select></label>
             <label>Target<select id="dmOptTarget" class="dm-select"></select></label>
@@ -2561,6 +2591,145 @@
     Read from Capture A and Capture B as they were taken. Every finding says what the data shows, the
     evidence behind it, what a change would predict, how far the measurement supports it and the
     measurement that would verify it. Nothing is proposed that the two captures cannot support.
+  </p>
+</section>
+
+<section id="autoAlignSheet" class="sheet auto-align-sheet" hidden>
+  <div class="sheet-head">
+    <div>
+      <h2 class="sheet-title">Automatic alignment</h2>
+      <p class="sheet-sub" id="aaSubtitle">complex sum of two measured curves · prediction only</p>
+    </div>
+    <button id="btnCloseAutoAlign" class="btn" type="button">Done</button>
+  </div>
+
+  <div class="row">
+    <label for="selAaMode">Aligning</label>
+    <select id="selAaMode" class="dm-select">
+      <option value="mainSub" selected>Main to subwoofer</option>
+      <option value="subSub">Subwoofer to subwoofer</option>
+      <option value="mainMain">Main to main</option>
+      <option value="mainDelay">Main to delay speaker</option>
+      <option value="mainFill">Main to fill speaker</option>
+      <option value="multiple">Multiple loudspeakers</option>
+      <option value="multiMic">Multi-microphone</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="selAaLevel">Optimisation</label>
+    <select id="selAaLevel" class="dm-select">
+      <option value="quick" selected>Quick align · delay and polarity</option>
+      <option value="advanced">Advanced align · with all-pass</option>
+      <option value="custom">Custom align · your own limits</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="selAaReference">Reference</label>
+    <select id="selAaReference" class="dm-select"></select>
+    <label for="selAaTarget">Target</label>
+    <select id="selAaTarget" class="dm-select"></select>
+  </div>
+  <div class="row">
+    <label for="selAaRange">Range</label>
+    <select id="selAaRange" class="dm-select">
+      <option value="auto" selected>Detect the overlap</option>
+      <option value="manual">Set it myself</option>
+    </select>
+    <label for="numAaLow">From Hz</label>
+    <input id="numAaLow" type="number" step="1" min="20" max="20000" value="40" disabled />
+    <label for="numAaHigh">To Hz</label>
+    <input id="numAaHigh" type="number" step="1" min="20" max="20000" value="160" disabled />
+  </div>
+
+  <div class="row">
+    <label for="numAaMaxDelay">Max delay ms</label>
+    <input id="numAaMaxDelay" type="number" step="0.5" min="0.5" max="40" value="10" />
+    <label for="selAaResolution">Resolution ms</label>
+    <select id="selAaResolution" class="dm-select">
+      <option value="0.01" selected>0.01 ms</option>
+      <option value="0.02">0.02 ms</option>
+      <option value="0.05">0.05 ms</option>
+      <option value="0.1">0.1 ms</option>
+      <option value="0.125">0.125 ms</option>
+      <option value="0.25">0.25 ms</option>
+      <option value="0.5">0.5 ms</option>
+    </select>
+  </div>
+
+  <div id="aaCustomRow" hidden>
+    <div class="row">
+      <label for="numAaMaxAllPass">Max all-pass</label>
+      <input id="numAaMaxAllPass" type="number" step="1" min="0" max="4" value="2" />
+      <label for="selAaPolarity">Polarity</label>
+      <select id="selAaPolarity" class="dm-select">
+        <option value="auto" selected>Try both</option>
+        <option value="normal">Normal only</option>
+        <option value="inverted">Inverted only</option>
+      </select>
+    </div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="chkAaGain" /> Allow a gain change</label>
+      <label for="numAaMaxGain">Max gain dB</label>
+      <input id="numAaMaxGain" type="number" step="0.5" min="0.5" max="12" value="3" />
+    </div>
+  </div>
+  <div class="row">
+    <label for="numAaArrival">Arrival offset ms</label>
+    <input id="numAaArrival" type="number" step="0.1" min="-20" max="50" value="0" />
+    <span class="hint">later than the reference, for a delay or fill speaker</span>
+  </div>
+
+  <div class="row btns">
+    <button id="btnAutoAlign" class="btn btn-power auto-align-power" type="button">AUTO ALIGN</button>
+  </div>
+  <p class="source-hint" id="aaMessage" hidden></p>
+  <div id="aaResult" class="aa-result"></div>
+
+  <div class="card" id="aaChartCard" hidden>
+    <div class="card-head">
+      <h2>Before and after</h2>
+      <span class="card-detail" id="aaChartDetail">prediction</span>
+    </div>
+    <div class="chart-wrap aa">
+      <canvas id="aaMagChart"
+        aria-label="The two loudspeakers, their sum before the alignment and the sum it predicts"></canvas>
+    </div>
+    <div class="chart-wrap aa">
+      <canvas id="aaPhaseChart"
+        aria-label="The measured phase, the corrected phase and the phase of the corrected sum"></canvas>
+    </div>
+    <div class="row toggles aa-legend">
+      <label class="toggle-pill ghost"><input type="checkbox" id="chkAaMain" checked /><i></i>Main</label>
+      <label class="toggle-pill ghostB"><input type="checkbox" id="chkAaSub" checked /><i></i>Sub</label>
+      <label class="toggle-pill"><input type="checkbox" id="chkAaBefore" checked /><i></i>Sum before</label>
+      <label class="toggle-pill accent"><input type="checkbox" id="chkAaAfter" checked /><i></i>Sum after</label>
+      <span class="aa-phase-mode">Phase
+        <select id="selAaPhaseMode" class="dm-select" aria-label="Phase display: wrapped or unwrapped">
+          <option value="wrapped" selected>Wrapped</option>
+          <option value="unwrapped">Unwrapped</option>
+        </select>
+      </span>
+    </div>
+    <p class="source-hint" id="aaChartNote"></p>
+  </div>
+
+  <div class="row btns">
+    <button id="btnAaApplyModel" class="btn btn-power" type="button" disabled>Apply to model</button>
+    <button id="btnAaCopy" class="btn" type="button" disabled>Copy DSP settings</button>
+    <button id="btnAaVerify" class="btn" type="button">Verify alignment</button>
+  </div>
+  <div class="row btns">
+    <button id="btnAaRecalculate" class="btn" type="button" hidden>Recalculate with what was measured</button>
+    <button id="btnAaUndo" class="btn" type="button" disabled>Undo</button>
+    <button id="btnAaReset" class="btn" type="button">Reset</button>
+  </div>
+  <p class="source-hint" id="aaVerifyNote" hidden></p>
+  <textarea id="aaCopyField" class="url-field" rows="6" readonly hidden
+    aria-label="The settings, ready to select and copy by hand"></textarea>
+  <p class="sheet-foot-note">
+    A prediction from the measured complex transfer functions — it changes no measurement, capture, gate or
+    processor. The traces keep the timing reference they were captured with, so the arrival they differ by is
+    what is aligned. Verify every setting with both loudspeakers running before trusting it.
   </p>
 </section>
 

@@ -791,3 +791,71 @@ the Room Designer's loudspeaker select had never been populated, which is now
 filled from the modeler's library. The phone-width layout of the Room Designer's
 own left column remains a pre-existing limitation; a cabinet can still be placed
 from the Data Modeler's *Loudspeakers in the room* panel.
+
+
+
+---
+
+# Phase 6 — one-press automatic alignment
+
+The optimizer could search delay and polarity for a band you chose. It could not
+read the overlap for you, could not add an all-pass, could not weigh a bad bin
+down, and gave no prediction of what the pair would do together. **AUTO ALIGN**
+now sits at the top of the Alignment optimizer card and under the measurement
+chart, and both run the same engine: `js/auto-align.js`.
+
+- **One engine, two screens.** The engine is pure — no DOM, no audio, no storage.
+  The modeler hands it two modelled responses from its own sources; the
+  measurement screen hands it two captures. Both get the same answer, and neither
+  screen has a second implementation of the maths.
+- **The overlap is detected.** The engine looks for the acoustic crossover, where
+  the two *measured* magnitude curves are level while both are still within 18 dB
+  of the loudest point either reaches, and takes a one-octave span around it. A
+  pair that never crosses inside its usable range is aligned over the whole range
+  both curves cover, and says so. The band fields above the optimizer are passed
+  as a manual range, so nothing is silently overridden.
+- **Complex, never decibels.** Each candidate rotates the target's phase by its
+  delay, multiplies it by its gain and polarity, applies the all-pass chain's own
+  biquad response, adds it to the reference as complex pressures, and compares
+  the power with the sum of the two powers — what the pair would give with no
+  correlation at all. A gain change therefore cannot pass itself off as
+  alignment, and a null reads as a null. Bins below 35% coherence are left out
+  and the rest are weighted by how far above it they sit.
+- **Arrival from the phase slope.** The relative arrival is fitted from the
+  slope of the phase difference across the overlap, unwrapped along the band, so
+  a broadband pair — whose sum peak is far narrower than any delay grid — is
+  found in one step instead of being missed. The complex sum is then searched
+  around that arrival at the resolution (0.05 ms in the modeler, 0.01 ms in the
+  measurement screen), and the polarity is decided by the sum itself.
+- **All-pass only when it earns its place.** Advanced align scans first- and
+  second-order all-pass frequencies and Q values, trims the winner's frequency
+  and Q, and accepts a section only when it gains at least 0.35 dB over delay
+  and polarity; two at most. Each section's added group delay is measured at the
+  band and reported, so the cost of the filter is never hidden.
+- **Nothing negative, nothing invented.** When the target arrives later, the
+  same rotation is reported as a positive delay on the reference, so the figures
+  stay realizable; both channels' delays are shown. A curve without phase, a
+  pair with too little usable overlap, coherence below the floor and a capture
+  taken with phase compensation on are refused or flagged, and a level fault is
+  named as a level fault when a gain change was used.
+- **Written into the model at once.** `Apply to the target source` writes the
+  delay, the polarity, the gain and every all-pass into the project through the
+  modeler's own commit path, so its predicted sum changes immediately and its
+  undo takes the change back. Nothing is sent to a processor: the settings for
+  one are copied as text in the measurement screen instead.
+- **Several positions.** `optimizePositions` finds one arrangement for several
+  measured pairs, weighted, and says it is the compromise across the seats rather
+  than a perfect result at any one of them.
+
+Verification: `tests/auto-align.mjs` — the numerical suite for a known 1.5 ms
+arrival on either loudspeaker, a known polarity inversion, complex summation
+(a null before and +6 dB after where decibels could only add), a designed
+Linkwitz-Riley crossover pair with a known 2.0 ms offset and its detected band,
+a deliberately chosen range, a known second-order all-pass found by Advanced and
+not by Quick, a frequency-dependent phase difference, coherence below the floor,
+noisy data, magnitude-only, clipped and too-quiet data, the resolution snapping,
+a delay speaker's arrival offset, several weighted positions, verification and
+recalculation, the settings report and the saved-capture trace. **It is written
+but was not executed in this session**, because this environment has no Node
+runtime for the web repository; the same is true of every earlier suite listed
+above, and none of them was re-run.
